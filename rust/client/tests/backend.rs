@@ -285,6 +285,13 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
     assert_eq!(listed.len(), 2);
     assert_eq!(listed.iter().find(|p| p.name == "proj").unwrap().sessions, 1);
+    // The user's own "run it": a command given, or one guessed from the folder, in the project.
+    std::fs::write(server.home.join("proj/hello.sh"), "echo run from $(basename \"$PWD\")\n").unwrap();
+    let ran = client.call(&Request::new(Method::Run).project("~/proj")).await.unwrap().text;
+    assert_eq!(ran, "$ sh 'hello.sh'\nrun from proj\n[done]");
+    let ran = client.call(&Request::new(Method::Run).project("~/proj").text("echo given; exit 2")).await.unwrap().text;
+    assert_eq!(ran, "$ echo given; exit 2\ngiven\n[exit status 2]");
+    assert!(client.call(&Request::new(Method::Run).project("/etc").text("id")).await.is_err(), "a command was run outside home");
     // Clients are told the home folder, to show paths under it as ~/...
     let told = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().user_home;
     assert_eq!(std::fs::canonicalize(&told).unwrap(), std::fs::canonicalize(&server.home).unwrap());

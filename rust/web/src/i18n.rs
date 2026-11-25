@@ -157,6 +157,12 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("theme", ["Light / dark", "밝게 / 어둡게", "Světlý / tmavý", "ライト / ダーク", "淺色 / 深色", "浅色 / 深色", "Claro / oscuro", "Açık / koyu"]),
     ("layout", ["Side by side / stacked", "가로 / 세로 배치", "Vedle sebe / pod sebou", "横並び / 縦並び", "橫排 / 直排", "横向 / 纵向", "En paralelo / apilado", "Yan yana / alt alta"]),
     ("language", ["Language", "언어", "Jazyk", "言語", "語言", "语言", "Idioma", "Dil"]),
+    ("run", ["Run", "실행", "Spustit", "実行", "執行", "运行", "Ejecutar", "Çalıştır"]),
+    ("running", ["Running ...", "실행 중 ...", "Běží ...", "実行中 ...", "執行緊 ...", "运行中 ...", "Ejecutando ...", "Çalışıyor ..."]),
+    ("console", ["Console", "콘솔", "Konzole", "コンソール", "主控台", "控制台", "Consola", "Konsol"]),
+    ("clear", ["Clear", "지우기", "Vymazat", "クリア", "清除", "清除", "Limpiar", "Temizle"]),
+    ("console_ph", ["command to run (empty: guessed from the folder)", "실행할 명령 (비우면 폴더에서 추측)", "příkaz ke spuštění (prázdné: odhadne se ze složky)", "実行するコマンド（空: フォルダから推測）", "要執行嘅指令（留空：由資料夾估）", "要运行的命令（留空：根据文件夹推测）", "comando a ejecutar (vacío: se deduce de la carpeta)", "çalıştırılacak komut (boş: klasörden tahmin edilir)"]),
+    ("console_empty", ["Nothing has been run yet.", "아직 아무것도 실행하지 않았습니다.", "Zatím nic neběželo.", "まだ何も実行していません。", "仲未執行過嘢。", "还没有运行过任何东西。", "Todavía no se ha ejecutado nada.", "Henüz hiçbir şey çalıştırılmadı."]),
     ("settings", ["Settings", "설정", "Nastavení", "設定", "設定", "设置", "Ajustes", "Ayarlar"]),
     ("copy_all", ["Copy all", "전체 복사", "Kopírovat vše", "すべてコピー", "複製全部", "复制全部", "Copiar todo", "Tümünü kopyala"]),
     ("copied", ["Conversation copied", "대화를 복사했습니다", "Konverzace zkopírována", "会話をコピーしました", "已經複製對話", "已复制对话", "Conversación copiada", "Konuşma kopyalandı"]),
@@ -167,10 +173,10 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("ctx_near", ["This conversation's context is nearly full. Start a new conversation, or summarize this one.", "이 대화의 컨텍스트가 거의 찼습니다. 새 대화를 시작하거나 이 대화를 요약하세요.", "Kontext této konverzace je téměř plný. Začněte novou konverzaci, nebo tuto shrňte.", "この会話のコンテキストがほぼ一杯です。新しい会話を始めるか、この会話を要約してください。", "呢個對話嘅上下文差唔多滿。開個新對話，或者將呢個摘要。", "此对话的上下文即将用尽。请开始新对话，或对此对话做摘要。", "El contexto de esta conversación está casi lleno. Empieza una nueva o resume esta.", "Bu konuşmanın bağlamı neredeyse doldu. Yeni bir konuşma başlatın ya da bunu özetleyin."]),
     ("ctx_full", ["The context is full: start a new conversation.", "컨텍스트가 가득 찼습니다. 새 대화를 시작하세요.", "Kontext je plný: začněte novou konverzaci.", "コンテキストが一杯です。新しい会話を始めてください。", "上下文滿咗：開個新對話。", "上下文已满：请开始新对话。", "El contexto está lleno: empieza una conversación nueva.", "Bağlam doldu: yeni bir konuşma başlatın."]),
     ("sidebar", ["Show or hide the sidebar", "사이드바 보이기 / 숨기기", "Zobrazit nebo skrýt panel", "サイドバーの表示 / 非表示", "顯示或隱藏側欄", "显示或隐藏侧栏", "Mostrar u ocultar la barra lateral", "Kenar çubuğunu göster / gizle"]),
-    ("font", ["Typeface of the conversation", "대화 글꼴", "Písmo konverzace", "会話のフォント", "對話字型", "对话字体", "Tipo de letra de la conversación", "Konuşma yazı tipi"]),
+    ("font", ["Typeface", "글꼴", "Písmo", "フォント", "字型", "字体", "Tipo de letra", "Yazı tipi"]),
     ("font_system", ["System", "시스템", "Systémové", "システム", "系統", "系统", "Sistema", "Sistem"]),
-    ("font_smaller", ["Smaller text", "글자 작게", "Menší písmo", "文字を小さく", "字細啲", "缩小文字", "Texto más pequeño", "Yazıyı küçült"]),
-    ("font_larger", ["Larger text", "글자 크게", "Větší písmo", "文字を大きく", "字大啲", "放大文字", "Texto más grande", "Yazıyı büyüt"]),
+    ("font_smaller", ["Smaller messages", "글자 작게", "Menší písmo", "文字を小さく", "字細啲", "缩小文字", "Texto más pequeño", "Yazıyı küçült"]),
+    ("font_larger", ["Larger messages", "글자 크게", "Větší písmo", "文字を大きく", "字大啲", "放大文字", "Texto más grande", "Yazıyı büyüt"]),
 ];
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ mod llm;
 mod net;
 mod projects;
 mod prompt;
+mod runner;
 mod sandbox;
 mod settings;
 mod store;

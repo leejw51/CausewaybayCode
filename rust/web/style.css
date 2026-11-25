@@ -106,11 +106,12 @@
   --accent: #50d8f8; --gold: #e9c94b; --ok: #5ce08c; --warn: #e9c94b; --bad: #ff8a7a; --orange: #f0943a;
   /* The interface's typeface and how much larger it must be set to read as others do. */
   --body: "VT323", "NeoDGM", ui-monospace, monospace; --face: 1.34;
-  /* The conversation's own typeface, the one the settings change (what is said, asked and
-     noted, and what is being typed); the interface stays in the face above. */
-  --chat: var(--body); --chatface: var(--face);
+  /* How much larger or smaller the conversation is set than the interface (data-size): what
+     is said, asked and noted, its code, and what is being typed. The interface keeps its size. */
+  --zoom: 1;
   --px: "PressStart2P", "NeoDGM", ui-monospace, monospace;
-  --mono: "JetBrainsMonoCode", "NeoDGM", ui-monospace, Menlo, monospace;
+  /* Code and tool calls: the same face as the rest (the page sets it with the typeface). */
+  --mono: var(--body);
   --r: .7rem; --gap: 8px;
   --expo: cubic-bezier(.87, 0, .13, 1);
   color-scheme: dark;
@@ -121,9 +122,8 @@
   --accent: #0860a0; --gold: #b8860b; --ok: #187018; --warn: #8c5000; --bad: #c02000; --orange: #c84c0c;
   color-scheme: light;
 }
-/* The size (data-size): one unit everything is measured in. */
 html { font-size: 14px; }
-:root[data-size="s"] { font-size: 12px; } :root[data-size="l"] { font-size: 16px; } :root[data-size="xl"] { font-size: 19px; }
+:root[data-size="s"] { --zoom: .86; } :root[data-size="l"] { --zoom: 1.16; } :root[data-size="xl"] { --zoom: 1.38; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; }
@@ -149,7 +149,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: .75; }
 input.masked, textarea.masked { -webkit-text-security: disc; }
 input[type="checkbox"] { accent-color: #e9c94b; width: 1.1rem; height: 1.1rem; }
 select { min-height: 2.3rem; }
-pre, code, .mono { font-family: var(--mono); font-size: .9rem; }
+pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face)); }
 .ico { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; }
 .dim { color: var(--dim); } .sub { color: var(--dim); font-size: .92em; } .fine { font-size: .85em; margin: 0; } .pre { white-space: pre-wrap; } .grow { flex: 1; }
 
@@ -212,6 +212,12 @@ pre, code, .mono { font-family: var(--mono); font-size: .9rem; }
 .bar2 { height: .6rem; border-radius: 99px; background: var(--well); border: 1px solid var(--line2); margin-top: .45rem; overflow: hidden; }
 .bar2 i { display: block; height: 100%; border-radius: 99px; background: var(--accent); transition: width .9s var(--expo); }
 .ctx-warning { display: flex; align-items: center; gap: .6rem; border-color: var(--bad) !important; }
+/* The console: the command that is run, and what running the code printed. */
+.console { display: flex; flex-direction: column; max-height: 38%; min-height: 7rem; overflow: hidden; }
+.console-head { display: flex; align-items: center; gap: .4rem; padding: .3rem .4rem .3rem .8rem; border-bottom: 1px solid var(--line); }
+.console-head .lbl { color: var(--accent); } .console-head input { flex: 1; min-width: 0; min-height: 2.1rem; font-family: var(--mono); }
+.console pre { flex: 1; margin: 0; padding: .5rem .8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--well); font-size: calc(.94rem * var(--face) * var(--zoom)); }
+button.lit { border-color: var(--accent); color: var(--accent); }
 /* The conversation, and beside it its outline: a bar for each thing said or done. */
 .chatbody { flex: 1; min-height: 0; display: flex; gap: var(--gap); }
 .scroll { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 0 2px .4rem 0; min-height: 0; }
@@ -230,20 +236,21 @@ pre, code, .mono { font-family: var(--mono); font-size: .9rem; }
 .outline.scaled .viewport { display: block; } .outline .viewport.all { opacity: .35; }
 .col, .col.mid, .col.wide { max-width: none; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); }
 .it { display: grid; grid-template-columns: minmax(0, 1fr); scroll-margin-top: .4rem; }
-.msg, .note, .approval, .todos, .composer textarea { font-family: var(--chat); font-size: calc(1rem * var(--chatface)); }
-.approval button, .approval input { font-family: var(--body); font-size: calc(1rem * var(--face)); }
+.msg, .approval, .todos, .composer textarea { font-size: calc(1rem * var(--face) * var(--zoom)); }
+.msg pre, .msg code, .tool summary, .tool pre, .approval pre { font-size: calc(.94rem * var(--face) * var(--zoom)); }
+.approval button, .approval input { font-size: calc(1rem * var(--face)); }
 .msg { padding: .5rem .8rem; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 .msg.user { background: var(--btn2); border: 1px solid var(--line2); border-radius: var(--r) var(--r) .2rem var(--r); justify-self: end; max-width: 82%; }
 .msg.thinking { color: var(--dim); padding: .1rem .8rem; border-left: 3px solid var(--line2); }
 .msg pre { background: var(--well); border: 1px solid var(--line); border-radius: calc(var(--r) - 2px); padding: .5rem .7rem; overflow-x: auto; white-space: pre; margin: .4rem 0; max-width: 100%; }
 .tool { overflow: hidden; }
-.tool summary { padding: .35rem .8rem; cursor: pointer; font-family: var(--mono); font-size: .9rem; list-style: none; display: flex; align-items: center; gap: .3rem; }
+.tool summary { padding: .35rem .8rem; cursor: pointer; font-family: var(--mono); list-style: none; display: flex; align-items: center; gap: .3rem; }
 .tool summary::-webkit-details-marker { display: none; }
 .tool summary span.t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool summary small { color: var(--dim); }
 .tool pre { margin: 0; padding: .5rem .8rem; border-top: 1px solid var(--line); max-height: 320px; overflow: auto; color: var(--dim); white-space: pre-wrap; background: var(--well); }
 .tool.bad pre { color: var(--bad); }
-.note { justify-self: start; color: var(--dim); padding: 0 .8rem; font-size: calc(.88rem * var(--chatface)); white-space: pre-line; } .note.warn { color: var(--warn); } .note.bad { color: var(--bad); }
+.note { justify-self: start; color: var(--dim); padding: 0 .8rem; font-size: calc(.88rem * var(--face) * var(--zoom)); white-space: pre-line; } .note.warn { color: var(--warn); } .note.bad { color: var(--bad); }
 .approval { background: var(--panel); border: 1px solid var(--gold); border-radius: var(--r); padding: .6rem .8rem; }
 .approval pre { white-space: pre-wrap; margin: 0 0 .5rem; overflow-wrap: anywhere; }
 .approval .acts { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; } .approval .acts input { flex: 1; min-width: 160px; min-height: 2.3rem; }

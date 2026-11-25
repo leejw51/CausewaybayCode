@@ -183,6 +183,12 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   path under it. Paths are shown with `~`, never with the account's name. The × on a
   project takes it off the list and nothing else: its folder, files and records stay, and
   opening it again brings its conversations back.
+- **Run, Console, Clear.** Run runs the project's code without the model: the command typed
+  in the console, or one guessed from the folder (`cargo run`, `make run`, `go run .`,
+  `npm start`, or the source file changed last, compiled first where it must be), in the
+  project and in the sandbox, for at most two minutes. Console shows what the runs printed.
+  Clear empties the console and starts a new conversation (the old one stays in the list).
+  In the terminal: `/run [command]`.
 - **A conversation** has a bar showing how full its context is (the backend summarizes by
   itself when it fills; near the end the page says so and offers a new conversation), **Copy
   all** (what was asked, answered and run, as text), **Undo changes** and **Summarize**, and
@@ -192,7 +198,9 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   FruitNation Messenger: pixel faces such as VT323, NeoDunggeunmo, Galmuri, IBM VGA and
   Commodore 64; code faces such as JetBrains Mono, Fira Code, Cascadia Code and Iosevka; text
   faces such as Atkinson Hyperlegible, Geist, Nanum Gothic and Noto Sans CJK; or the
-  system's own), the **size** (A- and A+, four steps), and the **language**: English,
+  system's own; the whole page is set in it), the **size** (A- and A+, four steps; it is the
+  conversation's alone: what is said, its code and what you type, not the interface), and the
+  **language**: English,
   한국어, Čeština, 日本語, 廣東話, 中文, Español, Türkçe (the interface; what the backend
   and the model say arrives as it is).
 

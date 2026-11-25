@@ -38,6 +38,8 @@ enum Method {
   logout @23;          # ends the session the request carries
   setup @24;           # text (a wallet address: remote mode on; "": off) -> status, text
   removeProject @25;   # project: taken off the list. The folder and what is in it stay.
+  run @26;             # project, text (a command; "": guessed from the folder) -> text (the
+                       # command and what it printed). Run in the project, in the sandbox.
 }
 
 struct Upload {

@@ -287,6 +287,14 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 }
             }
         }
+        Method::Run => {
+            // The user's own "run it": no model, no approval; the sandbox as for any command.
+            let path = shared.roots.resolve(&request.project)?;
+            let mut policy = crate::sandbox::Policy::new(crate::sandbox::Mode::Auto, &path, &shared.config.home)?;
+            policy.sandbox &= shared.config.sandbox;
+            policy.network = shared.config.network;
+            out.text = crate::runner::run_project(&policy, &request.text)?;
+        }
         Method::RemoveProject => {
             // Off the list only: the folder, its files and its own records are not touched,
             // and opening it again brings it back with its conversations.

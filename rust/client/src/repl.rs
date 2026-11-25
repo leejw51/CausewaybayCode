@@ -21,6 +21,7 @@ Conversation
   /save [name]           name this conversation (every conversation is saved as you go)
   /sessions              list this project's conversations
   /resume <id|name>      continue one
+  /run [command]         run the project's code (the command, or one guessed from the folder)
   /undo                  take back the file changes of the last turn that made any
   /changes               every file version saved in this conversation
   /todos                 the model's task list
@@ -322,6 +323,8 @@ async fn command(session: &Session, state: &mut State, line: &str) -> Result<Flo
             println!("Continuing conversation #{}.", state.session);
             show_tail(session, state.session).await?;
         }
+        // Run the project's code (a command given, or one guessed from the folder).
+        "/run" => println!("{}", client.call(&session.request(Method::Run).text(rest)).await?.text),
         "/undo" => println!("{}", client.call(&session.request(Method::Undo).session(in_conversation(state)?)).await?.text),
         "/changes" => {
             let changes = client.call(&session.request(Method::Changes).session(in_conversation(state)?)).await?.changes;

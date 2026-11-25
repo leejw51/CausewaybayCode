@@ -105,6 +105,12 @@ struct App {
     ctx: RwSignal<u64>,
     /// Whether the settings sheet is open.
     settings: RwSignal<bool>,
+    /// The console: whether it is shown, the command to run ("": guessed from the folder),
+    /// what the last runs printed, and whether one is running now.
+    console: RwSignal<bool>,
+    console_cmd: RwSignal<String>,
+    console_out: RwSignal<String>,
+    running: RwSignal<bool>,
     view: RwSignal<View>,
     status: RwSignal<Option<Status>>,
     projects: RwSignal<Vec<Project>>,
@@ -198,6 +204,10 @@ impl App {
             notice: RwSignal::new(String::new()),
             ctx: RwSignal::new(0),
             settings: RwSignal::new(false),
+            console: RwSignal::new(false),
+            console_cmd: RwSignal::new(String::new()),
+            console_out: RwSignal::new(String::new()),
+            running: RwSignal::new(false),
             view: RwSignal::new(View::from_code(&text("view", "chat"))),
             status: RwSignal::new(None),
             projects: RwSignal::new(Vec::new()),
@@ -529,6 +539,29 @@ impl App {
         self.context().2 >= share
     }
 
+    /// Run the project's code (the command in the console, or one the backend guesses from
+    /// the folder) and show what it printed in the console.
+    async fn run_code(&self) {
+        if self.project.get_untracked().is_empty() || self.running.get_untracked() {
+            return;
+        }
+        self.console.set(true);
+        self.running.set(true);
+        let answer = api::call(&self.token.get_untracked(), &self.request(Method::Run).text(self.console_cmd.get_untracked().trim())).await;
+        self.running.set(false);
+        let said = match answer {
+            Ok(response) => response.text,
+            Err(e) => format!("! {e}"),
+        };
+        self.console_out.update(|out| {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&said);
+        });
+        after_draw(|| motion::to_end("console-out"));
+    }
+
     async fn remove_project(&self, path: String) {
         if self.call(Request::new(Method::RemoveProject).project(&path)).await.is_some() {
             let shown = self.tilde(&path);
@@ -672,9 +705,14 @@ fn Root() -> impl IntoView {
             if let Some((_, _, family, scale)) = FONTS.iter().find(|(code, ..)| *code == font) {
                 let stack = if family.is_empty() { FONT_FALLBACK.replace("\"NeoDGM\", ", "") } else { format!("\"{family}\", {FONT_FALLBACK}") };
                 if let Some(style) = root.dyn_ref::<web_sys::HtmlElement>().map(|el| el.style()) {
-                    // (The conversation's face only: the interface keeps its own.)
-                    let _ = style.set_property("--chat", &stack);
-                    let _ = style.set_property("--chatface", &scale.to_string());
+                    // (The whole page is set in it; the size, though, is the conversation's alone.)
+                    let _ = style.set_property("--body", &stack);
+                    let _ = style.set_property("--face", &scale.to_string());
+                    // Code and tool calls are set in it too: a conversation that is mostly code
+                    // would otherwise not change at all. (A code face stands behind it for
+                    // the system's own, which names no face.)
+                    let code = if family.is_empty() { "\"JetBrainsMonoCode\", ui-monospace, Menlo, monospace".to_string() } else { format!("\"{family}\", \"JetBrainsMonoCode\", \"NeoDGM\", ui-monospace, monospace") };
+                    let _ = style.set_property("--mono", &code);
                 }
             }
             let _ = root.set_attribute("data-size", &app.size.get());
@@ -762,7 +800,7 @@ const ICON_BOOK: &str = "M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zm0 13a3 3 0 0 
 const ICON_TOOL: &str = "M14.5 6.500a4 4 0 0 0-5.200 5.200L3.500 17.500l3 3 5.800-5.800a4 4 0 0 0 5.200-5.200l-2.700 2.700-2.300-.700-.700-2.300z";
 
 /// Light or dark, side by side or stacked, and the language: three small controls.
-/// The typefaces the conversation can be set in (the interface keeps its own): the code kept in the preferences, the name shown (an empty
+/// The typefaces the page can be set in (the size chosen is the conversation's alone): the code kept in the preferences, the name shown (an empty
 /// name is "the system's own", in the language chosen), the CSS family, and how much larger
 /// it must be set to read as the others do. All of them are in the program
 /// (assets/fonts, from Causewaybay Hacker and FruitNation Messenger); the browser fetches one only when it is chosen.
@@ -1381,6 +1419,9 @@ fn Chat() -> impl IntoView {
                 <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
                 <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
             </div>
+            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| spawn_local(async move { app.run_code().await })>{move || if app.running.get() { t("running")() } else { t("run")() }}</button>
+            <button id="console-toggle" class:lit=move || app.console.get() on:click=move |_| app.console.update(|shown| *shown = !*shown)>{t("console")}</button>
+            <button id="clear" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{t("clear")}</button>
             <button id="copy-all" disabled=move || app.items.get().is_empty() on:click=move |_| {
                 // (Copied at once, in the tap itself: a browser lets nothing else at the clipboard.)
                 let text = whole_text(&app.items.get_untracked());
@@ -1425,6 +1466,19 @@ fn Chat() -> impl IntoView {
             }/>
         </div>
         </div>
+        // The console: what running the code printed, and the command that is run.
+        <Show when=move || app.console.get()>
+            <div class="console glass" id="console">
+                <div class="console-head">
+                    <span class="lbl">{t("console")}</span>
+                    <input id="console-cmd" placeholder=t("console_ph") prop:value=move || app.console_cmd.get() on:input=move |ev| app.console_cmd.set(event_target_value(&ev))
+                        on:keydown=move |ev| if ev.key() == "Enter" { spawn_local(async move { app.run_code().await }) }/>
+                    <button class="ghost" id="console-clear" on:click=move |_| app.console_out.set(String::new())>{t("clear")}</button>
+                    <button class="ghost round" id="console-close" aria-label=t("console") on:click=move |_| app.console.set(false)>"×"</button>
+                </div>
+                <pre id="console-out">{move || { let out = app.console_out.get(); if out.is_empty() { t("console_empty")().to_string() } else { out } }}</pre>
+            </div>
+        </Show>
         <div class="composer">
             <div class="box glass">
                 <textarea id="draft" rows="2" placeholder=t("draft_ph")

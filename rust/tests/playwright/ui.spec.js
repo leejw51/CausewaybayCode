@@ -52,15 +52,21 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
     await expect(page.locator('.row.project.on small')).toHaveText(under);
   });
 
-  await test.step('the typeface changes the conversation, not the interface', async () => {
+  await test.step('the typeface changes the whole page; the size changes the messages only', async () => {
     const face = (selector) => page.locator(selector).evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replaceAll('"', '').trim());
+    const size = (selector) => page.locator(selector).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
     expect(await face('#draft')).toBe('VT323');
     await page.click('#settings');
     await page.selectOption('#font', 'geist');
-    await page.click('#settings-close');
-    expect(await face('#draft')).toBe('Geist');
-    for (const chrome of ['#nav-chat', '#send', '#undo', '.row.project.on']) expect(await face(chrome), chrome).toBe('VT323');
+    for (const part of ['#draft', '#nav-chat', '#send', '#undo', '.row.project.on']) expect(await face(part), part).toBe('Geist');
     expect(await page.evaluate(() => document.fonts.load('16px "Geist"', 'Az').then((f) => f.length))).toBeGreaterThan(0);
+    const before = { draft: await size('#draft'), nav: await size('#nav-chat'), send: await size('#send'), row: await size('.row.project.on') };
+    await page.click('#font-larger');
+    await page.click('#font-larger');
+    await expect(page.locator('html')).toHaveAttribute('data-size', 'xl');
+    expect(await size('#draft')).toBeGreaterThan(before.draft * 1.2);
+    expect({ nav: await size('#nav-chat'), send: await size('#send'), row: await size('.row.project.on') }).toEqual({ nav: before.nav, send: before.send, row: before.row });
+    await page.click('#settings-close');
   });
 
   await test.step('plan mode: a plan comes back and nothing is changed', async () => {
@@ -68,8 +74,14 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
     const answer = await ask(page, 'Create a file named planned.txt containing the word tram.');
     expect(fs.existsSync(path.join(folder, 'planned.txt')), 'plan mode wrote the file').toBe(false);
     expect(answer.toLowerCase()).toMatch(/plan|step|1\./);
-    // What was said is in the chosen typeface.
-    expect(await page.locator('.msg.text').last().evaluate((el) => getComputedStyle(el).fontFamily)).toContain('Geist');
+    // What was said is in the chosen typeface, at the larger size; the buttons are not larger.
+    // Everything in the conversation is: what was asked, thought, and the tool calls.
+    for (const part of ['.msg.user', '.msg.text', '.tool summary']) {
+      if (await page.locator(part).count()) expect(await page.locator(part).last().evaluate((el) => getComputedStyle(el).fontFamily), part).toContain('Geist');
+    }
+    const answered = page.locator('.msg.text').last();
+    expect(await answered.evaluate((el) => getComputedStyle(el).fontFamily)).toContain('Geist');
+    expect(await answered.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThan(await page.locator('#send').evaluate((el) => parseFloat(getComputedStyle(el).fontSize)) * 1.2);
   });
 
   await test.step('the context bar says how full the conversation is', async () => {
@@ -95,6 +107,25 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
     expect(await page.locator('#outline .o').count()).toBe(await page.locator('#transcript .it').count());
   });
 
+  await test.step('Run runs the code, the console shows it, Clear clears', async () => {
+    fs.writeFileSync(path.join(folder, 'tide.rs'), 'fn main() { println!("high tide at {}", 6 * 7); }\n');
+    await page.click('#run');
+    await expect(page.locator('#console-out')).toContainText('high tide at 42', { timeout: 120_000 });
+    await expect(page.locator('#console-out')).toContainText('[done]');
+    await expect(page.locator('#console-out')).toContainText('rustc -O');
+    await page.fill('#console-cmd', 'cat planned.txt');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#console-out')).toContainText('$ cat planned.txt');
+    await page.click('#console-toggle');
+    await expect(page.locator('#console')).toHaveCount(0);
+    await page.click('#console-toggle');
+    await expect(page.locator('#console-out')).toContainText('high tide at 42');
+    await page.click('#clear');
+    await expect(page.locator('#transcript .it')).toHaveCount(0);
+    await expect(page.locator('#console-out')).not.toContainText('high tide');
+    await page.click('#console-close');
+  });
+
   await test.step("a command of the user's own is sent as the text of its file", async () => {
     fs.mkdirSync(path.join(folder, '.cwbcode/commands'), { recursive: true });
     fs.writeFileSync(path.join(folder, '.cwbcode/commands/stamp.md'), 'Create a file named $ARGUMENTS whose only content is the word STAMPED. Then say done.');
@@ -106,13 +137,18 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
   await test.step("the user's hooks run around the agent's tools", async () => {
     fs.writeFileSync(path.join(runDir, 'server/hooks.json'), JSON.stringify({
       before: [{ tool: 'bash', run: "if grep -q harbourmaster; then echo 'the harbourmaster says no'; exit 1; fi" }],
-      after: [{ tool: 'write_file', run: 'echo touched > hook-ran.txt' }],
+      // (The model may write the file with either tool: the hook follows both.)
+      after: [{ tool: 'write_file|edit_file|bash', run: 'echo touched > hook-ran.txt' }],
     }));
     await page.click('#new-chat');
     await ask(page, 'Run exactly this command with your bash tool and tell me what happened: echo harbourmaster');
     await page.locator('.tool summary', { hasText: 'bash' }).last().click();
     await expect(page.locator('.tool pre').last()).toContainText('the harbourmaster says no');
-    await ask(page, 'Create hooked.txt containing the word ok.');
+    // (In a new conversation: straight after a refusal the model takes a request to write a
+    // file for a way around the hook, and declines.)
+    await page.click('#new-chat');
+    await ask(page, 'Create a file named tram-note.txt containing the word ok.');
+    expect(fs.readFileSync(path.join(folder, 'tram-note.txt'), 'utf8')).toContain('ok');
     expect(fs.readFileSync(path.join(folder, 'hook-ran.txt'), 'utf8')).toContain('touched');
     fs.unlinkSync(path.join(runDir, 'server/hooks.json'));
   });

@@ -199,8 +199,9 @@ def main():
             page.js(f"(() => {{ const s = document.querySelector('#font'); s.value = '{font}'; s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()")
             page.wait(f"document.documentElement.dataset.font === '{font}'", f"the {font} typeface")
             faces[font] = page.js(chat_face)
-            # Only the conversation changes its face: the interface keeps its own.
-            assert "VT323" in page.js("getComputedStyle(document.querySelector('#nav-chat')).fontFamily") and "VT323" in page.js("getComputedStyle(document.querySelector('#send')).fontFamily"), font
+            # The whole page is set in the face chosen: the interface and the conversation.
+            if font != "system":
+                assert all(faces[font] in page.js(f"getComputedStyle(document.querySelector('{part}')).fontFamily") for part in ["#nav-chat", "#send", "body"]), font
             if font != "system":
                 page.js(f"window.__face = null; document.fonts.load('16px \"{faces[font]}\"', 'Az').then(f => window.__face = f.length, () => window.__face = -1)")
                 page.wait("window.__face !== null", f"the {font} typeface to load")
@@ -208,14 +209,18 @@ def main():
         assert len(set(faces.values())) == len(codes), faces
         assert page.js("document.fonts.check('16px VT323') && document.fonts.check('10px PressStart2P')"), "the pixel faces did not load"
         page.js("(() => { const s = document.querySelector('#font'); s.value = 'mono'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
-        sizes = [page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)")]
+        # The size is the conversation's alone: what is typed and said grows, the interface does not.
+        said = "parseFloat(getComputedStyle(document.querySelector('#draft')).fontSize)"
+        interface = "['#nav-chat', '#send', '#open-go'].map(q => getComputedStyle(document.querySelector(q)).fontSize).join()"
+        sizes, around = [page.js(said)], page.js(interface)
         page.click("#font-smaller"); page.wait("document.documentElement.dataset.size === 's'", "smaller text")
         assert page.js("document.querySelector('#font-smaller').disabled"), "there is nothing smaller than small"
-        sizes.insert(0, page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)"))
+        sizes.insert(0, page.js(said))
         for size in ["m", "l", "xl"]:
             page.click("#font-larger"); page.wait(f"document.documentElement.dataset.size === '{size}'", f"size {size}")
             if size != "m":
-                sizes.append(page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)"))
+                sizes.append(page.js(said))
+            assert page.js(interface) == around, f"the interface changed size with the messages ({size})"
         assert sizes == sorted(sizes) and len(set(sizes)) == 4 and page.js("document.querySelector('#font-larger').disabled"), sizes
         assert page.js("document.documentElement.scrollWidth <= innerWidth"), "the largest text makes the page scroll sideways"
         page.shot(f"{shots}/2b-light-stacked-turkish.png")
@@ -298,6 +303,38 @@ def main():
         page.click("#copy-all")
         page.wait("(document.querySelector('#notice') || {}).innerText?.includes('copied') || (document.querySelector('#toast') || {}).innerText?.includes('copy')", "an answer to copying")
         assert "copied" in page.text("#notice"), page.text("#toast")
+        # Run, Console, Clear: the code is run and what it printed is in the console; Clear
+        # empties the console and starts a new conversation.
+        with open(f"{home}/proj/hello.sh", "w") as f: f.write("echo run from the button\n")
+        os.utime(f"{home}/proj/hello.sh")
+        assert page.js("!document.querySelector('#console')"), "the console is open before it is asked for"
+        page.click("#run")
+        page.wait("(document.querySelector('#console-out') || {}).innerText?.includes('[done]')", "the run to finish in the console")
+        ran = page.text("#console-out")
+        assert "$ sh 'hello.sh'" in ran and "run from the button" in ran, ran
+        page.type("#console-cmd", "echo typed; exit 4")
+        page.click("#run")
+        page.wait("document.querySelector('#console-out').innerText.includes('[exit status 4]')", "the typed command's end")
+        assert "run from the button" in page.text("#console-out"), "the earlier run is gone from the console"
+        page.click("#console-toggle"); page.wait("!document.querySelector('#console')", "the console hidden")
+        page.click("#console-toggle"); page.wait("document.querySelector('#console-out').innerText.includes('typed')", "the console back, with what it had")
+        assert page.js("document.querySelectorAll('#transcript .it').length") > 0
+        page.click("#clear")
+        page.wait("document.querySelectorAll('#transcript .it').length === 0 && document.querySelector('#console-out').innerText.includes('Nothing has been run')", "everything cleared")
+        page.click("#console-close")
+        page.js("[...document.querySelectorAll('.list.sessions .row')][0].click()")
+        page.wait("document.querySelectorAll('#transcript .it').length > 0", "the conversation still there after Clear")
+        # The typeface chosen is the whole conversation's: what was said, its code, the tool calls.
+        page.click("#clear"); page.js("[...document.querySelectorAll('.list.sessions .row')].at(-1).click()")
+        page.wait("!!document.querySelector('#transcript .msg pre') && !!document.querySelector('#transcript .tool summary')", "a conversation with code and a tool call")
+        parts = ["body", "#nav-chat", ".msg.user", ".msg.text", ".msg pre", ".tool summary", ".note", "#draft"]
+        face_of = lambda: json.loads(page.js("JSON.stringify(%s.map(q => getComputedStyle(document.querySelector(q)).fontFamily.split(',')[0].replaceAll('\"', '').trim()))" % json.dumps(parts)))
+        assert set(face_of()) == {"VT323"}, face_of()
+        for font, family in [("geist", "Geist"), ("fira", "FiraCode")]:
+            page.js(f"(() => {{ const s = document.querySelector('#font'); s.value = '{font}'; s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()")
+            page.wait(f"document.documentElement.dataset.font === '{font}'", f"the {font} typeface")
+            assert set(face_of()) == {family}, dict(zip(parts, face_of()))
+        page.js("(() => { const s = document.querySelector('#font'); s.value = 'pixel'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         print("5. the dashboard shows the backend")
         page.click("#nav-dashboard")
         page.wait("document.querySelector('#protocol') && ['H2','H3'].includes(document.querySelector('#protocol').innerText)", "the protocol card")

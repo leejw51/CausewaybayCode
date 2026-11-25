@@ -167,6 +167,11 @@ export function outline_install() {
   document.addEventListener('pointercancel', () => { dragging = false; });
   soon();
 }
+// Scroll a box to its end (the console, when something was printed).
+export function to_end(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollTop = el.scrollHeight;
+}
 // Bring an element of the conversation into view.
 export function go_to(id) {
   const el = document.getElementById(id);
@@ -197,6 +202,8 @@ extern "C" {
     pub fn copy_text(text: &str) -> bool;
     /// Keep the conversation's outline to scale, with a frame for the part on screen; once.
     pub fn outline_install();
+    /// Scroll the element with this id to its end.
+    pub fn to_end(id: &str);
     /// Scroll to the element with this id.
     pub fn go_to(id: &str);
 }
