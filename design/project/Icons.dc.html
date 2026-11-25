@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>App icon candidates</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+body{margin:0}
+.tile{display:flex;flex-direction:column;align-items:center;gap:12px}
+.big{width:180px;height:180px;border-radius:40px;object-fit:cover}
+.small{width:60px;height:60px;border-radius:14px;object-fit:cover}
+.tiny{width:32px;height:32px;border-radius:7px;object-fit:cover}
+</style>
+</helmet>
+<div style="width: 1000px; height: 420px; box-sizing: border-box; padding: 28px; display: flex; flex-direction: column; gap: 22px; background: #0B0F2A; font-family: 'VT323', monospace; font-size: 22px; line-height: 24px; color: #FCECC8">
+<h1 style="margin: 0; font-size: 28px; font-weight: normal; color: #50D8F8">App icon, second round: richer scenes of the tower</h1>
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px">
+<div class="tile"><img class="big" src="/_blob/7b8b19ce88c72d7c461fd443cd7e2fd1" alt="The tower at sunset in detailed pixel art, a tram at its foot, neon streets either side" style="outline: 3px solid #E9C94B; outline-offset: 4px"><div style="display: flex; gap: 10px; align-items: center"><img class="small" src="/_blob/7b8b19ce88c72d7c461fd443cd7e2fd1" alt=""><img class="tiny" src="/_blob/7b8b19ce88c72d7c461fd443cd7e2fd1" alt=""></div><span style="color: #E9C94B">A · in use · pixel sunset</span></div>
+<div class="tile"><img class="big" src="/_blob/137e90154c5adb593018466cd9789ec5" alt="The tower before a gold full moon, a skyline behind and a tram crossing"><div style="display: flex; gap: 10px; align-items: center"><img class="small" src="/_blob/137e90154c5adb593018466cd9789ec5" alt=""><img class="tiny" src="/_blob/137e90154c5adb593018466cd9789ec5" alt=""></div><span>B · moon</span></div>
+<div class="tile"><img class="big" src="/_blob/a3fbb275a28dc84bc6c711539c092649" alt="A glossy isometric tower on a small island with a tram circling it"><div style="display: flex; gap: 10px; align-items: center"><img class="small" src="/_blob/a3fbb275a28dc84bc6c711539c092649" alt=""><img class="tiny" src="/_blob/a3fbb275a28dc84bc6c711539c092649" alt=""></div><span>C · glossy 3D</span></div>
+<div class="tile"><img class="big" src="/_blob/71bad48c978322229fa6d6ea693d7aac" alt="The tower from a rain-wet street at night, a tram in front"><div style="display: flex; gap: 10px; align-items: center"><img class="small" src="/_blob/71bad48c978322229fa6d6ea693d7aac" alt=""><img class="tiny" src="/_blob/71bad48c978322229fa6d6ea693d7aac" alt=""></div><span>D · rainy night</span></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":420}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

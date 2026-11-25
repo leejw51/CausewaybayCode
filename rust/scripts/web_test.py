@@ -128,6 +128,11 @@ def main():
         page.wait("!!document.querySelector('.side') && /^[0-9a-f]{64}$/.test(localStorage.getItem('cwbcode-token') || '')", "signing in again with the remembered phrase")
         page.errors.clear()  # (the ended session was refused once, as it should be)
 
+        # A progressive web app: a manifest, and a service worker in charge of the page.
+        assert page.js("document.querySelector('link[rel=manifest]').getAttribute('href')") == "/manifest.webmanifest"
+        page.js("window.__sw = null; navigator.serviceWorker.ready.then(r => window.__sw = r.active ? r.active.scriptURL : 'none', () => window.__sw = 'failed')")
+        page.wait("window.__sw !== null", "the service worker")
+        assert page.js("window.__sw").endswith("/sw.js"), page.js("window.__sw")
         print("2. a folder outside home is refused, one under it opens")
         page.type("#open-path", "/etc"); page.click("#open-go")
         page.wait("(document.querySelector('#toast') || {}).innerText?.includes('home folder')", "the refusal of /etc")

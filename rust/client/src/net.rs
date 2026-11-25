@@ -306,6 +306,15 @@ impl Client {
         }
     }
 
+    /// A file of the web client over HTTP/2, with its type and how long it may be kept.
+    pub async fn raw_get(&self, path: &str) -> Result<(u16, String, String, Vec<u8>)> {
+        let Transport::H2(client) = self.transport() else { bail!("raw_get is for the HTTP/2 transport") };
+        let response = client.get(format!("{}{path}", self.base)).send().await?;
+        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let (status, kind, cache) = (response.status().as_u16(), header("content-type"), header("cache-control"));
+        Ok((status, kind, cache, response.bytes().await?.to_vec()))
+    }
+
     /// One call and its answer. An error the server reports is an error here.
     pub async fn call(&self, request: &Request) -> Result<Response> {
         let (response, _) = self.call_raw(request).await?;

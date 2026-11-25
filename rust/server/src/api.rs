@@ -415,6 +415,9 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
     let path = uri.path().trim_start_matches('/');
     let (name, file) = match Web::get(path) {
         Some(file) if !path.is_empty() => (path, Some(file)),
+        // A file that is not there is not there: only a route of the app is answered with the
+        // page. (An iPad asking for an icon was once given the page, and showed a letter.)
+        None if path.rsplit('/').next().is_some_and(|last| last.contains('.')) => return (StatusCode::NOT_FOUND, "there is no such file").into_response(),
         _ => ("index.html", Web::get("index.html")),
     };
     match file.context("the web client was not built into this binary (run `make build`)") {

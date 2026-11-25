@@ -843,6 +843,28 @@ async fn the_web_client_is_served_whole_over_http3_as_over_http2() {
         total += over_tcp.1.len();
     }
     assert!(paths.len() >= 2 && total > 0, "{paths:?}");
+    // It can be installed: a manifest that names icons the backend serves as pictures.
+    let (status, manifest) = tcp.get("/manifest.webmanifest").await.unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!((status, manifest["display"].as_str(), manifest["start_url"].as_str()), (200, Some("standalone"), Some("/")));
+    let mut icons: Vec<String> = manifest["icons"].as_array().unwrap().iter().map(|icon| icon["src"].as_str().unwrap().to_string()).collect();
+    icons.extend(["/apple-touch-icon.png".to_string(), "/favicon-32.png".to_string()]);
+    for icon in &icons {
+        let (status, bytes) = quic.get(icon).await.unwrap();
+        assert!(status == 200 && bytes.starts_with(b"\x89PNG"), "{icon} is not a picture");
+    }
+    assert!(page.contains(r#"rel="manifest""#) && page.contains(r#"rel="apple-touch-icon""#) && page.contains("apple-mobile-web-app-capable"));
+    // The icon an iPad asks for by another name is there too; a file that does not exist is
+    // not answered with the page.
+    let (status, bytes) = tcp.get("/apple-touch-icon-precomposed.png").await.unwrap();
+    assert!(status == 200 && bytes.starts_with(b"\x89PNG"));
+    for missing in ["/no-such-icon.png", "/nothing.js", "/fonts/none.woff2"] {
+        assert_eq!(tcp.get(missing).await.unwrap().0, 404, "{missing}");
+    }
+    // ... and a service worker, which is never kept by the browser itself (it asks each time).
+    let worker = tcp.raw_get("/sw.js").await.unwrap();
+    assert_eq!((worker.0, worker.1.as_str(), worker.2.as_str()), (200, "text/javascript", "no-cache"));
+    assert!(String::from_utf8(worker.3).unwrap().contains("addEventListener('fetch'") && page.contains("serviceWorker.register('/sw.js')"));
     // Nothing answers QUIC on the HTTPS port itself: a browser that tries HTTP/3 there (having
     // been told of it by an earlier version) is turned away at once and stays on HTTP/2.
     assert!(std::net::UdpSocket::bind(("127.0.0.1", server.port)).is_ok(), "something listens on UDP {}", server.port);

@@ -196,6 +196,13 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   한국어, Čeština, 日本語, 廣東話, 中文, Español, Türkçe (the interface; what the backend
   and the model say arrives as it is).
 
+**On the home screen.** The page can be installed (Safari: Share, then Add to Home Screen;
+Chrome: Install): it has a manifest, icons and a service worker, and then opens in a window
+of its own. The service worker asks the backend first, every time, so nothing is served
+stale; it keeps a copy only for when the backend cannot be reached, so that the app still
+opens and says it is offline. A browser registers a service worker only where it trusts the
+certificate: with the self-signed one it may not, and the page then works as before.
+
 These, and where you are (view, project, conversation), are kept in the browser, so a
 refresh comes back to the same place. The typefaces and the pictures are in the program:
 the page loads nothing from the internet.

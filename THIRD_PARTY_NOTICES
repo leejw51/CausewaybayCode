@@ -49,7 +49,7 @@ Software Relay Fonts Free Use License, shipped unmodified as it requires; Pet Me
 GNU Unifont (SIL OFL 1.1, or GNU GPL 2+ with the font embedding exception), Hack (MIT, with
 the Bitstream Vera licence), and Ubuntu Mono (Ubuntu Font Licence 1.0).
 
-rust/web/assets/art/ and design/images/ hold pictures made for this project with an image
+rust/web/assets/art/, rust/web/assets/pwa/ (the icon) and design/images/ hold pictures made for this project with an image
 model (xAI's Grok); design/ is the layout they were drawn for.
 
 
