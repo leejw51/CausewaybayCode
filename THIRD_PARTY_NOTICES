@@ -39,6 +39,27 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
+rust/web/assets/fonts/ holds typefaces the web client offers, each distributed unmodified
+(the two "Code" files are subsets) under the SIL Open Font License 1.1, whose text stands
+beside each of them in that folder:
+
+  PressStart2P-Regular.ttf                  Press Start 2P, by CodeMan38        PressStart2P-OFL.txt
+  VT323-Regular.ttf                         VT323, by Peter Hull                VT323-OFL.txt
+  neodgm.woff2                              NeoDunggeunmo, by Eunbin Jeong      neodgm-OFL.txt
+  JetBrainsMono-Code.woff2                  JetBrains Mono, by JetBrains        JetBrainsMono-OFL.txt
+  Iosevka-Code.woff2                        Iosevka, by Belleve Invis           Iosevka-OFL.txt
+  atkinson-hyperlegible-next-latin*.woff2   Atkinson Hyperlegible Next,         atkinson-hyperlegible-next-OFL.txt
+                                            by the Braille Institute
+
+rust/web/assets/art/ and design/images/ hold pictures made for this project with an image
+model (xAI's Grok); design/ is the layout they were drawn for.
+
+
+rust/web/assets/three/ is three.js (https://threejs.org), version 0.185.1, which draws the
+skyline behind the web client, distributed unmodified under the MIT license; its text
+stands beside it (rust/web/assets/three/LICENSE). Copyright 2010-2026 three.js authors.
+
+
 rust/web/assets/motion.min.js is Motion (https://motion.dev), version 14.14.0, the
 animation library the web client uses, distributed unmodified under the following license:
 

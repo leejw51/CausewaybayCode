@@ -91,6 +91,11 @@ struct App {
     /// the interface language.
     theme: RwSignal<String>,
     layout: RwSignal<String>,
+    /// The typeface (one of FONTS) and the size (one of SIZES).
+    font: RwSignal<String>,
+    size: RwSignal<String>,
+    /// Whether the sidebar is shown (folded away, the view has the whole window).
+    side: RwSignal<bool>,
     lang: RwSignal<Lang>,
     /// The project and conversation to come back to after a refresh, until they are restored.
     resume: RwSignal<(String, i64)>,
@@ -181,6 +186,9 @@ impl App {
             token: RwSignal::new(initial_token()),
             theme: RwSignal::new(text("theme", if system_prefers_light() { "light" } else { "dark" })),
             layout: RwSignal::new(text("layout", "horizontal")),
+            font: RwSignal::new(Some(text("font", "pixel")).filter(|f| FONTS.iter().any(|(code, _)| code == f)).unwrap_or_else(|| "pixel".into())),
+            side: RwSignal::new(prefs["side"].as_bool().unwrap_or(true)),
+            size: RwSignal::new(Some(text("size", "m")).filter(|s| SIZES.contains(&s.as_str())).unwrap_or_else(|| "m".into())),
             lang: RwSignal::new(prefs["lang"].as_str().and_then(Lang::from_code).unwrap_or_else(|| Lang::from_browser(&browser))),
             resume: RwSignal::new((text("project", ""), prefs["session"].as_i64().unwrap_or(0))),
             notice: RwSignal::new(String::new()),
@@ -217,6 +225,7 @@ impl App {
         let (project, session) = if project.is_empty() && !resume_project.is_empty() { (resume_project, resume_session) } else { (project, self.session.get()) };
         let prefs = serde_json::json!({
             "theme": self.theme.get(), "layout": self.layout.get(), "lang": self.lang.get().code(),
+            "font": self.font.get(), "size": self.size.get(), "side": self.side.get(),
             "view": self.view.get().code(), "project": project, "session": session,
             "mode": self.mode.get(), "think": self.think.get(),
         });
@@ -614,6 +623,8 @@ fn Root() -> impl IntoView {
         if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
             let _ = root.set_attribute("data-theme", &app.theme.get());
             let _ = root.set_attribute("lang", app.lang.get().code());
+            let _ = root.set_attribute("data-font", &app.font.get());
+            let _ = root.set_attribute("data-size", &app.size.get());
         }
     });
     Effect::new(move |_| app.save_prefs());
@@ -622,9 +633,12 @@ fn Root() -> impl IntoView {
         <div class="glow a"></div>
         <div class="glow b"></div>
         <Show when=move || app.ready() fallback=move || view! { <Login/> }>
-            <div class="app" class:vertical=move || app.layout.get() == "vertical">
+            <div class="app" class:vertical=move || app.layout.get() == "vertical" class:noside=move || !app.side.get()>
                 <Sidebar/>
-                <div class="main"><ViewHost/></div>
+                <div class="main">
+                    <button class="ghost round side-toggle" id="side-toggle" title=app.t("sidebar") on:click=move |_| app.side.update(|shown| *shown = !*shown)>{icon(ICON_SIDE)}</button>
+                    <ViewHost/>
+                </div>
             </div>
         </Show>
         <Show when=move || !app.error.get().is_empty()>
@@ -682,6 +696,7 @@ fn icon(path: &'static str) -> impl IntoView {
 const ICON_SUN: &str = "M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m0-11.4L4.9 4.9m14.2 14.2-1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z";
 const ICON_MOON: &str = "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z";
 const ICON_COLUMNS: &str = "M4 5h16v14H4zM10 5v14";
+const ICON_SIDE: &str = "M4 5h16v14H4zM9 5v14M6 9h1M6 12h1";
 const ICON_ROWS: &str = "M4 5h16v14H4zM4 10h16";
 const ICON_GLOBE: &str = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm-9 9h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.500 5.600 12 3z";
 const ICON_DASH: &str = "M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-3H4zM14 7h6V4h-6z";
@@ -690,6 +705,11 @@ const ICON_BOOK: &str = "M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zm0 13a3 3 0 0 
 const ICON_TOOL: &str = "M14.5 6.500a4 4 0 0 0-5.200 5.200L3.500 17.500l3 3 5.800-5.800a4 4 0 0 0 5.200-5.200l-2.700 2.700-2.300-.700-.700-2.300z";
 
 /// Light or dark, side by side or stacked, and the language: three small controls.
+/// The typefaces to choose from (the code kept in the preferences, and the name shown; an
+/// empty name is "the system's own", in the language chosen) and the sizes, small to large.
+const FONTS: [(&str, &str); 6] = [("pixel", "VT323"), ("dgm", "NeoDGM"), ("mono", "JetBrains Mono"), ("iosevka", "Iosevka"), ("readable", "Atkinson"), ("system", "")];
+const SIZES: [&str; 4] = ["s", "m", "l", "xl"];
+
 #[component]
 fn Prefs() -> impl IntoView {
     let app = expect_context::<App>();
@@ -706,6 +726,14 @@ fn Prefs() -> impl IntoView {
             <button class="ghost round" id="layout-toggle" title=app.t("layout") on:click=move |_| flip(app.layout, "horizontal", "vertical")>
                 {move || if app.layout.get() == "vertical" { icon(ICON_COLUMNS).into_any() } else { icon(ICON_ROWS).into_any() }}
             </button>
+            <label class="lang" title=app.t("font")>
+                <select id="font" on:change=move |ev| app.font.set(event_target_value(&ev)) prop:value=move || app.font.get()>
+                    {FONTS.into_iter().map(|(code, name)| view! { <option value=code selected=move || app.font.get() == code>{move || if name.is_empty() { tr(app.lang.get(), "font_system").to_string() } else { name.to_string() }}</option> }).collect_view()}
+                </select>
+            </label>
+            <button class="ghost round" id="font-smaller" title=app.t("font_smaller") disabled=move || app.size.get() == SIZES[0] on:click=move |_| step_size(app, -1)>"A-"</button>
+            <span class="fontsize" id="font-size">{move || app.size.get().to_uppercase()}</span>
+            <button class="ghost round" id="font-larger" title=app.t("font_larger") disabled=move || app.size.get() == SIZES[SIZES.len() - 1] on:click=move |_| step_size(app, 1)>"A+"</button>
             <label class="lang" title=app.t("language")>
                 {icon(ICON_GLOBE)}
                 <select id="lang" on:change=move |ev| if let Some(lang) = Lang::from_code(&event_target_value(&ev)) { app.lang.set(lang) } prop:value=move || app.lang.get().code()>
@@ -714,6 +742,12 @@ fn Prefs() -> impl IntoView {
             </label>
         </div>
     }
+}
+
+/// One size smaller or larger, within what there is.
+fn step_size(app: App, by: i32) {
+    let now = SIZES.iter().position(|s| *s == app.size.get_untracked()).unwrap_or(1) as i32;
+    app.size.set(SIZES[(now + by).clamp(0, SIZES.len() as i32 - 1) as usize].to_string());
 }
 
 fn brand(app: App) -> impl IntoView {
@@ -809,6 +843,9 @@ fn Sidebar() -> impl IntoView {
         app.view.get();
         app.layout.get();
         app.lang.get();
+        app.font.get();
+        app.size.get();
+        app.side.get();
         after_draw(|| motion::slide_selection("#nav"));
     });
     let open = move || {

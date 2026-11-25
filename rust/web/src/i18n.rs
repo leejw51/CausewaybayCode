@@ -156,6 +156,11 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("theme", ["Light / dark", "밝게 / 어둡게", "Světlý / tmavý", "ライト / ダーク", "淺色 / 深色", "浅色 / 深色", "Claro / oscuro", "Açık / koyu"]),
     ("layout", ["Side by side / stacked", "가로 / 세로 배치", "Vedle sebe / pod sebou", "横並び / 縦並び", "橫排 / 直排", "横向 / 纵向", "En paralelo / apilado", "Yan yana / alt alta"]),
     ("language", ["Language", "언어", "Jazyk", "言語", "語言", "语言", "Idioma", "Dil"]),
+    ("sidebar", ["Show or hide the sidebar", "사이드바 보이기 / 숨기기", "Zobrazit nebo skrýt panel", "サイドバーの表示 / 非表示", "顯示或隱藏側欄", "显示或隐藏侧栏", "Mostrar u ocultar la barra lateral", "Kenar çubuğunu göster / gizle"]),
+    ("font", ["Typeface", "글꼴", "Písmo", "フォント", "字型", "字体", "Tipo de letra", "Yazı tipi"]),
+    ("font_system", ["System", "시스템", "Systémové", "システム", "系統", "系统", "Sistema", "Sistem"]),
+    ("font_smaller", ["Smaller text", "글자 작게", "Menší písmo", "文字を小さく", "字細啲", "缩小文字", "Texto más pequeño", "Yazıyı küçült"]),
+    ("font_larger", ["Larger text", "글자 크게", "Větší písmo", "文字を大きく", "字大啲", "放大文字", "Texto más grande", "Yazıyı büyüt"]),
 ];
 
 #[cfg(test)]

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat on a phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+body{margin:0}
+a{color:#9C97C2;text-decoration:none}a:hover{color:#FCECC8}
+button{cursor:pointer;font:inherit}
+.panel{background:rgba(16,23,62,0.92);border:1px solid rgba(80,216,248,0.16);border-radius:12px}
+.well{background:#080B22;border:1px solid rgba(80,216,248,0.12);border-radius:10px}
+.btn{height:44px;padding:0 14px;border-radius:10px;border:1px solid rgba(252,236,200,0.16);background:#1F275E;color:#FCECC8;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;box-shadow:0 2px 0 #070A1E}
+.btn.gold{background:#E9C94B;color:#281810;border-color:#F6E08A;box-shadow:0 2px 0 #7A6410}
+.btn.orange{background:#F0943A;color:#2A1404;border-color:#F9C08A;box-shadow:0 2px 0 #7E4410}
+.lbl{color:#50D8F8}
+.dim{color:#9C97C2}
+.code{font-family:'JetBrains Mono',monospace;font-size:12px;line-height:20px}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: #0B0F2A; font-family: 'VT323', monospace; font-size: 22px; line-height: 24px; color: #FCECC8">
+
+<header class="panel" style="height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 6px">
+<button class="btn" aria-label="Conversations" style="width: 44px; padding: 0">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"></path></svg>
+</button>
+<span style="min-width: 0; margin-right: auto"><span style="display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Add a retry</span><span class="dim" style="font-size: 18px">~/work/harbour</span></span>
+<button class="btn orange">ASK ▾</button>
+</header>
+
+<div style="flex: 1 1 auto; min-height: 0; display: flex; gap: 6px">
+<section class="well" aria-label="Conversation" style="flex: 1 1 auto; min-width: 0; overflow: hidden; padding: 10px; display: flex; flex-direction: column; gap: 8px">
+<p style="margin: 0; align-self: flex-end; max-width: 260px; padding: 8px 12px; border-radius: 12px 12px 3px 12px; background: #1F275E">Add a retry with backoff, and a test.</p>
+<p style="margin: 0">I will wrap the request in three attempts with a doubling wait.</p>
+<div style="border-radius: 10px; overflow: hidden; border: 1px solid rgba(80,216,248,0.16)">
+<div style="display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: #10173E"><span style="width: 10px; height: 10px; border-radius: 5px; background: #5CE08C"></span><span class="code">edit_file(src/fetch.rs)</span></div>
+<pre class="code" style="margin: 0; padding: 6px 10px; overflow: hidden"><span style="color: #F09A9A">- let body = get(url).await?;</span>
+<span style="color: #7FE0A0">+ for attempt in 1..=3 {</span>
+<span style="color: #7FE0A0">+     match get(url).await {</span></pre>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; background: #10173E; border: 1px solid #E9C94B">
+<span style="color: #E9C94B">Run this command?</span>
+<span class="code">cargo test fetch</span>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px"><button class="btn gold">Allow</button><button class="btn">Deny</button></div>
+</div>
+</section>
+<div class="well" role="img" aria-label="Outline of the conversation" style="width: 26px; padding: 8px 5px; display: flex; flex-direction: column; gap: 3px; overflow: hidden">
+<sc-for list="{{bars}}" as="bar" hint-placeholder-count="40">
+<div style="height: 4px; border-radius: 2px; width: {{bar.w}}; background: {{bar.c}}"></div>
+</sc-for>
+</div>
+</div>
+
+<div class="panel" style="display: flex; align-items: center; gap: 6px; padding: 5px">
+<label for="ask-phone" style="position: absolute; width: 1px; height: 1px; overflow: hidden">Message</label>
+<input id="ask-phone" type="text" placeholder="ask, or describe a change" style="flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 8px; border: 0; outline: 0; background: transparent; color: #FCECC8; font: inherit">
+<button class="btn gold">Send</button>
+</div>
+
+<nav class="panel" aria-label="Main" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 4px">
+<a class="btn" href="Phone.dc.html" style="background: transparent; border-color: transparent; box-shadow: none">Home</a>
+<a class="btn gold" href="Phone.dc.html" aria-current="page">Chat</a>
+<a class="btn" href="Phone.dc.html" style="background: transparent; border-color: transparent; box-shadow: none">Notes</a>
+<a class="btn" href="Phone.dc.html" style="background: transparent; border-color: transparent; box-shadow: none">Tools</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() {
+const kinds = { you: '#E9C94B', say: '#6F78C8', tool: '#50D8F8', add: '#5CE08C', cut: '#F09A9A' };
+const plan = ['you', 'say', 'say', 'tool', 'cut', 'add', 'add', 'add', 'say', 'you', 'say', 'tool', 'add', 'add', 'say', 'tool', 'tool', 'say', 'you', 'say', 'say', 'tool', 'cut', 'add', 'add', 'say', 'tool', 'say', 'you', 'say', 'tool', 'add', 'say', 'say', 'tool', 'add', 'add', 'say', 'you', 'say'];
+return { bars: plan.map((kind, i) => ({ c: kinds[kind], w: (40 + ((i * 37) % 60)) + '%' })) };
+}
+}
+</script>
+</body>
+</html>

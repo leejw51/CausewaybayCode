@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+body{margin:0}
+a{color:#9C97C2;text-decoration:none}a:hover{color:#FCECC8}
+button{cursor:pointer;font:inherit}
+.panel{background:rgba(16,23,62,0.92);border:1px solid rgba(80,216,248,0.16);border-radius:12px}
+.well{background:#080B22;border:1px solid rgba(80,216,248,0.12);border-radius:10px}
+.btn{height:38px;padding:0 14px;border-radius:9px;border:1px solid rgba(252,236,200,0.16);background:#1F275E;color:#FCECC8;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;box-shadow:0 2px 0 #070A1E}
+.btn.gold{background:#E9C94B;color:#281810;border-color:#F6E08A;box-shadow:0 2px 0 #7A6410}
+.lbl{color:#50D8F8}
+.dim{color:#9C97C2}
+</style>
+</helmet>
+<div style="width: 1280px; height: 800px; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: #0B0F2A; font-family: 'VT323', monospace; font-size: 22px; line-height: 24px; color: #FCECC8">
+
+<header class="panel" style="height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 8px">
+<span style="width: 36px; height: 36px; border-radius: 9px; background: #8C6CE0; display: flex; align-items: center; justify-content: center; font-size: 18px">CC</span>
+<span class="lbl" style="letter-spacing: 1px; margin-right: auto">CAUSEWAYBAY CODE</span>
+<button class="btn" aria-label="Smaller text">A-</button>
+<button class="btn" aria-label="Larger text">A+</button>
+<button class="btn">VT323 ▾</button>
+<button class="btn">English ▾</button>
+</header>
+
+<div style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center">
+<form class="panel" style="width: 520px; padding: 18px; display: flex; flex-direction: column; gap: 12px">
+<h1 style="margin: 0; font-size: 34px; line-height: 36px; font-weight: normal; color: #E9C94B">Sign in with your wallet</h1>
+<p class="dim" style="margin: 0">The key is made in this browser. Only a signature is sent.</p>
+<div class="well" style="padding: 8px 12px; display: flex; flex-direction: column"><span class="lbl">This backend belongs to</span><span>[WALLET ADDRESS]</span></div>
+<label for="phrase" class="lbl">Recovery phrase</label>
+<textarea id="phrase" class="well" placeholder="twelve to twenty-four words" style="box-sizing: border-box; width: 100%; height: 84px; padding: 8px 12px; resize: none; outline: 0; color: #FCECC8; font: inherit"></textarea>
+<div style="display: flex; align-items: center; gap: 14px">
+<label style="display: flex; align-items: center; gap: 8px; min-height: 44px; margin-right: auto"><input type="checkbox" checked style="width: 20px; height: 20px; accent-color: #E9C94B">Remember on this device</label>
+<label style="display: flex; align-items: center; gap: 8px">Account<input type="number" value="0" min="0" class="well" style="width: 64px; height: 38px; box-sizing: border-box; padding: 0 8px; color: #FCECC8; font: inherit"></label>
+</div>
+<div style="display: flex; gap: 8px">
+<button type="button" class="btn gold" style="flex: 1 1 auto; height: 44px">Sign in</button>
+<button type="button" class="btn" style="height: 44px">Clear</button>
+</div>
+<p class="dim" style="margin: 0; font-size: 18px; line-height: 20px">Certificate fingerprint, to compare with cwbcode url: [FINGERPRINT]</p>
+</form>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

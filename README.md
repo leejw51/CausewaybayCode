@@ -174,11 +174,20 @@ phrase.
 - **Knowledge**: the project's knowledge base: search, save notes, upload files.
 - **Tools**: the tools the agent has made, with their Rust source.
 
-Three controls beside the name: **light / dark**, **side by side / stacked** (the sidebar
-becomes a header), and the **language**: English, 한국어, Čeština, 日本語, 廣東話, 中文,
-Español, Türkçe (the interface; what the backend and the model say arrives as it is).
+The look follows its sibling Causewaybay Hacker's playground: dense and dark, thin rounded
+panels that reach the edges, pill buttons, a pixel typeface, and behind it all a pixel
+skyline with stars that three.js draws and lets drift (a day sky for the light theme; a
+plain ground where there is no WebGL). A button at the top left of the view folds the
+sidebar away, so the work has the whole window.
+
+The controls beside the name: **light / dark**, **side by side / stacked** (the sidebar
+becomes a header), the **typeface** (VT323, NeoDGM, JetBrains Mono, Iosevka, Atkinson
+Hyperlegible, or the system's own; titles and buttons stay in Press Start 2P), the **size**
+(A- and A+, four steps), and the **language**: English, 한국어, Čeština, 日本語, 廣東話,
+中文, Español, Türkçe (the interface; what the backend and the model say arrives as it is).
 These, and where you are (view, project, conversation), are kept in the browser, so a
-refresh comes back to the same place.
+refresh comes back to the same place. The typefaces, the pictures and three.js are in the program:
+the page loads nothing from the internet.
 
 Movement is Motion's: what travels (a view arriving, a card appearing, a number changing)
 eases in and out exponentially; what answers a touch (a pressed button, the selection
@@ -308,7 +317,7 @@ make test         # unit tests, and the backend started for real with a scripted
                   # log, file versions and undo, the knowledge base, tools made at runtime
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
                   # wrong ones refused), the remembered phrase, a folder created on opening,
-                  # themes, layouts, languages and a refresh that comes back to the same
+                  # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
                   # dashboard, knowledge base, sign-out, and local mode without a login,
                   # and remote mode turned on and off from the dashboard

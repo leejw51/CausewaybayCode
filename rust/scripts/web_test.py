@@ -143,7 +143,7 @@ def main():
         assert page.js("document.documentElement.dataset.theme") == "dark"
         page.click("#theme-toggle")
         page.wait("document.documentElement.dataset.theme === 'light'", "the light theme")
-        page.wait("getComputedStyle(document.body).color === 'rgb(19, 23, 34)'", "dark text on the light theme")
+        page.wait("getComputedStyle(document.body).color === 'rgb(20, 28, 72)'", "dark text on the light theme")
         page.click("#layout-toggle")
         page.wait("document.querySelector('.app').classList.contains('vertical')", "the stacked layout")
         assert page.js("document.querySelector('.side').getBoundingClientRect().width > document.querySelector('.side').getBoundingClientRect().height"), "the sidebar did not become a header"
@@ -153,17 +153,55 @@ def main():
             page.wait(f"document.querySelector('#nav-chat').innerText.trim() === {json.dumps(chat)} && document.documentElement.lang === '{code}'", f"the interface in {code}")
             seen[code] = page.text("#nav-knowledge")
         assert len(set(seen.values())) >= 6, seen
+        # three.js draws the skyline behind the page, in the colours of the theme.
+        page.wait("document.documentElement.dataset.backdrop === 'on' && document.querySelector('#backdrop').width > 100", "the three.js backdrop")
+        # The sidebar folds away, and the view takes the whole window.
+        wide = page.js("document.querySelector('.main').getBoundingClientRect().height")
+        page.click("#side-toggle")
+        page.wait("getComputedStyle(document.querySelector('.side')).display === 'none'", "the sidebar folded away")
+        assert page.js("document.querySelector('.main').getBoundingClientRect().height") > wide, "the view did not grow"
+        assert json.loads(page.js("localStorage.getItem('cwbcode-prefs')"))["side"] is False
+        page.click("#side-toggle")
+        page.wait("getComputedStyle(document.querySelector('.side')).display !== 'none'", "the sidebar back")
+        # Buttons are rounded.
+        assert page.js("parseFloat(getComputedStyle(document.querySelector('#open-go')).borderRadius)") >= 6
+        # The typeface and the size: each changes what is drawn, and both are kept.
+        assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("pixel", "m")
+        assert "VT323" in page.js("getComputedStyle(document.body).fontFamily")
+        faces = {}
+        for font in ["dgm", "mono", "iosevka", "readable", "system", "pixel"]:
+            page.js(f"(() => {{ const s = document.querySelector('#font'); s.value = '{font}'; s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()")
+            page.wait(f"document.documentElement.dataset.font === '{font}'", f"the {font} typeface")
+            faces[font] = page.js("getComputedStyle(document.body).fontFamily.split(',')[0]")
+        assert len(set(faces.values())) == 6, faces
+        assert page.js("document.fonts.check('16px VT323') && document.fonts.check('10px PressStart2P')"), "the pixel faces did not load"
+        page.js("(() => { const s = document.querySelector('#font'); s.value = 'mono'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        sizes = [page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)")]
+        page.click("#font-smaller"); page.wait("document.documentElement.dataset.size === 's'", "smaller text")
+        assert page.js("document.querySelector('#font-smaller').disabled"), "there is nothing smaller than small"
+        sizes.insert(0, page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)"))
+        for size in ["m", "l", "xl"]:
+            page.click("#font-larger"); page.wait(f"document.documentElement.dataset.size === '{size}'", f"size {size}")
+            if size != "m":
+                sizes.append(page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)"))
+        assert sizes == sorted(sizes) and len(set(sizes)) == 4 and page.js("document.querySelector('#font-larger').disabled"), sizes
+        assert page.js("document.documentElement.scrollWidth <= innerWidth"), "the largest text makes the page scroll sideways"
         page.shot(f"{shots}/2b-light-stacked-turkish.png")
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'ko'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         page.click("#nav-knowledge")
         page.wait("!!document.querySelector('#kb-note')", "the knowledge view")
         prefs = json.loads(page.js("localStorage.getItem('cwbcode-prefs')"))
         assert (prefs["theme"], prefs["layout"], prefs["lang"], prefs["view"]) == ("light", "vertical", "ko", "knowledge") and prefs["project"].endswith("/proj"), prefs
+        assert (prefs["font"], prefs["size"]) == ("mono", "xl"), prefs
         page.send("Page.navigate", url=url)
         page.wait("!!document.querySelector('#kb-note') && document.querySelector('.app').classList.contains('vertical')", "the same view and layout after a refresh")
         assert page.js("document.documentElement.dataset.theme") == "light" and page.text("#nav-chat") == "채팅"
+        assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("mono", "xl"), "the typeface and size were not kept"
+        page.js("(() => { const s = document.querySelector('#font'); s.value = 'pixel'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        page.click("#font-smaller"); page.click("#font-smaller")
+        page.wait("document.documentElement.dataset.size === 'm' && document.documentElement.dataset.font === 'pixel'", "the usual typeface and size")
         page.wait("document.querySelector('.row.project.on')?.innerText.includes('proj')", "the same project after a refresh")
-        page.wait("getComputedStyle(document.body).color === 'rgb(19, 23, 34)'", "the light theme's colours after a refresh")
+        page.wait("getComputedStyle(document.body).color === 'rgb(20, 28, 72)'", "the light theme's colours after a refresh")
         # Back to English, dark, side by side for the rest.
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         page.click("#theme-toggle"); page.wait("document.documentElement.dataset.theme === 'dark'", "the dark theme")

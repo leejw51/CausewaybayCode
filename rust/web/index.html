@@ -6,6 +6,13 @@
   <title>CC · Causewaybay Code</title>
   <link data-trunk rel="css" href="style.css">
   <link data-trunk rel="copy-file" href="assets/motion.min.js">
+  <!-- The typefaces and the pixel art, vendored too. -->
+  <link data-trunk rel="copy-dir" href="assets/fonts">
+  <link data-trunk rel="copy-dir" href="assets/art">
+  <!-- three.js (vendored) and the skyline it draws behind the page. -->
+  <link data-trunk rel="copy-dir" href="assets/three">
+  <link data-trunk rel="copy-file" href="assets/backdrop.js">
+  <script type="module" src="/backdrop.js"></script>
   <link data-trunk rel="rust" data-wasm-opt="z">
   <!-- Motion (motion.dev), vendored: the page works without the internet. -->
   <script src="/motion.min.js"></script>
