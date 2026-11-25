@@ -285,6 +285,21 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
     assert_eq!(listed.len(), 2);
     assert_eq!(listed.iter().find(|p| p.name == "proj").unwrap().sessions, 1);
+    // Clients are told the home folder, to show paths under it as ~/...
+    let told = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().user_home;
+    assert_eq!(std::fs::canonicalize(&told).unwrap(), std::fs::canonicalize(&server.home).unwrap());
+    // A project is taken off the list and nothing else: its folder, its files and its own
+    // records stay, and opening it again brings it back with its conversations.
+    client.call(&Request::new(Method::RemoveProject).project("~/proj")).await.unwrap();
+    let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
+    assert!(listed.iter().all(|p| p.name != "proj"), "{listed:?}");
+    assert!(server.home.join("proj/.cwbcode/cwbcode.db").exists(), "removing a project from the list deleted its records");
+    for outside in ["/etc", "~/.ssh", "~/proj/../../escaped"] {
+        assert!(client.call(&Request::new(Method::RemoveProject).project(outside)).await.is_err(), "{outside}");
+    }
+    client.call(&Request::new(Method::OpenProject).text("~/proj")).await.unwrap();
+    let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
+    assert_eq!(listed.iter().find(|p| p.name == "proj").unwrap().sessions, 1, "its conversation did not come back");
     client.call(&Request::new(Method::NameSession).project(&server.project()).session(session).name("greeting")).await.unwrap();
     let sessions = client.call(&Request::new(Method::Sessions).project(&server.project())).await.unwrap().sessions;
     assert_eq!((sessions[0].id, sessions[0].name.as_str(), sessions[0].first.as_str()), (session, "greeting", "hello there"));

@@ -398,8 +398,8 @@ async fn command(session: &Session, state: &mut State, line: &str) -> Result<Flo
         },
         "/mode" => {
             if !rest.is_empty() {
-                if !["ask", "auto", "read-only"].contains(&rest) {
-                    bail!("usage: /mode ask|auto|read-only");
+                if !["ask", "auto", "read-only", "plan"].contains(&rest) {
+                    bail!("usage: /mode ask|auto|read-only|plan");
                 }
                 state.mode = rest.to_string();
             }

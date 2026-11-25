@@ -273,6 +273,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 fingerprint: known.fingerprint.clone(),
                 bind: known.bind.clone(),
                 wallet_source: known.wallet_source.clone(),
+                user_home: shared.roots.home().display().to_string(),
             });
         }
         Method::Projects => {
@@ -285,6 +286,12 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                     global.forget_project(&path)?;
                 }
             }
+        }
+        Method::RemoveProject => {
+            // Off the list only: the folder, its files and its own records are not touched,
+            // and opening it again brings it back with its conversations.
+            let path = shared.roots.resolve(&request.project)?;
+            Store::open(&shared.config.home)?.forget_project(&path.to_string_lossy())?;
         }
         Method::OpenProject => {
             // A folder that does not exist yet is made (with those above it).
@@ -385,6 +392,24 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
     Ok(out)
 }
 
+/// How long a browser may keep a file of the web client. Only a file whose own name carries
+/// a hash of its contents never changes; the page, and the scripts beside it whose folder is
+/// named after the crate and not after what they hold (`snippets/`), must be asked for again
+/// each time, or a browser pairs a new program with an old script and draws nothing. Fonts
+/// and pictures change rarely: a day.
+fn cache_rule(name: &str) -> &'static str {
+    let file = name.rsplit('/').next().unwrap_or(name);
+    let stem = file.split('.').next().unwrap_or("").trim_end_matches("_bg");
+    let hashed = stem.rsplit('-').next().is_some_and(|tail| tail.len() == 16 && tail.chars().all(|c| c.is_ascii_hexdigit())) && !name.contains('/');
+    if hashed {
+        "public, max-age=31536000, immutable"
+    } else if name.starts_with("fonts/") || name.starts_with("art/") {
+        "public, max-age=86400"
+    } else {
+        "no-cache"
+    }
+}
+
 /// The web client: its files are built into the program. Any other path is the app itself.
 async fn web(uri: axum::http::Uri) -> HttpResponse {
     let path = uri.path().trim_start_matches('/');
@@ -395,8 +420,7 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
     match file.context("the web client was not built into this binary (run `make build`)") {
         Ok(file) => {
             let mime = mime_guess::from_path(name).first_or_octet_stream();
-            // The app's files carry a hash in their names; only the page itself must be fresh.
-            let cache = if name == "index.html" { "no-cache" } else { "public, max-age=31536000, immutable" };
+            let cache = cache_rule(name);
             (
                 [
                     (header::CONTENT_TYPE, mime.as_ref().to_string()),
@@ -411,5 +435,21 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
                 .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_rule;
+
+    #[test]
+    fn only_files_named_after_their_contents_are_kept_for_good() {
+        for kept in ["cwbcode-web-ad37c27284e67636.js", "cwbcode-web-ad37c27284e67636_bg.wasm", "style-accd60e5fcb47ea7.css"] {
+            assert!(cache_rule(kept).contains("immutable"), "{kept}");
+        }
+        for fresh in ["index.html", "snippets/cwbcode-web-e67fe8b22f4b6772/inline0.js", "motion.min.js", "style.css"] {
+            assert_eq!(cache_rule(fresh), "no-cache", "{fresh}");
+        }
+        assert_eq!(cache_rule("fonts/VT323-Regular.ttf"), "public, max-age=86400");
     }
 }

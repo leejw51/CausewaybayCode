@@ -170,31 +170,72 @@ phrase.
 - **Chat**: open any folder under `~` (one that does not exist is created, with the folders
   above it), talk to the agent, watch its thinking and tool calls,
   approve edits and commands with a click, attach images, undo a turn's changes, switch
-  between `ask first`, `auto` and `read-only`.
+  between `ask first`, `auto`, `read-only` and `plan first`.
 - **Knowledge**: the project's knowledge base: search, save notes, upload files.
 - **Tools**: the tools the agent has made, with their Rust source.
 
-The look follows its sibling Causewaybay Hacker's playground: dense and dark, thin rounded
-panels that reach the edges, pill buttons, a pixel typeface, and behind it all a pixel
-skyline with stars that three.js draws and lets drift (a day sky for the light theme; a
-plain ground where there is no WebGL). A button at the top left of the view folds the
-sidebar away, so the work has the whole window.
+The look follows its sibling Causewaybay Hacker's playground: dense, dark and rounded, with
+no picture behind it. A bar across the top holds the views, the backend's state and the
+settings; a sidebar holds the projects and the conversations and folds away (the button at
+the left of the bar), so the work has the whole window; panels reach the edges.
 
-The controls beside the name: **light / dark**, **side by side / stacked** (the sidebar
-becomes a header), the **typeface** (thirty, from Causewaybay Hacker's font pack: pixel
-faces such as VT323, NeoDunggeunmo, Galmuri, IBM VGA, Apple II and Amiga Topaz; code faces
-such as JetBrains Mono, Iosevka, IBM Plex Mono and Victor Mono; text faces such as Atkinson
-Hyperlegible, Geist, DM Sans, Lora and Noto Sans CJK; or the system's own), the **size**
-(A- and A+, four steps), and the **language**: English, 한국어, Čeština, 日本語, 廣東話,
-中文, Español, Türkçe (the interface; what the backend and the model say arrives as it is).
+- **Projects** live under the home folder: the field says `~/` and takes what is typed as a
+  path under it. Paths are shown with `~`, never with the account's name. The × on a
+  project takes it off the list and nothing else: its folder, files and records stay, and
+  opening it again brings its conversations back.
+- **A conversation** has a bar showing how full its context is (the backend summarizes by
+  itself when it fills; near the end the page says so and offers a new conversation), **Copy
+  all** (what was asked, answered and run, as text), **Undo changes** and **Summarize**, and
+  beside it an outline: one bar for each thing said or done, which a tap goes to.
+- **Settings** (the gear): light / dark, side by side / stacked (the sidebar becomes a
+  strip), the **typeface** (fifty-four, from the font packs of Causewaybay Hacker and
+  FruitNation Messenger: pixel faces such as VT323, NeoDunggeunmo, Galmuri, IBM VGA and
+  Commodore 64; code faces such as JetBrains Mono, Fira Code, Cascadia Code and Iosevka; text
+  faces such as Atkinson Hyperlegible, Geist, Nanum Gothic and Noto Sans CJK; or the
+  system's own), the **size** (A- and A+, four steps), and the **language**: English,
+  한국어, Čeština, 日本語, 廣東話, 中文, Español, Türkçe (the interface; what the backend
+  and the model say arrives as it is).
+
 These, and where you are (view, project, conversation), are kept in the browser, so a
-refresh comes back to the same place. The typefaces, the pictures and three.js are in the program:
+refresh comes back to the same place. The typefaces and the pictures are in the program:
 the page loads nothing from the internet.
 
 Movement is Motion's: what travels (a view arriving, a card appearing, a number changing)
 eases in and out exponentially; what answers a touch (a pressed button, the selection
 sliding to the chosen view) follows a spring, as on iOS. It is switched off for "reduce
 motion".
+
+## Plan first, your own commands, hooks
+
+**Plan first.** In the `plan` mode (the web client's mode menu, `/mode plan` in the terminal)
+the agent may read and search but not write or run: it looks into the request and answers
+with a numbered plan. Switch the mode to have it carried out.
+
+**Your own commands.** A message `/name the rest` is sent as the text of `commands/name.md`,
+looked for in the project's `.cwbcode` folder and then in `~/.cwbcode`. `$ARGUMENTS` in the
+text stands for the rest of the message. For example `~/.cwbcode/commands/review.md`:
+
+```
+Review $ARGUMENTS for bugs and risky edge cases. List them, most serious first.
+```
+
+and then `/review src/fetch.rs`, in the web client or the terminal.
+
+**Hooks.** Commands of yours that run around the agent's tool calls, in `~/.cwbcode/hooks.json`:
+
+```json
+{"before": [{"tool": "bash", "run": "if grep -q 'git push'; then echo 'no pushing from here'; exit 1; fi"}],
+ "after":  [{"tool": "edit_file|write_file", "run": "cargo fmt 2>&1 | tail -5"}]}
+```
+
+`tool` is a tool's name, several joined with `|`, or `*`. A hook gets the call as JSON on its
+input (`{"tool", "args"}`, and `"output"` afterwards) and runs as the agent's own commands
+do: in the project, in the sandbox, for at most a minute. A `before` hook that fails refuses
+the call, and what it printed is the reason the model is given. What an `after` hook prints
+is added to the tool's result, so a formatter's or a linter's words reach the model; what it
+changes in the project is versioned and undone like an edit.
+
+The agent can neither read nor write these files: `.cwbcode` folders are closed to it.
 
 ## Where everything is kept
 
@@ -316,7 +357,8 @@ make test         # unit tests, and the backend started for real with a scripted
                   # HTTP/3 and the HTTP/2 fallback, local mode, wallet sign-in, token,
                   # requests from other sites' pages, certificate pinning, folders
                   # outside home, approvals (answered, abandoned, interrupted), the event
-                  # log, file versions and undo, the knowledge base, tools made at runtime
+                  # log, file versions and undo, the knowledge base, tools made at runtime,
+                  # plan mode, hooks, the user's own commands, taking a project off the list
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
                   # wrong ones refused), the remembered phrase, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
@@ -326,6 +368,9 @@ make test-web     # the web client in headless Chrome: sign-in with a recovery p
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own
                   # tests and pass tests it has never seen (needs Node and Google Chrome)
+                  # and, in a second test, the web client's own features: projects under
+                  # ~/, the conversation's typeface, the context bar, copying, plan mode,
+                  # your own commands and hooks
 make test-model   # semantic search with the model: paraphrases, Korean against English
 make e2e          # real tasks with the real model through the backend and the client
 ```
@@ -344,6 +389,9 @@ make e2e          # real tasks with the real model through the backend and the c
 - PDFs and other non-text files are stored but not read: they are found by their title.
 - Saving a large text takes time: each chunk is a pass of the model (a 66 KB file took 20 s).
 - No web access, by design.
+- Of what Claude Code has, these are not here: web search and fetch (see above), sub-agents
+  (there is one model and one conversation in memory at a time), MCP servers, and
+  background tasks.
 
 ## License
 

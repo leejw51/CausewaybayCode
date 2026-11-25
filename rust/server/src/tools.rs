@@ -11,7 +11,7 @@ use crate::dyntool;
 use crate::kb;
 use crate::llm::Engine;
 use crate::prompt::{Call, ImageRef, ToolSpec};
-use crate::sandbox::{Action, Policy, run};
+use crate::sandbox::{Action, Output, Policy, run};
 use crate::store::Store;
 
 /// Most characters of a tool's result given to the model.
@@ -161,10 +161,94 @@ pub fn execute(ctx: &mut Ctx, call: &Call) -> ToolOutput {
     if let Some(error) = &call.error {
         return ToolOutput { text: format!("Error: {error}"), images: vec![], ok: false };
     }
+    let hooks = Hooks::load(&ctx.policy.home);
+    if let Some(refusal) = hooks.before(ctx, call) {
+        return ToolOutput { text: clip(&format!("Error: a hook the user set up refused this {}: {refusal}", call.name), MAX_RESULT_CHARS), images: vec![], ok: false };
+    }
     let mut images = Vec::new();
     match dispatch(ctx, call, &mut images) {
-        Ok(text) => ToolOutput { text: clip(&text, MAX_RESULT_CHARS), images, ok: true },
+        Ok(text) => {
+            let said = hooks.after(ctx, call, &text);
+            ToolOutput { text: clip(&format!("{text}{said}"), MAX_RESULT_CHARS), images, ok: true }
+        }
         Err(e) => ToolOutput { text: clip(&format!("Error: {e:#}"), MAX_RESULT_CHARS), images: vec![], ok: false },
+    }
+}
+
+/// Commands of the user's that run around the agent's tool calls, from `hooks.json` in the
+/// server's folder:
+///
+/// ```json
+/// {"before": [{"tool": "bash", "run": "grep -q 'rm -rf' && exit 1 || exit 0"}],
+///  "after":  [{"tool": "edit_file|write_file", "run": "cargo fmt 2>&1 | tail -5"}]}
+/// ```
+///
+/// `tool` is a name, several joined with `|`, or `*`. A hook is given the call as JSON on its
+/// input (`{"tool", "args"}`, and `"output"` afterwards) and runs as the agent's commands do:
+/// in the workspace, in the sandbox. A `before` hook that fails refuses the call, and what it
+/// printed is the reason the model is given; what an `after` hook prints is added to the
+/// tool's result (a formatter's or a linter's words reach the model that way). The agent
+/// cannot read or write the file: it is among the server's own records.
+#[derive(Default)]
+struct Hooks {
+    before: Vec<(String, String)>,
+    after: Vec<(String, String)>,
+}
+
+impl Hooks {
+    fn load(home: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(home.join("hooks.json")) else { return Self::default() };
+        let json: Value = serde_json::from_str(&text).unwrap_or_default();
+        let list = |key: &str| {
+            json[key].as_array().into_iter().flatten().filter_map(|h| Some((h["tool"].as_str().unwrap_or("*").to_string(), h["run"].as_str()?.to_string()))).collect()
+        };
+        Self { before: list("before"), after: list("after") }
+    }
+
+    fn matching<'a>(hooks: &'a [(String, String)], tool: &'a str) -> impl Iterator<Item = &'a str> {
+        hooks.iter().filter(move |(pattern, _)| pattern == "*" || pattern.split('|').any(|name| name.trim() == tool)).map(|(_, run)| run.as_str())
+    }
+
+    fn run(ctx: &mut Ctx, command: &str, input: &Value) -> Option<Output> {
+        run(ctx.policy.command(Path::new("/bin/zsh"), &["-c", command]), Some(input.to_string().as_bytes()), Duration::from_secs(60), ctx.stop).ok()
+    }
+
+    /// The reason a `before` hook refuses the call, if one does.
+    fn before(&self, ctx: &mut Ctx, call: &Call) -> Option<String> {
+        let input = json!({"tool": call.name, "args": call.args});
+        for command in Self::matching(&self.before, &call.name) {
+            match Self::run(ctx, command, &input) {
+                Some(out) if out.status == Some(0) => {}
+                Some(out) => {
+                    let said = format!("{}{}", out.stdout, out.stderr);
+                    return Some(if said.trim().is_empty() { "it gave no reason".to_string() } else { clip(said.trim(), 2000) });
+                }
+                None => return Some("the hook could not be run".to_string()),
+            }
+        }
+        None
+    }
+
+    /// What the `after` hooks printed, to add to the tool's result ("" when nothing).
+    fn after(&self, ctx: &mut Ctx, call: &Call, output: &str) -> String {
+        let mut said = String::new();
+        let commands: Vec<&str> = Self::matching(&self.after, &call.name).collect();
+        if commands.is_empty() || matches!(ctx.policy.mode, crate::sandbox::Mode::ReadOnly | crate::sandbox::Mode::Plan) {
+            return said;
+        }
+        let input = json!({"tool": call.name, "args": call.args, "output": output});
+        // What a hook does to the project's files (a formatter, say) is versioned like an edit.
+        let before = snapshot(ctx.policy);
+        for command in commands {
+            if let Some(out) = Self::run(ctx, command, &input) {
+                let text = format!("{}{}", out.stdout, out.stderr);
+                if !text.trim().is_empty() {
+                    said.push_str(&format!("\n[hook] {}", clip(text.trim(), 2000)));
+                }
+            }
+        }
+        let _ = record_command_changes(ctx, before);
+        said
     }
 }
 
@@ -952,6 +1036,40 @@ mod tests {
         }
         assert!(!p.workspace.join("a.txt").exists());
         assert!(call(&mut p, &s, "list_dir", json!({})).ok);
+        // Plan mode refuses the same, and says what to do instead.
+        p.mode = crate::sandbox::Mode::Plan;
+        for (tool, args) in [("write_file", json!({"path": "a.txt", "content": "x"})), ("bash", json!({"command": "echo hi > a.txt"}))] {
+            let out = call(&mut p, &s, tool, args);
+            assert!(!out.ok && out.text.contains("plan mode") && out.text.contains("Present the plan"), "{tool}: {}", out.text);
+        }
+        assert!(!p.workspace.join("a.txt").exists() && call(&mut p, &s, "list_dir", json!({})).ok);
+        assert_eq!((crate::sandbox::Mode::parse("plan"), crate::sandbox::Mode::Plan.label()), (Some(crate::sandbox::Mode::Plan), "plan"));
+    }
+
+    #[test]
+    fn the_users_hooks_run_around_tool_calls() {
+        let (mut p, s) = workspace("hooks");
+        p.mode = crate::sandbox::Mode::Auto;
+        std::fs::create_dir_all(&p.home).unwrap();
+        std::fs::write(p.home.join("hooks.json"), r#"{
+            "before": [{"tool": "bash", "run": "if grep -q forbidden; then echo 'that word is not allowed here'; exit 1; fi"}],
+            "after": [{"tool": "write_file|edit_file", "run": "echo checked by the hook; echo seen > hook-ran.txt"}, {"tool": "list_dir", "run": "true"}]
+        }"#).unwrap();
+        // A before hook that fails refuses the call, with what it said; one that passes does not.
+        let refused = call(&mut p, &s, "bash", json!({"command": "echo forbidden"}));
+        assert!(!refused.ok && refused.text.contains("a hook the user set up refused this bash: that word is not allowed here"), "{}", refused.text);
+        let allowed = call(&mut p, &s, "bash", json!({"command": "echo fine"}));
+        assert!(allowed.ok && allowed.text.trim() == "fine", "{}", allowed.text);
+        // An after hook's words are added to the result, and it ran in the workspace.
+        let wrote = call(&mut p, &s, "write_file", json!({"path": "a.txt", "content": "x\n"}));
+        assert!(wrote.ok && wrote.text.ends_with("[hook] checked by the hook"), "{}", wrote.text);
+        assert_eq!(std::fs::read_to_string(p.workspace.join("hook-ran.txt")).unwrap(), "seen\n");
+        // A hook that says nothing adds nothing; a tool no hook names is left alone.
+        assert!(!call(&mut p, &s, "list_dir", json!({})).text.contains("[hook]"));
+        assert!(!call(&mut p, &s, "read_file", json!({"path": "a.txt"})).text.contains("[hook]"));
+        // Without the file there are no hooks.
+        std::fs::remove_file(p.home.join("hooks.json")).unwrap();
+        assert!(call(&mut p, &s, "bash", json!({"command": "echo forbidden"})).ok);
     }
 
     #[test]

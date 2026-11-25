@@ -1,0 +1,209 @@
+Fonts shipped with FruitNation Messenger for the font picker (Settings >
+Font and the header's quick picker), and where they come from. Unless a
+note says otherwise each file is unmodified from the release named, and
+ships with its licence text beside it. The set gathers the font packs of
+Causewaybay Hacker, Causewaybay Book, Causewaybay Wisdom and openclaw.
+
+---- Hangul pixel ------------------------------------------------------------
+
+Galmuri11.woff2            Galmuri11 and GalmuriMono11 v2.40.4, Lee Minseo (quiple),
+GalmuriMono11.woff2        https://github.com/quiple/galmuri    SIL OFL 1.1   Galmuri-OFL.txt
+neodgm.woff2               Neo둥근모 (NeoDunggeunmo) v1.601,
+neodgm_code.woff2          Neo둥근모 Code, Eunbin Jeong (Dalgona),
+                           https://github.com/neodgm/neodgm     SIL OFL 1.1   neodgm-OFL.txt
+unifont.woff2              GNU Unifont, Roman Czyborra, Paul Hardy et al.,
+                           https://unifoundry.com/unifont/
+                           Dual-licensed: SIL OFL 1.1, or GNU GPL 2+ with the
+                           Font Embedding Exception               unifont-LICENSE.txt
+                           Converted from the release .otf (5.3 MB) to WOFF2
+                           (0.9 MB) with fontTools; otherwise unmodified. Covers
+                           every Hangul syllable and CJK. Fetched only when chosen.
+
+---- Korean reading ----------------------------------------------------------
+
+NanumGothic-Regular.woff2  나눔고딕 NanumGothic, Regular, Bold and ExtraBold,
+NanumGothic-Bold.woff2     NHN Corporation (Naver), designed by Sandoll Communications
+NanumGothic-ExtraBold.woff2                                     NanumGothic-OFL.txt
+NanumMyeongjo-Regular.woff2
+NanumMyeongjo-Bold.woff2   나눔명조 NanumMyeongjo, Regular, Bold and ExtraBold,
+NanumMyeongjo-ExtraBold.woff2  NHN Corporation (Naver), designed by Fontrix
+                                                                NanumMyeongjo-OFL.txt
+                           From https://github.com/google/fonts (commit
+                           cc5661d43cd4f9aad5567033a8e15ca28dc35c86, ofl/nanumgothic/
+                           and ofl/nanummyeongjo/). SIL OFL 1.1 with Reserved Font
+                           Names, so the files are not subset or otherwise changed:
+                           only converted from .ttf to WOFF2 with fontTools. Each
+                           has all 11,172 Hangul syllables and no Hanja. Fetched
+                           only when chosen.
+
+---- Fun ---------------------------------------------------------------------
+
+From the Google Fonts repository, https://github.com/google/fonts (commit
+cc5661d43cd4f9aad5567033a8e15ca28dc35c86, ofl/<family>/). All SIL OFL 1.1,
+no Reserved Font Names. Modified with fontTools (#546): the weight axis cut
+to the range shown (Fredoka's width axis pinned at 100), subset to the
+characters listed, hinting dropped, converted from .ttf to WOFF2; outlines
+otherwise unmodified.
+
+nunito-rounded-latin.woff2 Nunito (variable, weights 400-900), Vernon Adams, Cyreal,
+                           Jacques Le Bailly, https://github.com/googlefonts/nunito
+                           Latin and Latin Extended              Nunito-OFL.txt
+fredoka-latin.woff2        Fredoka (variable, weights 300-700), Milena Brandão, Hafontia,
+                           https://github.com/hafontia/Fredoka-One
+                           Latin and Latin Extended              Fredoka-OFL.txt
+baloo2-latin.woff2         Baloo 2 (variable, weights 400-800), Ek Type,
+                           https://github.com/EkType/Baloo2
+                           Latin and Latin Extended              Baloo2-OFL.txt
+Jua-Regular.woff2          주아 Jua (BM JUA), Woowahan Brothers,
+                           https://github.com/googlefonts/jua    Jua-OFL.txt
+Gaegu-Regular.woff2        개구 Gaegu, regular and bold, JIKJI SOFT
+Gaegu-Bold.woff2                                                 Gaegu-OFL.txt
+DoHyeon-Regular.woff2      도현 Do Hyeon (BM DOHYEON), Woowahan Brothers,
+                           https://github.com/googlefonts/dohyeon  DoHyeon-OFL.txt
+                           The three Hangul faces keep every Hangul syllable they
+                           have (2,350-2,437 each, the common KS X 1001 set; rarer
+                           syllables fall back to the device's Korean font), the
+                           jamo, ASCII, Latin-1 and the usual punctuation and
+                           symbols. Fetched only when chosen.
+
+---- Retro computers ---------------------------------------------------------
+
+MSX1-Code.woff2            MSX1 Korean v0.0.1 (pre-alpha), Noah Burney,
+                           https://github.com/nwah/korean-msx-font   SIL OFL 1.1   MSX1Korean-OFL.txt
+                           Subset to Latin and punctuation, and its vertical metrics set to
+                           the glyphs' own extent (the original's line box is two ems).
+PRNumber3.ttf              PR Number 3 (Apple II 80-column text), Kreative Korporation /
+                           Kreative Software, https://kreativekorp.com/software/fonts/apple2/
+                           Kreative Software Relay Fonts Free Use License 1.2f
+                                                                Kreative-FreeLicense.txt
+                           Shipped byte-for-byte as downloaded; the licence forbids changes.
+TopazUnicode.woff2         Topaz Unicode KS13 (Amiga 500 Topaz), Screwtape,
+                           https://gitlab.com/Screwtapello/topaz-unicode   ISC   TopazUnicode-ISC.txt
+                           Converted from the release .ttf to WOFF2; otherwise unmodified.
+IBM-VGA-8x16.woff          "Web437 IBM VGA 8x16" from The Ultimate Oldschool PC
+                           Font Pack v2.2 by VileR, https://int10h.org/oldschool-pc-fonts/
+                           CC BY-SA 4.0                         OldschoolPC-CC-BY-SA-4.0.txt
+                           Renamed from Web437_IBM_VGA_8x16.woff; otherwise unmodified.
+PetMe64.ttf                Pet Me 64 (Commodore 64 text), Kreative Korporation /
+                           Kreative Software, https://kreativekorp.com/software/fonts/c64/
+                           Kreative Software Relay Fonts Free Use License 1.2f
+                                                                Kreative-FreeLicense.txt
+                           Shipped byte-for-byte from petme.zip; the licence forbids changes.
+IBM-EGA-8x14.woff          "Web437 IBM EGA 8x14", "Web437 IBM CGA", "Web437 IBM MDA",
+IBM-CGA.woff               "Web437 Tandy1K-II 200L", "Web437 Amstrad PC" and
+IBM-MDA.woff               "Web437 IBM 3270pc" from The Ultimate Oldschool PC Font
+Tandy1000-200L.woff        Pack v2.2 by VileR, https://int10h.org/oldschool-pc-fonts/
+Amstrad-PC.woff            CC BY-SA 4.0                         OldschoolPC-CC-BY-SA-4.0.txt
+IBM-3270pc.woff            Renamed from Web437_<name>.woff; otherwise unmodified.
+PressStart2P-Regular.woff2 Press Start 2P, CodeMan38            SIL OFL 1.1   PressStart2P-OFL.txt
+VT323-Regular.woff2        VT323, Peter Hull                    SIL OFL 1.1   VT323-OFL.txt
+                           Both converted from the release .ttf to WOFF2 with
+                           fontTools; otherwise unmodified.
+
+---- Coding ------------------------------------------------------------------
+
+cousine-700-latin.woff2    Cousine Bold, The Cousine Project Authors (metric-compatible
+cousine-700-latin-ext.woff2  with Courier New), https://github.com/googlefonts/cousine
+                           SIL OFL 1.1                          cousine-OFL.txt
+                           The "Courier New Bold" choice uses the device's own
+                           Courier New Bold (a proprietary Monotype face, not
+                           shipped) where installed, and these files elsewhere.
+Iosevka-Code.woff2         Iosevka (subset), Belleve Invis      SIL OFL 1.1   Iosevka-OFL.txt
+ibm-plex-mono-400-latin.woff2
+ibm-plex-mono-400-latin-ext.woff2
+ibm-plex-mono-600-latin.woff2
+ibm-plex-mono-600-latin-ext.woff2
+                           IBM Plex Mono, IBM, https://github.com/IBM/plex
+                           Latin and Latin Extended subsets      SIL OFL 1.1   OFL-ibm-plex-mono.txt
+FantasqueSansMono-Regular.woff2
+                           Fantasque Sans Mono v1.8.0, Jany Belluz,
+                           https://github.com/belluzj/fantasque-sans  SIL OFL 1.1  FantasqueSansMono-OFL.txt
+VictorMono-Regular.woff2   Victor Mono v1.5.6, Rune Bjørnerås,
+VictorMono-Italic.woff2    https://github.com/rubjo/victor-mono  SIL OFL 1.1   VictorMono-OFL.txt
+MonaspaceRadon-Regular.woff2
+                           Monaspace Radon v1.400, GitHub Next,
+                           https://github.com/githubnext/monaspace  SIL OFL 1.1   Monaspace-OFL.txt
+                           Converted from the release .otf to WOFF2; otherwise unmodified.
+ComicMono.ttf              Comic Mono, dtinth (from Comic Shanns by Shannon Miwa),
+                           https://github.com/dtinth/comic-mono-font  MIT  ComicMono-MIT.txt
+
+Self-hosted Google Fonts builds (@fontsource), unmodified: a Latin and a
+Latin Extended subset each, regular weight.
+
+fira-code-latin.woff2      Fira Code, Nikita Prokopov           fira-code-OFL.txt
+fira-code-latin-ext.woff2
+source-code-pro-latin.woff2
+source-code-pro-latin-ext.woff2
+                           Source Code Pro, Adobe               source-code-pro-OFL.txt
+cascadia-code-latin.woff2  Cascadia Code, Microsoft             cascadia-code-OFL.txt
+cascadia-code-latin-ext.woff2
+inconsolata-latin.woff2    Inconsolata, Raph Levien             inconsolata-OFL.txt
+inconsolata-latin-ext.woff2
+roboto-mono-latin.woff2    Roboto Mono, Christian Robertson     roboto-mono-OFL.txt
+roboto-mono-latin-ext.woff2
+space-mono-latin.woff2     Space Mono, Colophon Foundry         space-mono-OFL.txt
+space-mono-latin-ext.woff2
+                           All SIL OFL 1.1.
+ubuntu-mono-latin.woff2    Ubuntu Mono, Dalton Maag / Canonical
+ubuntu-mono-latin-ext.woff2  Ubuntu Font Licence 1.0            ubuntu-mono-LICENCE.txt
+hack-regular-subset.woff2  Hack v3.003 (web subset), Source Foundry,
+                           https://github.com/source-foundry/Hack
+                           MIT, with the Bitstream Vera licence for the
+                           DejaVu/Vera glyphs                   Hack-LICENSE.txt
+
+---- Reading -----------------------------------------------------------------
+
+Each family below is a self-hosted Google Fonts build, unmodified: a Latin
+and a Latin Extended subset (the upstream unicode ranges), with italics
+where the family has them. All are SIL Open Font License 1.1.
+
+NunitoSans-Latin.woff2     Nunito Sans (variable weight), The Nunito Sans Project Authors,
+                           https://github.com/Fonthausen/NunitoSans   NunitoSans-LICENSE.txt
+atkinson-hyperlegible-next-latin.woff2
+atkinson-hyperlegible-next-latin-ext.woff2
+atkinson-hyperlegible-next-italic-latin.woff2
+atkinson-hyperlegible-next-italic-latin-ext.woff2
+                           Atkinson Hyperlegible Next, Braille Institute of America
+                                                                atkinson-hyperlegible-next-OFL.txt
+dm-sans-latin.woff2        DM Sans, Colophon Foundry / Indian Type Foundry
+dm-sans-latin-ext.woff2                                         dm-sans-OFL.txt
+dm-sans-italic-latin.woff2
+dm-sans-italic-latin-ext.woff2
+geist-latin.woff2          Geist, Vercel                        geist-OFL.txt
+geist-latin-ext.woff2
+ibm-plex-sans-latin.woff2  IBM Plex Sans, IBM                   ibm-plex-sans-OFL.txt
+ibm-plex-sans-latin-ext.woff2
+ibm-plex-sans-italic-latin.woff2
+ibm-plex-sans-italic-latin-ext.woff2
+instrument-sans-latin.woff2
+instrument-sans-latin-ext.woff2
+instrument-sans-italic-latin.woff2
+instrument-sans-italic-latin-ext.woff2
+                           Instrument Sans, Rodrigo Fuenzalida / Jordan Egstad
+                                                                instrument-sans-OFL.txt
+space-grotesk-var-latin.woff2
+space-grotesk-var-latin-ext.woff2
+                           Space Grotesk (variable weight), Florian Karsten
+                                                                OFL-space-grotesk.txt
+lora-latin.woff2           Lora, Cyreal                         lora-OFL.txt
+lora-latin-ext.woff2
+lora-italic-latin.woff2
+lora-italic-latin-ext.woff2
+newsreader-var-latin.woff2
+newsreader-var-latin-ext.woff2
+newsreader-var-italic-latin.woff2
+newsreader-var-italic-latin-ext.woff2
+                           Newsreader (variable weight), Production Type
+                                                                OFL-newsreader.txt
+fraunces-latin.woff2       Fraunces, Undercase Type             fraunces-OFL.txt
+fraunces-latin-ext.woff2
+fraunces-italic-latin.woff2
+fraunces-italic-latin-ext.woff2
+
+---- Not shipped -------------------------------------------------------------
+
+Causewaybay Hacker's JetBrainsMono-Code.woff2 (a 229-glyph subset of
+JetBrains Mono, SIL OFL 1.1): the "JetBrains Mono" choice uses the full face
+the app already bundles for code (the @fontsource/jetbrains-mono npm
+package, SIL OFL 1.1). "Default" is Inter (@fontsource/inter, SIL OFL 1.1)
+and "System" is the device's own interface font.

@@ -347,7 +347,9 @@ impl Worker {
 
         let for_ui = sink.clone();
         let mut ui = Ui::new(move |what| for_ui.borrow_mut().handle(what));
-        let result = agent.send(&request.text, images, &mut ui);
+        // A command of the user's own (`/name ...`) is sent as the text its file holds.
+        let text = expand_command(&project, &shared.config.home, &request.text);
+        let result = agent.send(&text, images, &mut ui);
         agent.policy.asker = None;
         drop(ui);
         let tokens = agent.tokens();
@@ -399,7 +401,8 @@ impl Worker {
                 let agent = self.agent(&project, request.session, "", "")?;
                 let before = agent.messages.len();
                 agent.compact(&mut Ui::muted())?;
-                Ok(Response::text(format!("{before} messages were replaced by a summary. The full transcript is kept in the log.")))
+                let were = if before == 1 { "1 message was".to_string() } else { format!("{before} messages were") };
+                Ok(Response::text(format!("{were} replaced by a summary. The full transcript is kept in the log.")))
             }
             Method::Undo => {
                 let store = Store::open_project_existing(&project)?.with_context(|| format!("this project has no conversation #{}", request.session))?;
@@ -474,5 +477,51 @@ fn hit_of(hit: &kb::Hit) -> Hit {
         bm25_rank: hit.bm25_rank.unwrap_or(0) as u32,
         semantic_rank: hit.semantic_rank.unwrap_or(0) as u32,
         score: hit.score,
+    }
+}
+/// The user's own commands: a message `/name the rest` is replaced by the text of
+/// `commands/name.md`, looked for in the project's `.cwbcode` folder and then in the
+/// server's. `$ARGUMENTS` in the text stands for the rest of the message (which is added
+/// at the end where the text does not name it). A message that names no such file is sent
+/// as it is. The agent cannot write these files: they are among cwbcode's own records.
+pub fn expand_command(project: &Path, home: &Path, message: &str) -> String {
+    let Some(rest) = message.strip_prefix('/') else { return message.to_string() };
+    let (name, arguments) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return message.to_string();
+    }
+    let found = [project.join(".cwbcode"), home.to_path_buf()].iter().find_map(|folder| std::fs::read_to_string(folder.join("commands").join(format!("{name}.md"))).ok());
+    match found {
+        Some(text) if text.contains("$ARGUMENTS") => text.replace("$ARGUMENTS", arguments.trim()),
+        Some(text) if arguments.trim().is_empty() => text,
+        Some(text) => format!("{}\n\n{}", text.trim_end(), arguments.trim()),
+        None => message.to_string(),
+    }
+}
+
+
+#[cfg(test)]
+mod command_tests {
+    use super::expand_command;
+
+    #[test]
+    fn a_users_command_is_sent_as_the_text_of_its_file() {
+        let base = std::env::temp_dir().join(format!("cwbcode-commands-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (project, home) = (base.join("proj"), base.join("home"));
+        std::fs::create_dir_all(project.join(".cwbcode/commands")).unwrap();
+        std::fs::create_dir_all(home.join("commands")).unwrap();
+        std::fs::write(project.join(".cwbcode/commands/review.md"), "Review $ARGUMENTS for bugs. List them.").unwrap();
+        std::fs::write(home.join("commands/review.md"), "the server's own review").unwrap();
+        std::fs::write(home.join("commands/ship-it.md"), "Run the tests, then summarise.\n").unwrap();
+        let go = |message: &str| expand_command(&project, &home, message);
+        // The project's command comes before the server's of the same name.
+        assert_eq!(go("/review src/lib.rs"), "Review src/lib.rs for bugs. List them.");
+        assert_eq!(go("/ship-it"), "Run the tests, then summarise.\n");
+        assert_eq!(go("/ship-it but skip the slow ones"), "Run the tests, then summarise.\n\nbut skip the slow ones");
+        // Anything else is sent as it was typed, and a name cannot walk out of the folder.
+        for plain in ["hello", "/unknown thing", "/", "/../../etc/passwd", "/review.md", "a /review"] {
+            assert_eq!(go(plain), plain);
+        }
     }
 }

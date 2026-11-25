@@ -35,6 +35,11 @@ impl Roots {
         Ok(Self { home, allowed, server_home: server_home.canonicalize().unwrap_or_else(|_| server_home.to_path_buf()) })
     }
 
+    /// The home folder, as clients are told it (they show paths under it as `~/...`).
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
     pub fn from_env(server_home: &Path) -> Result<Self> {
         Self::new(Path::new(&std::env::var("HOME").context("HOME is not set")?), server_home)
     }

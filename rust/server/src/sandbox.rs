@@ -22,6 +22,8 @@ pub enum Mode {
     Auto,
     /// Nothing is written and nothing is run.
     ReadOnly,
+    /// As read-only, and the agent is asked for a plan to approve before any change.
+    Plan,
 }
 
 impl Mode {
@@ -29,7 +31,8 @@ impl Mode {
         Some(match s {
             "ask" => Self::Ask,
             "auto" => Self::Auto,
-            "read-only" | "readonly" | "plan" => Self::ReadOnly,
+            "read-only" | "readonly" => Self::ReadOnly,
+            "plan" => Self::Plan,
             _ => return None,
         })
     }
@@ -39,6 +42,7 @@ impl Mode {
             Self::Ask => "ask",
             Self::Auto => "auto",
             Self::ReadOnly => "read-only",
+            Self::Plan => "plan",
         }
     }
 }
@@ -250,6 +254,9 @@ impl Policy {
         if self.mode == Mode::ReadOnly {
             bail!("read-only mode: nothing is written. (The user can switch with /mode ask.)");
         }
+        if self.mode == Mode::Plan {
+            bail!("plan mode: nothing is written until the user approves the plan and switches mode. Present the plan instead.");
+        }
         if !self.in_workspace(&resolved) {
             // Outside the workspace is never allowed silently, whatever the mode.
             self.ask_once(&format!("{what}\n  This is OUTSIDE the workspace ({}).", self.workspace.display()))?;
@@ -266,6 +273,7 @@ impl Policy {
         let unguarded = !self.sandbox && matches!(action, Action::Command | Action::MakeTool);
         match self.mode {
             Mode::ReadOnly => bail!("read-only mode: nothing is written or run. (The user can switch with /mode ask.)"),
+            Mode::Plan => bail!("plan mode: nothing is written or run until the user approves the plan and switches mode. Present the plan instead."),
             Mode::Auto if !unguarded => return Ok(()),
             _ => {}
         }

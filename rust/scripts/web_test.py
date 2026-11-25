@@ -138,6 +138,25 @@ def main():
         page.type("#open-path", "~/proj"); page.click("#open-go")
         page.wait("document.querySelector('.row.project.on')?.innerText.includes('proj')", "the opened project")
         assert os.path.exists(f"{home}/proj/.cwbcode/cwbcode.db"), "the project has no store"
+        # A path is typed under the home folder however it is written, and shown with ~.
+        assert page.text(".open .prefix") == "~/"
+        page.type("#open-path", "plain/name"); page.click("#open-go")
+        page.wait("document.querySelector('.row.project.on')?.innerText.includes('name')", "a folder typed without ~/")
+        assert os.path.isdir(f"{home}/plain/name"), "a bare name was not taken as a folder under home"
+        page.type("#open-path", f"{os.path.realpath(home)}/proj"); page.click("#open-go")
+        page.wait("document.querySelector('.row.project.on .what')?.innerText.startsWith('proj')", "the project typed as a whole path")
+        shown = page.js("JSON.stringify([...document.querySelectorAll('.row.project small')].map(e => e.innerText))")
+        assert "~/proj" in json.loads(shown) and all(path.startswith("~/") for path in json.loads(shown)), shown
+        assert os.path.basename(home) not in page.js("document.body.innerText"), "the home folder's own path is on the page"
+        # A project is taken off the list; its folder and its records stay, and it opens again.
+        page.js("[...document.querySelectorAll('.row.project')].find(r => r.innerText.includes('name')).querySelector('.remove').click()")
+        page.wait("![...document.querySelectorAll('.row.project')].some(r => r.innerText.includes('plain/name'))", "the project off the list")
+        page.wait("(document.querySelector('#notice') || {}).innerText?.includes('~/plain/name')", "the notice that it was removed")
+        assert os.path.exists(f"{home}/plain/name/.cwbcode/cwbcode.db"), "removing a project from the list deleted its records"
+        page.type("#open-path", "~/proj"); page.click("#open-go")
+        page.wait("document.querySelector('.row.project.on .what')?.innerText.startsWith('proj')", "the project again")
+        # The frame is as tall as what the browser shows, and nothing is wider than it.
+        assert page.js("document.querySelector('.app').getBoundingClientRect().bottom <= innerHeight + 1"), "the bottom edge is below the window"
 
         print("2b. light and dark, side by side and stacked, eight languages; all kept across a refresh")
         assert page.js("document.documentElement.dataset.theme") == "dark"
@@ -153,8 +172,6 @@ def main():
             page.wait(f"document.querySelector('#nav-chat').innerText.trim() === {json.dumps(chat)} && document.documentElement.lang === '{code}'", f"the interface in {code}")
             seen[code] = page.text("#nav-knowledge")
         assert len(set(seen.values())) >= 6, seen
-        # three.js draws the skyline behind the page, in the colours of the theme.
-        page.wait("document.documentElement.dataset.backdrop === 'on' && document.querySelector('#backdrop').width > 100", "the three.js backdrop")
         # The sidebar folds away, and the view takes the whole window.
         wide = page.js("document.querySelector('.main').getBoundingClientRect().height")
         page.click("#side-toggle")
@@ -168,14 +185,17 @@ def main():
         # The typeface and the size: each changes what is drawn, and both are kept.
         assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("pixel", "m")
         assert "VT323" in page.js("getComputedStyle(document.body).fontFamily")
+        chat_face = "getComputedStyle(document.querySelector('#draft')).fontFamily.split(',')[0].replaceAll('\"', '').trim()"
         # Every typeface on the list is in the program, loads, and is the one then drawn.
         codes = json.loads(page.js("JSON.stringify([...document.querySelectorAll('#font option')].map(o => o.value))"))
-        assert len(codes) == 31 and codes[0] == "pixel" and codes[-1] == "system", codes
+        assert len(codes) == 55 and codes[0] == "pixel" and codes[-1] == "system", codes
         faces = {}
         for font in codes[1:] + ["pixel"]:
             page.js(f"(() => {{ const s = document.querySelector('#font'); s.value = '{font}'; s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()")
             page.wait(f"document.documentElement.dataset.font === '{font}'", f"the {font} typeface")
-            faces[font] = page.js("getComputedStyle(document.body).fontFamily.split(',')[0].replaceAll('\"', '').trim()")
+            faces[font] = page.js(chat_face)
+            # Only the conversation changes its face: the interface keeps its own.
+            assert "VT323" in page.js("getComputedStyle(document.querySelector('#nav-chat')).fontFamily") and "VT323" in page.js("getComputedStyle(document.querySelector('#send')).fontFamily"), font
             if font != "system":
                 page.js(f"window.__face = null; document.fonts.load('16px \"{faces[font]}\"', 'Az').then(f => window.__face = f.length, () => window.__face = -1)")
                 page.wait("window.__face !== null", f"the {font} typeface to load")
@@ -246,6 +266,17 @@ def main():
         assert "answered: y" in page.text("#transcript"), "the logged approval is not shown as answered"
         assert page.js("document.querySelectorAll('.approve-yes').length") == 0, "an old approval can still be answered"
 
+        # The conversation's outline has a bar for each item; the context meter is drawn; the
+        # whole conversation is copied in one tap; nothing is wider than the transcript.
+        page.click("#nav-chat")
+        page.wait("!!document.querySelector('#transcript .it')", "the conversation")
+        assert page.js("document.querySelectorAll('#outline .o').length === document.querySelectorAll('#transcript .it').length"), "the outline does not follow the conversation"
+        assert page.js("!!document.querySelector('#ctx .bar2 i') && document.querySelector('#ctx-text').innerText.includes('/')"), page.text("#ctx")
+        assert page.js("document.querySelector('#transcript').scrollWidth <= document.querySelector('#transcript').clientWidth + 1"), "the transcript is wider than its box"
+        assert page.js("getComputedStyle(document.querySelector('#undo')).borderTopWidth !== '0px' && !document.querySelector('#undo').classList.contains('ghost')"), "undo does not look like a button"
+        page.click("#copy-all")
+        page.wait("(document.querySelector('#notice') || {}).innerText?.includes('copied') || (document.querySelector('#toast') || {}).innerText?.includes('copy')", "an answer to copying")
+        assert "copied" in page.text("#notice"), page.text("#toast")
         print("5. the dashboard shows the backend")
         page.click("#nav-dashboard")
         page.wait("document.querySelector('#protocol') && ['H2','H3'].includes(document.querySelector('#protocol').innerText)", "the protocol card")

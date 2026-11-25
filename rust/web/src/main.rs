@@ -101,6 +101,10 @@ struct App {
     resume: RwSignal<(String, i64)>,
     /// Something to tell the user that is not an error.
     notice: RwSignal<String>,
+    /// Tokens of context the conversation shown last reported (0: not known yet).
+    ctx: RwSignal<u64>,
+    /// Whether the settings sheet is open.
+    settings: RwSignal<bool>,
     view: RwSignal<View>,
     status: RwSignal<Option<Status>>,
     projects: RwSignal<Vec<Project>>,
@@ -192,6 +196,8 @@ impl App {
             lang: RwSignal::new(prefs["lang"].as_str().and_then(Lang::from_code).unwrap_or_else(|| Lang::from_browser(&browser))),
             resume: RwSignal::new((text("project", ""), prefs["session"].as_i64().unwrap_or(0))),
             notice: RwSignal::new(String::new()),
+            ctx: RwSignal::new(0),
+            settings: RwSignal::new(false),
             view: RwSignal::new(View::from_code(&text("view", "chat"))),
             status: RwSignal::new(None),
             projects: RwSignal::new(Vec::new()),
@@ -429,6 +435,7 @@ impl App {
                 }
             }
             What::Usage(u) => {
+                self.ctx.set(u.context_tokens);
                 let speed = if u.tokens_per_second > 0.0 { format!(" · {:.0} tok/s", u.tokens_per_second) } else { String::new() };
                 let tools = if u.tool_calls > 0 { format!(" · {} tool call{}", u.tool_calls, if u.tool_calls == 1 { "" } else { "s" }) } else { String::new() };
                 self.push(Kind::Note, &format!("{} tokens in context · wrote {}{speed}{tools} · {:.1}s", u.context_tokens, u.generated, u.seconds), None, past);
@@ -500,7 +507,43 @@ impl App {
         self.refresh_sessions().await;
     }
 
+    /// A path as it is shown: under the home folder it starts with `~/`, so that the name of
+    /// the account is not on the screen.
+    fn tilde(&self, path: &str) -> String {
+        let home = self.status.get().map(|s| s.user_home).unwrap_or_default();
+        match path.strip_prefix(home.as_str()) {
+            Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => format!("~{rest}"),
+            _ => path.to_string(),
+        }
+    }
+
+    /// How full the context is: (tokens, limit, share 0..1).
+    fn context(&self) -> (u64, u64, f64) {
+        let limit = self.status.get().map(|s| s.context_limit).unwrap_or(0);
+        let used = self.ctx.get();
+        (used, limit, if limit == 0 { 0.0 } else { (used as f64 / limit as f64).min(1.0) })
+    }
+
+    /// Whether the context is at least this full (0..1).
+    fn ctx_at(&self, share: f64) -> bool {
+        self.context().2 >= share
+    }
+
+    async fn remove_project(&self, path: String) {
+        if self.call(Request::new(Method::RemoveProject).project(&path)).await.is_some() {
+            let shown = self.tilde(&path);
+            if self.project.get_untracked() == path {
+                self.project.set(String::new());
+                self.sessions.set(Vec::new());
+                self.new_conversation();
+            }
+            self.refresh_projects().await;
+            self.tell(tr_with(self.lang.get_untracked(), "removed", &shown));
+        }
+    }
+
     fn new_conversation(&self) {
+        self.ctx.set(0);
         self.session.set(0);
         self.items.set(Vec::new());
         self.todos.set(String::new());
@@ -511,7 +554,7 @@ impl App {
         if let Some(response) = self.call(Request::new(Method::OpenProject).text(&path)).await {
             // A folder that did not exist was made.
             if let Some(made) = response.text.strip_prefix("created ") {
-                self.tell(tr_with(self.lang.get_untracked(), "created", made));
+                self.tell(tr_with(self.lang.get_untracked(), "created", &self.tilde(made)));
             }
             if let Some(project) = response.projects.first() {
                 self.select_project(project.path.clone()).await;
@@ -629,8 +672,9 @@ fn Root() -> impl IntoView {
             if let Some((_, _, family, scale)) = FONTS.iter().find(|(code, ..)| *code == font) {
                 let stack = if family.is_empty() { FONT_FALLBACK.replace("\"NeoDGM\", ", "") } else { format!("\"{family}\", {FONT_FALLBACK}") };
                 if let Some(style) = root.dyn_ref::<web_sys::HtmlElement>().map(|el| el.style()) {
-                    let _ = style.set_property("--body", &stack);
-                    let _ = style.set_property("--face", &scale.to_string());
+                    // (The conversation's face only: the interface keeps its own.)
+                    let _ = style.set_property("--chat", &stack);
+                    let _ = style.set_property("--chatface", &scale.to_string());
                 }
             }
             let _ = root.set_attribute("data-size", &app.size.get());
@@ -643,10 +687,12 @@ fn Root() -> impl IntoView {
         <div class="glow b"></div>
         <Show when=move || app.ready() fallback=move || view! { <Login/> }>
             <div class="app" class:vertical=move || app.layout.get() == "vertical" class:noside=move || !app.side.get()>
+                <AppBar/>
                 <Sidebar/>
-                <div class="main">
-                    <button class="ghost round side-toggle" id="side-toggle" title=app.t("sidebar") on:click=move |_| app.side.update(|shown| *shown = !*shown)>{icon(ICON_SIDE)}</button>
-                    <ViewHost/>
+                <div class="main"><ViewHost/></div>
+                <div class="sheet glass" id="settings-sheet" class:open=move || app.settings.get()>
+                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" on:click=move |_| app.settings.set(false)>"×"</button></div>
+                    <Prefs/>
                 </div>
             </div>
         </Show>
@@ -705,6 +751,7 @@ fn icon(path: &'static str) -> impl IntoView {
 const ICON_SUN: &str = "M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m0-11.4L4.9 4.9m14.2 14.2-1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z";
 const ICON_MOON: &str = "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z";
 const ICON_COLUMNS: &str = "M4 5h16v14H4zM10 5v14";
+const ICON_GEAR: &str = "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.400-2.300 1a7 7 0 0 0-2.100-1.200L14 3h-4l-.5 2.700a7 7 0 0 0-2.100 1.200l-2.300-1-2 3.400 2 1.500a7 7 0 0 0 0 2.400l-2 1.500 2 3.400 2.300-1a7 7 0 0 0 2.100 1.200L10 21h4l.5-2.700a7 7 0 0 0 2.100-1.200l2.300 1 2-3.400-2-1.500c.1-.4.1-.800.1-1.200z";
 const ICON_SIDE: &str = "M4 5h16v14H4zM9 5v14M6 9h1M6 12h1";
 const ICON_ROWS: &str = "M4 5h16v14H4zM4 10h16";
 const ICON_GLOBE: &str = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm-9 9h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.500 5.600 12 3z";
@@ -714,11 +761,11 @@ const ICON_BOOK: &str = "M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zm0 13a3 3 0 0 
 const ICON_TOOL: &str = "M14.5 6.500a4 4 0 0 0-5.200 5.200L3.500 17.500l3 3 5.800-5.800a4 4 0 0 0 5.200-5.200l-2.700 2.700-2.300-.700-.700-2.300z";
 
 /// Light or dark, side by side or stacked, and the language: three small controls.
-/// The typefaces to choose from: the code kept in the preferences, the name shown (an empty
+/// The typefaces the conversation can be set in (the interface keeps its own): the code kept in the preferences, the name shown (an empty
 /// name is "the system's own", in the language chosen), the CSS family, and how much larger
 /// it must be set to read as the others do. All of them are in the program
-/// (assets/fonts, from Causewaybay Hacker); the browser fetches one only when it is chosen.
-const FONTS: [(&str, &str, &str, f64); 31] = [
+/// (assets/fonts, from Causewaybay Hacker and FruitNation Messenger); the browser fetches one only when it is chosen.
+const FONTS: [(&str, &str, &str, f64); 55] = [
     ("pixel", "VT323", "VT323", 1.34),
     ("dgm", "NeoDunggeunmo", "NeoDGM", 1.06),
     ("dgmcode", "NeoDunggeunmo Code", "NeoDGMCode", 1.06),
@@ -749,6 +796,30 @@ const FONTS: [(&str, &str, &str, f64); 31] = [
     ("fraunces", "Fraunces", "Fraunces", 1.0),
     ("newsreader", "Newsreader", "Newsreader", 1.0),
     ("notocjk", "Noto Sans CJK", "NotoSansCJK", 1.0),
+    ("petme", "Commodore 64 (Pet Me)", "PetMe64", 0.8),
+    ("ibmega", "IBM EGA 8x14", "IBMEGA", 1.12),
+    ("ibmcga", "IBM CGA", "IBMCGA", 0.8),
+    ("ibmmda", "IBM MDA", "IBMMDA", 1.12),
+    ("tandy", "Tandy 1000", "Tandy1000", 0.8),
+    ("amstrad", "Amstrad PC", "AmstradPC", 0.8),
+    ("ibm3270", "IBM 3270", "IBM3270", 1.12),
+    ("cousine", "Cousine Bold", "CousineBold", 0.92),
+    ("fira", "Fira Code", "FiraCode", 0.92),
+    ("sourcecode", "Source Code Pro", "SourceCodePro", 0.92),
+    ("cascadia", "Cascadia Code", "CascadiaCode", 0.92),
+    ("hack", "Hack", "Hack", 0.92),
+    ("inconsolata", "Inconsolata", "Inconsolata", 1.0),
+    ("robotomono", "Roboto Mono", "RobotoMono", 0.92),
+    ("ubuntumono", "Ubuntu Mono", "UbuntuMono", 1.0),
+    ("spacemono", "Space Mono", "SpaceMono", 0.92),
+    ("nanumgothic", "Nanum Gothic", "NanumGothic", 1.0),
+    ("nanummyeongjo", "Nanum Myeongjo", "NanumMyeongjo", 1.0),
+    ("nunitoround", "Nunito", "Nunito", 1.0),
+    ("fredoka", "Fredoka", "Fredoka", 1.0),
+    ("baloo", "Baloo 2", "Baloo2", 1.0),
+    ("jua", "Jua", "Jua", 1.0),
+    ("gaegu", "Gaegu", "Gaegu", 1.1),
+    ("dohyeon", "Do Hyeon", "DoHyeon", 1.0),
     ("system", "", "", 1.0),
 ];
 /// What stands in where a face has no glyph: the Korean pixel face, then the system's.
@@ -793,6 +864,62 @@ fn Prefs() -> impl IntoView {
 fn step_size(app: App, by: i32) {
     let now = SIZES.iter().position(|s| *s == app.size.get_untracked()).unwrap_or(1) as i32;
     app.size.set(SIZES[(now + by).clamp(0, SIZES.len() as i32 - 1) as usize].to_string());
+}
+
+/// The bar across the top: the sidebar's switch, the name, the views, the backend's state,
+/// settings and signing out.
+#[component]
+fn AppBar() -> impl IntoView {
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    let nav = move |view: View, id: &'static str, key: &'static str, shape: &'static str| {
+        view! { <button id=id class:on=move || app.view.get() == view on:click=move |_| app.view.set(view)>{icon(shape)}<span>{t(key)}</span></button> }
+    };
+    // The selection slides to the chosen view, also when the words change size.
+    Effect::new(move |_| {
+        app.view.get();
+        app.layout.get();
+        app.lang.get();
+        app.font.get();
+        app.size.get();
+        app.side.get();
+        after_draw(|| motion::slide_selection("#nav"));
+    });
+    view! {
+        <header class="appbar glass">
+            <button class="ghost round" id="side-toggle" title=t("sidebar") aria-label=t("sidebar") on:click=move |_| app.side.update(|shown| *shown = !*shown)>{icon(ICON_SIDE)}</button>
+            {brand(app)}
+            <div class="nav seg" id="nav">
+                <div class="selection"></div>
+                {nav(View::Dashboard, "nav-dashboard", "nav_dashboard", ICON_DASH)}
+                {nav(View::Chat, "nav-chat", "nav_chat", ICON_CHAT)}
+                {nav(View::Knowledge, "nav-knowledge", "nav_knowledge", ICON_BOOK)}
+                {nav(View::Tools, "nav-tools", "nav_tools", ICON_TOOL)}
+            </div>
+            <span class="grow"></span>
+            <div class="pill" id="status-pill">
+                    {move || match app.status.get() {
+                        None => view! { <span><span class="dot bad"></span>{t("offline")}</span> }.into_any(),
+                        Some(s) => {
+                            let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
+                            let lang = app.lang.get();
+                            view! {
+                                <span><span class=dot></span>{if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
+                                <div id="login-state">{match s.auth.as_str() {
+                                    "open" => tr(lang, "local_short").to_string(),
+                                    "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
+                                    _ => "token".to_string(),
+                                }}</div>
+                            }.into_any()
+                        }
+                    }}
+                </div>
+            <button class="ghost round" id="settings" title=t("settings") aria-label=t("settings") on:click=move |_| app.settings.update(|open| *open = !*open)>{icon(ICON_GEAR)}</button>
+            <Show when=move || app.auth.get() != "open">
+                <button class="ghost" id="signout" on:click=move |_| spawn_local(async move { app.sign_out().await })>{t("sign_out")}</button>
+            </Show>
+        </header>
+    }
 }
 
 fn brand(app: App) -> impl IntoView {
@@ -894,10 +1021,18 @@ fn Sidebar() -> impl IntoView {
         after_draw(|| motion::slide_selection("#nav"));
     });
     let open = move || {
+        // Projects live under the home folder: what is typed is a path under it, however it
+        // was written (`x`, `~/x`, or the whole path).
         let typed = path.get_untracked().trim().to_string();
         if !typed.is_empty() {
             path.set(String::new());
-            spawn_local(async move { app.open_project(typed).await });
+            let home = app.status.get_untracked().map(|s| s.user_home).unwrap_or_default();
+            let under = match typed.strip_prefix(home.as_str()).filter(|rest| !home.is_empty() && (rest.is_empty() || rest.starts_with('/'))) {
+                Some(rest) => format!("~{rest}"),
+                None if typed == "~" || typed.starts_with("~/") || typed.starts_with('/') => typed,
+                None => format!("~/{typed}"),
+            };
+            spawn_local(async move { app.open_project(under).await });
         }
     };
     let side = NodeRef::<leptos::html::Div>::new();
@@ -908,29 +1043,24 @@ fn Sidebar() -> impl IntoView {
     });
     view! {
         <div class="side glass" node_ref=side>
-            <div class="side-head">{brand(app)}<Prefs/></div>
-            <div class="nav seg" id="nav">
-                <div class="selection"></div>
-                {nav(View::Dashboard, "nav-dashboard", "nav_dashboard", ICON_DASH)}
-                {nav(View::Chat, "nav-chat", "nav_chat", ICON_CHAT)}
-                {nav(View::Knowledge, "nav-knowledge", "nav_knowledge", ICON_BOOK)}
-                {nav(View::Tools, "nav-tools", "nav_tools", ICON_TOOL)}
-            </div>
             <div class="group">
                 <h4>{t("projects")}</h4>
                 <div class="open">
+                    <span class="prefix">"~/"</span>
                     <input id="open-path" placeholder=t("open_ph") prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
                         on:keydown=move |ev| if ev.key() == "Enter" { open() }/>
                     <button id="open-go" on:click=move |_| open()>{t("open")}</button>
                 </div>
                 <div class="list projects">
                     <For each=move || app.projects.get() key=|p| p.path.clone() children=move |p: Project| {
-                        let (path, title) = (p.path.clone(), p.path.clone());
-                        let selected = p.path.clone();
+                        let (path, gone) = (p.path.clone(), p.path.clone());
+                        let (selected, shown) = (p.path.clone(), p.path.clone());
                         view! {
-                            <div class="row project" class:on=move || app.project.get() == selected title=title
+                            <div class="row project" class:on=move || app.project.get() == selected
                                 on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
-                                {p.name.clone()}<small>{p.path.clone()}</small>
+                                <span class="what">{p.name.clone()}<small>{move || app.tilde(&shown)}</small></span>
+                                <button class="ghost round remove" title=t("remove_project") aria-label=t("remove_project")
+                                    on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }>"×"</button>
                             </div>
                         }
                     }/>
@@ -951,30 +1081,7 @@ fn Sidebar() -> impl IntoView {
                     }/>
                 </div>
             </div>
-            <div class="side-foot">
-                <Show when=move || app.auth.get() != "open">
-                    <button class="ghost" id="signout" on:click=move |_| spawn_local(async move { app.sign_out().await })>{t("sign_out")}</button>
-                </Show>
-                <div class="pill" id="status-pill">
-                    {move || match app.status.get() {
-                        None => view! { <span><span class="dot bad"></span>{t("offline")}</span> }.into_any(),
-                        Some(s) => {
-                            let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
-                            let lang = app.lang.get();
-                            view! {
-                                <span><span class=dot></span>{if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
-                                <div>{format!("{:.1} GB · {} ctx", gb(s.memory_active), s.context_tokens)}</div>
-                                <div id="login-state">{match s.auth.as_str() {
-                                    "open" => tr(lang, "local_short").to_string(),
-                                    "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
-                                    _ => "token".to_string(),
-                                }}</div>
-                            }.into_any()
-                        }
-                    }}
-                </div>
-            </div>
-        </div>
+</div>
     }
 }
 
@@ -1006,7 +1113,7 @@ fn Dashboard() -> impl IntoView {
     };
     let fixed = |text: &'static str| Signal::derive(move || text.to_string());
     view! {
-        <div class="top"><h2>{t("nav_dashboard")}<small>{move || s().home}</small></h2></div>
+        <div class="top"><h2>{t("nav_dashboard")}<small>{move || app.tilde(&s().home)}</small></h2></div>
         <div class="scroll">
             <div class="col wide">
                 <div class="cards">
@@ -1036,7 +1143,7 @@ fn Dashboard() -> impl IntoView {
                                     let path = p.path.clone();
                                     view! {
                                         <tr class="click" on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
-                                            <td>{p.name.clone()}</td><td class="dim">{p.path.clone()}</td><td>{p.sessions}</td><td class="dim">{p.updated.clone()}</td>
+                                            <td>{p.name.clone()}</td><td class="dim">{let shown = p.path.clone(); move || app.tilde(&shown)}</td><td>{p.sessions}</td><td class="dim">{p.updated.clone()}</td>
                                         </tr>
                                     }
                                 }/>
@@ -1253,6 +1360,10 @@ fn Chat() -> impl IntoView {
     let act = move |method: Method| {
         spawn_local(async move {
             if let Some(response) = app.call(app.request(method).session(app.session.get_untracked())).await {
+                if method == Method::Compact {
+                    // What the context holds now is not known until the next turn says.
+                    app.ctx.set(0);
+                }
                 app.apply(What::Note(response.text), false);
             }
         })
@@ -1263,19 +1374,36 @@ fn Chat() -> impl IntoView {
     };
     view! {
         <div class="top">
-            <h2>{move || { let p = app.project.get(); p.rsplit('/').next().unwrap_or("").to_string() }}<small>{move || if app.session.get() == 0 { tr(app.lang.get(), "new_conversation").to_string() } else { tr_with(app.lang.get(), "conversation_n", &app.session.get().to_string()) }}</small></h2>
-            <button class="ghost" id="undo" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>{t("undo")}</button>
-            <button class="ghost" id="compact" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>{t("summarize")}</button>
+            <h2 title=move || app.tilde(&app.project.get())>{move || { let p = app.project.get(); p.rsplit('/').next().unwrap_or("").to_string() }}<small>{move || if app.session.get() == 0 { tr(app.lang.get(), "new_conversation").to_string() } else { tr_with(app.lang.get(), "conversation_n", &app.session.get().to_string()) }}</small></h2>
+            <div class="meter" id="ctx" title=t("context") class:warn=move || app.ctx_at(0.75) class:full=move || app.ctx_at(0.9)>
+                <span>{t("context")}</span>
+                <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
+                <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
+            </div>
+            <button id="copy-all" disabled=move || app.items.get().is_empty() on:click=move |_| {
+                // (Copied at once, in the tap itself: a browser lets nothing else at the clipboard.)
+                let text = whole_text(&app.items.get_untracked());
+                if motion::copy_text(&text) { app.tell(tr(app.lang.get_untracked(), "copied").to_string()) } else { app.fail(tr(app.lang.get_untracked(), "copy_failed").to_string()) }
+            }>{t("copy_all")}</button>
+            <button id="undo" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>{t("undo")}</button>
+            <button id="compact" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>{t("summarize")}</button>
         </div>
+        <Show when=move || app.ctx_at(0.9)>
+            <div class="approval ctx-warning" id="ctx-warning">
+                <span class="grow">{move || if app.ctx_at(1.0) { t("ctx_full")() } else { t("ctx_near")() }}</span>
+                <button class="primary" id="ctx-new" on:click=move |_| app.new_conversation()>{t("new_conversation")}</button>
+            </div>
+        </Show>
+        <div class="chatbody">
         <div class="scroll" node_ref=scroller id="transcript">
             <div class="col">
                 <Show when=move || app.project.get().is_empty()>
                     <div class="empty"><h3>{t("empty_open_title")}</h3>{t("empty_open")}</div>
                 </Show>
                 <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty()>
-                    <div class="empty" id="empty-chat"><h3>{t("empty_chat_title")}</h3>{move || app.project.get()}</div>
+                    <div class="empty" id="empty-chat"><img src="/art/empty.png" alt=""/><h3>{t("empty_chat_title")}</h3>{move || app.tilde(&app.project.get())}</div>
                 </Show>
-                <For each=move || app.items.get() key=|item| item.id children=move |item: Item| view! { <ItemView item=item/> }/>
+                <For each=move || app.items.get() key=|item| item.id children=move |item: Item| { let id = item.id; view! { <div class="it" id=format!("item-{id}")><ItemView item=item/></div> } }/>
                 <Show when=move || !todo_lines().is_empty()>
                     <div class="todos glass" id="todos">
                         {move || todo_lines().into_iter().map(|(content, status)| {
@@ -1285,6 +1413,16 @@ fn Chat() -> impl IntoView {
                     </div>
                 </Show>
             </div>
+        </div>
+        // The outline: one bar for each thing said or done; a tap goes there.
+        <div class="outline glass" id="outline" aria-hidden="true">
+            <For each=move || app.items.get() key=|item| item.id children=move |item: Item| {
+                let id = item.id;
+                let class = match item.kind { Kind::User => "o user", Kind::Tool => "o tool", Kind::Approval => "o ask", Kind::Text => "o text", Kind::Error | Kind::Warning => "o bad", _ => "o quiet" };
+                let text = item.text;
+                view! { <i class=class style:width=move || format!("{}%", 25 + (text.get().len() / 12).min(75)) on:click=move |_| motion::go_to(&format!("item-{id}"))></i> }
+            }/>
+        </div>
         </div>
         <div class="composer">
             <div class="box glass">
@@ -1299,17 +1437,46 @@ fn Chat() -> impl IntoView {
                         <option value="ask" selected=move || app.mode.get() == "ask">{t("mode_ask")}</option>
                         <option value="auto" selected=move || app.mode.get() == "auto">{t("mode_auto")}</option>
                         <option value="read-only" selected=move || app.mode.get() == "read-only">{t("mode_ro")}</option>
+                        <option value="plan" selected=move || app.mode.get() == "plan">{t("mode_plan")}</option>
                     </select>
                     <select id="think" on:change=move |ev| app.think.set(event_target_value(&ev)) prop:value=move || app.think.get()>
                         <option value="">{t("think_default")}</option><option value="none">"none"</option><option value="low">"low"</option><option value="medium">"medium"</option><option value="high">"high"</option>
                     </select>
-                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary" id="send" disabled=move || app.project.get().is_empty() on:click=move |_| send()>{t("send")}</button> }>
+                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary" id="send" disabled=move || app.project.get().is_empty() || app.ctx_at(1.0) on:click=move |_| send()>{t("send")}</button> }>
                         <button class="danger" id="stop" on:click=move |_| spawn_local(async move { app.call(Request::new(Method::Interrupt)).await; })>{t("stop")}</button>
                     </Show>
                 </div>
             </div>
         </div>
     }
+}
+
+/// 6638 -> "6.6k".
+fn short_count(n: u64) -> String {
+    if n >= 1000 { format!("{:.1}k", n as f64 / 1000.0) } else { n.to_string() }
+}
+
+/// A conversation as text, to copy: what was asked, what was answered, what was run.
+fn whole_text(items: &[Item]) -> String {
+    let mut out = String::new();
+    for item in items {
+        let text = item.text.get_untracked();
+        match item.kind {
+            Kind::User => out.push_str(&format!("> {text}\n\n")),
+            Kind::Text => out.push_str(&format!("{text}\n\n")),
+            Kind::Tool => {
+                out.push_str(&format!("[{text}]\n"));
+                if let Some((_, output, _)) = item.result.get_untracked() {
+                    if !output.trim().is_empty() {
+                        out.push_str(&format!("{}\n", output.trim_end()));
+                    }
+                }
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out.trim_end().to_string()
 }
 
 #[component]
@@ -1399,7 +1566,7 @@ fn Knowledge() -> impl IntoView {
         })
     };
     view! {
-        <div class="top"><h2>{t("nav_knowledge")}<small>{move || app.project.get()}</small></h2><span class="chip">{move || if working.get() { tr(app.lang.get(), "working_dots") } else { tr(app.lang.get(), "kb_chip") }}</span></div>
+        <div class="top"><h2>{t("nav_knowledge")}<small>{move || app.tilde(&app.project.get())}</small></h2><span class="chip">{move || if working.get() { tr(app.lang.get(), "working_dots") } else { tr(app.lang.get(), "kb_chip") }}</span></div>
         <div class="scroll">
             <div class="col mid">
                 <div class="card glass form">

@@ -173,6 +173,8 @@ pub struct Status {
     /// Where the wallet is set: "" (nowhere), "settings" (set up while running, changeable
     /// with Method::Setup), or the name of what fixes it (the .env file, the environment).
     pub wallet_source: String,
+    /// The home folder projects live under: clients show paths under it as `~/...`.
+    pub user_home: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -430,6 +432,7 @@ impl Response {
             t.set_fingerprint(&s.fingerprint[..]);
             t.set_bind(&s.bind[..]);
             t.set_wallet_source(&s.wallet_source[..]);
+            t.set_user_home(&s.user_home[..]);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -525,6 +528,7 @@ impl Response {
                 fingerprint: text(s.get_fingerprint())?,
                 bind: text(s.get_bind())?,
                 wallet_source: text(s.get_wallet_source())?,
+                user_home: text(s.get_user_home())?,
             })
         } else {
             None
@@ -659,7 +663,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into() }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into() }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),

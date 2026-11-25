@@ -94,6 +94,32 @@ export function install() {
   }
 }
 export function has_motion() { return !!M(); }
+// Put text on the clipboard, in the tap that asked for it. The page is served with a
+// self-signed certificate, where the asynchronous clipboard may be withheld: a hidden field
+// and the old command stand in.
+export function copy_text(text) {
+  try {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', '');
+    field.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(field);
+    field.select();
+    field.setSelectionRange(0, text.length);
+    const done = document.execCommand('copy');
+    field.remove();
+    if (done) return true;
+  } catch (_) {}
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).catch(() => {}); return true; }
+  } catch (_) {}
+  return false;
+}
+// Bring an element of the conversation into view.
+export function go_to(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+}
 "#)]
 extern "C" {
     /// Fade and rise into place.
@@ -115,4 +141,8 @@ extern "C" {
     /// Press feedback and the drifting background, once.
     pub fn install();
     pub fn has_motion() -> bool;
+    /// Put text on the clipboard; false where the browser will not.
+    pub fn copy_text(text: &str) -> bool;
+    /// Scroll to the element with this id.
+    pub fn go_to(id: &str);
 }

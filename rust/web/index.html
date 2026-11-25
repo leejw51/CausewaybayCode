@@ -4,15 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CC · Causewaybay Code</title>
+  <script>
+    // What goes wrong on a device nobody can open a console on is told to the backend, which
+    // writes it in its log (a request for a path that names it): at most twenty short lines.
+    (function () {
+      var left = 20;
+      function tell(what) { if (left-- > 0) { try { new Image().src = '/__diag/' + encodeURIComponent(String(what).slice(0, 240)); } catch (_) {} } }
+      window.__tell = tell;
+      addEventListener('error', function (e) { tell('error: ' + (e.message || (e.target && (e.target.src || e.target.href)) || 'unknown')); }, true);
+      addEventListener('unhandledrejection', function (e) { tell('rejection: ' + (e.reason && (e.reason.message || e.reason))); });
+      var shout = console.error; console.error = function () { tell('console: ' + Array.prototype.join.call(arguments, ' ')); return shout.apply(console, arguments); };
+      addEventListener('TrunkApplicationStarted', function () { tell('started'); });
+      setTimeout(function () {
+        var app = document.querySelector('.app, .login');
+        var box = app ? app.getBoundingClientRect() : null;
+        tell('after 4s: ' + (app ? app.className + ' ' + Math.round(box.width) + 'x' + Math.round(box.height) : 'nothing drawn') + ', ' + document.body.innerText.length + ' letters, window ' + innerWidth + 'x' + innerHeight);
+      }, 4000);
+    })();
+  </script>
   <link data-trunk rel="css" href="style.css">
   <link data-trunk rel="copy-file" href="assets/motion.min.js">
   <!-- The typefaces and the pixel art, vendored too. -->
   <link data-trunk rel="copy-dir" href="assets/fonts">
   <link data-trunk rel="copy-dir" href="assets/art">
-  <!-- three.js (vendored) and the skyline it draws behind the page. -->
-  <link data-trunk rel="copy-dir" href="assets/three">
-  <link data-trunk rel="copy-file" href="assets/backdrop.js">
-  <script type="module" src="/backdrop.js"></script>
   <link data-trunk rel="rust" data-wasm-opt="z">
   <!-- Motion (motion.dev), vendored: the page works without the internet. -->
   <script src="/motion.min.js"></script>

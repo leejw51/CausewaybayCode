@@ -176,6 +176,7 @@ Everything runs locally: you have no web access. {} Your file tools change files
             crate::sandbox::Mode::Ask => "The user approves each edit and command before it happens",
             crate::sandbox::Mode::Auto => "The user has allowed edits and commands in the workspace without asking",
             crate::sandbox::Mode::ReadOnly => "This session is read-only: you can read and search, but not write files or run commands",
+            crate::sandbox::Mode::Plan => "This session is in plan mode: look into the request with the read and search tools, then answer with a short numbered plan (which files, what changes in each, how you will check the result) and stop. Do not write files or run commands: the user reads the plan and switches mode to have it carried out",
         },
         ws.display(),
         today(),

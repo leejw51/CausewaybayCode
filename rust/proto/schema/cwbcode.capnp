@@ -37,6 +37,7 @@ enum Method {
   login @22;           # text (the challenge), name (its signature, hex) -> text (a session token)
   logout @23;          # ends the session the request carries
   setup @24;           # text (a wallet address: remote mode on; "": off) -> status, text
+  removeProject @25;   # project: taken off the list. The folder and what is in it stay.
 }
 
 struct Upload {
@@ -78,6 +79,7 @@ struct Status {
   wallet @16 :Text;        # the wallet address that may sign in ("" without one)
   fingerprint @17 :Text;   # SHA-256 of the server's certificate
   bind @18 :Text;          # the address the server listens on
+  userHome @20 :Text;      # the home folder: clients show paths under it as ~/...
   walletSource @19 :Text;  # where the wallet is set: "" (nowhere), "settings" (set up while
                            # running; can be changed with Method.setup), or the .env file /
                            # "the environment" (fixed there)
