@@ -31,6 +31,7 @@ h3-quinn = "0.0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
+time = "0.3"
 bytes = "1"
 http = "1"
 http-body-util = "0.1"

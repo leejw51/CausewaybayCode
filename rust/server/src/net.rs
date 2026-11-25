@@ -71,14 +71,46 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// The server's certificate and key, made on first use and kept in its folder (`cert.pem`,
-/// `key.pem`). Clients on this machine trust exactly this certificate by reading `cert.pem`.
+/// How long a certificate is good for, and how long before its end a new one is made. Apple's
+/// browsers refuse to load a page (after the first document) from a server whose certificate
+/// runs longer than 398 days, lacks the server-authentication purpose, or does not name the
+/// address it was reached at, even once the user has chosen to visit it.
+const CERT_DAYS: i64 = 397;
+const CERT_RENEW_DAYS: i64 = 30;
+
+/// The server's certificate and key, kept in its folder (`cert.pem`, `key.pem`, and
+/// `cert.json`: the names it was made for and when it ends). It is made on first use, and
+/// made again when the machine has an address it does not name (a network joined since) or
+/// it is about to end; the names it had are kept. Clients on this machine trust exactly this
+/// certificate by reading `cert.pem`; others see a new fingerprint when it is remade.
 pub fn identity(home: &Path) -> Result<Identity> {
-    let (cert_path, key_path) = (home.join("cert.pem"), home.join("key.pem"));
-    if !cert_path.exists() || !key_path.exists() {
-        let made = rcgen::generate_simple_self_signed(names())?;
-        std::fs::write(&cert_path, made.cert.pem())?;
-        write_private(&key_path, &made.key_pair.serialize_pem())?;
+    let (cert_path, key_path, note_path) = (home.join("cert.pem"), home.join("key.pem"), home.join("cert.json"));
+    let now = time::OffsetDateTime::now_utc();
+    let note: serde_json::Value = std::fs::read_to_string(&note_path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let had: Vec<String> = note["names"].as_array().map(|list| list.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default();
+    let ends = note["ends"].as_i64().unwrap_or(0);
+    let wanted = names();
+    let good = cert_path.exists() && key_path.exists() && wanted.iter().all(|name| had.contains(name)) && ends - now.unix_timestamp() > CERT_RENEW_DAYS * 86_400;
+    if !good {
+        let mut all = had;
+        for name in wanted {
+            if !all.contains(&name) {
+                all.push(name);
+            }
+        }
+        let mut params = rcgen::CertificateParams::new(all.clone())?;
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params.distinguished_name.push(rcgen::DnType::CommonName, "Causewaybay Code");
+        params.not_before = now - time::Duration::days(1);
+        params.not_after = now + time::Duration::days(CERT_DAYS);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let ends = params.not_after.unix_timestamp();
+        let key = rcgen::KeyPair::generate()?;
+        let cert = params.self_signed(&key)?;
+        write_private(&key_path, &key.serialize_pem())?;
+        std::fs::write(&cert_path, cert.pem())?;
+        std::fs::write(&note_path, serde_json::json!({ "names": all, "ends": ends }).to_string())?;
     }
     let cert = rustls_pemfile::certs(&mut std::fs::read(&cert_path)?.as_slice()).next().context("cert.pem holds no certificate")??;
     let key = rustls_pemfile::private_key(&mut std::fs::read(&key_path)?.as_slice())?.context("key.pem holds no key")?;
@@ -123,6 +155,8 @@ pub async fn serve_tcp(addr: SocketAddr, identity: &Identity, router: Router, ha
 
 /// The QUIC endpoint for HTTP/3 (bound now, so that a port in use is an error at startup).
 pub fn bind_udp(addr: SocketAddr, identity: &Identity) -> Result<quinn::Endpoint> {
+    // (On the port after the HTTPS one: see `cwbcode_proto::quic_port`.)
+    let addr = SocketAddr::new(addr.ip(), cwbcode_proto::quic_port(addr.port()));
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls(identity, &[b"h3"])?)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     let mut transport = quinn::TransportConfig::default();
@@ -156,6 +190,9 @@ pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router, allowed: Allow
                 }
             };
             let remote = connection.remote_address();
+            if !remote.ip().is_loopback() {
+                eprintln!("cwbcode: HTTP/3 connection from {remote}");
+            }
             let Ok(mut h3) = h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(connection)).await else { return };
             while let Ok(Some(resolver)) = h3.accept().await {
                 let router = router.clone();
@@ -223,5 +260,26 @@ mod tests {
         assert_eq!(token(&home).unwrap(), t);
         assert_eq!(std::fs::metadata(home.join("token")).unwrap().permissions().mode() & 0o777, 0o600);
         assert!(names().contains(&"localhost".to_string()));
+
+        // A certificate that does not name an address the machine now has, or is near its end,
+        // or was made before these were recorded, is made again; the names it had are kept.
+        let note = home.join("cert.json");
+        let recorded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&note).unwrap()).unwrap();
+        let days = (recorded["ends"].as_i64().unwrap() - time::OffsetDateTime::now_utc().unix_timestamp()) / 86_400;
+        assert!((390..=398).contains(&days), "good for {days} days");
+        std::fs::write(&note, serde_json::json!({ "names": ["old.example"], "ends": recorded["ends"] }).to_string()).unwrap();
+        let widened = identity(&home).unwrap();
+        assert_ne!(widened.fingerprint, first.fingerprint);
+        let recorded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&note).unwrap()).unwrap();
+        let kept: Vec<&str> = recorded["names"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect();
+        assert!(kept.contains(&"old.example") && kept.contains(&"localhost"), "{kept:?}");
+        assert_eq!(identity(&home).unwrap().fingerprint, widened.fingerprint);
+        let soon = time::OffsetDateTime::now_utc().unix_timestamp() + 5 * 86_400;
+        std::fs::write(&note, serde_json::json!({ "names": kept, "ends": soon }).to_string()).unwrap();
+        assert_ne!(identity(&home).unwrap().fingerprint, widened.fingerprint);
+        std::fs::remove_file(&note).unwrap();
+        let before = identity(&home).unwrap().fingerprint;
+        assert_eq!(identity(&home).unwrap().fingerprint, before);
+        assert_eq!(std::fs::metadata(home.join("key.pem")).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

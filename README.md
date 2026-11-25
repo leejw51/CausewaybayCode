@@ -219,8 +219,14 @@ length, with an empty frame as heartbeat. The same messages are used by the term
 and, compiled to WebAssembly, by the web client.
 
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for
-HTTP/2 over TLS and on the UDP port of the same number for HTTP/3 over QUIC, with one
-self-signed certificate made on first start. The terminal client tries HTTP/3 for 1.5 s and
+HTTP/2 over TLS (7443) and on the next UDP port for HTTP/3 over QUIC (7444), with one
+self-signed certificate. It is made on first start, good for 397 days, for serving only, and
+names every address of the machine (localhost, LAN, Tailscale); it is made again, with a new
+fingerprint, when the machine has an address it does not name or 30 days before it ends.
+(Safari takes the first page from a certificate that breaks Apple's rules, a longer life,
+no serving purpose, an address not named, and then refuses everything after it.) HTTP/3 is deliberately not on the HTTPS port
+and not advertised: a browser that expects it there tries it, refuses the self-signed
+certificate over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
 falls back to HTTP/2; it trusts exactly the backend's certificate (pinned), whatever name
 the backend is reached by. A browser decides for itself: with a self-signed certificate
 browsers do not use QUIC, so **the web client runs over HTTP/2** (the dashboard shows which).

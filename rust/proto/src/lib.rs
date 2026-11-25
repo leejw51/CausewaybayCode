@@ -22,6 +22,15 @@ pub const CALL_PATH: &str = "/api/call";
 pub const CHAT_PATH: &str = "/api/chat";
 /// The response header that says how a request arrived: h3, h2 or http/1.1.
 pub const PROTOCOL_HEADER: &str = "x-cwbcode-protocol";
+/// The UDP port HTTP/3 is served on, for a backend whose HTTPS (TCP) port is `port`: the next
+/// one. Not the same number: a browser that expects HTTP/3 where it found HTTPS will try it,
+/// refuse the self-signed certificate over QUIC (its "visit anyway" exception covers TCP
+/// only), and show the site as unreachable. On another port only the terminal client, which
+/// pins the certificate, ever asks.
+pub fn quic_port(port: u16) -> u16 {
+    port.checked_add(1).unwrap_or(port - 1)
+}
+
 /// Largest request the server reads, and largest message a reader accepts (bytes).
 pub const MAX_MESSAGE_BYTES: usize = 48 << 20;
 /// Largest file sent in a request.

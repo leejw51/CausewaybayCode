@@ -259,7 +259,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
             None => Some(net::bind_udp(bind, &identity)?),
         };
         for (what, address) in addresses(bind) {
-            eprintln!("cwbcode: listening on {address} ({what}; HTTP/2{})", if quic.is_some() { " and HTTP/3" } else { "" });
+            eprintln!("cwbcode: listening on {address} ({what}; HTTP/2{})", if quic.is_some() { format!(", and HTTP/3 on UDP port {}", cwbcode_proto::quic_port(bind.port())) } else { String::new() });
         }
         if let Some(quic) = &quic {
             tokio::spawn(net::serve_udp(quic.clone(), router.clone(), allowed.clone(), api::UNSIGNED_BYTES));

@@ -57,12 +57,30 @@ fn protocol(version: Version) -> &'static str {
 /// HTTP/3 by itself, with the certificate pinned.
 async fn stamp(State(_app): State<App>, request: HttpRequest, next: Next) -> HttpResponse {
     let version = request.version();
+    let (method, path, from) = (request.method().clone(), request.uri().path().to_string(), peer(&request));
+    let agent = browser(request.headers().get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or(""));
     let mut response = next.run(request).await;
+    // A line for what another machine asks for, other than calls that went well: when a
+    // browser there "cannot open" the backend, this says how far it got (a page with nothing
+    // after it is a browser that took the page and refused the rest).
+    if from.is_some_and(|ip| !ip.is_loopback()) && (method != axum::http::Method::POST || !response.status().is_success()) {
+        eprintln!("cwbcode: {} {method} {path} over {} -> {} ({agent})", from.map(|ip| ip.to_string()).unwrap_or_default(), protocol(version), response.status().as_u16());
+    }
     response.headers_mut().insert(PROTOCOL_HEADER, HeaderValue::from_static(protocol(version)));
     if version != Version::HTTP_3 {
         response.headers_mut().insert(header::ALT_SVC, HeaderValue::from_static("clear"));
     }
     response
+}
+
+/// Which browser a User-Agent names, for the log (the whole header is not kept).
+fn browser(agent: &str) -> &'static str {
+    let has = |word: &str| agent.contains(word);
+    if has("CriOS") || has("Chrome/") { "Chrome" }
+    else if has("FxiOS") || has("Firefox/") { "Firefox" }
+    else if has("Safari/") { "Safari" }
+    else if agent.is_empty() { "no user agent" }
+    else { "another client" }
 }
 
 /// What a request without credentials may send: enough for a sign-in, no more.

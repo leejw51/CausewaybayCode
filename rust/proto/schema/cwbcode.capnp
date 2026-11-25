@@ -1,6 +1,6 @@
 @0xb4f1c9a27d53e611;
-# The messages of cwbcode's API. A call is an HTTP POST (HTTP/3, or HTTP/2 where QUIC is not
-# available) whose body is one Request:
+# The messages of cwbcode's API. A call is an HTTP POST (HTTP/3, on the UDP port after the
+# HTTPS port, or HTTP/2 where QUIC is not available) whose body is one Request:
 #
 #   POST /api/call   -> one Response
 #   POST /api/chat   -> a stream of Events, each framed as a 4-byte little-endian length

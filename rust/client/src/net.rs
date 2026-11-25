@@ -192,6 +192,8 @@ impl Client {
     }
 
     async fn quic(address: SocketAddr, host: &str, trust: &Trust) -> Result<(Sender, quinn::Endpoint)> {
+        // HTTP/3 is on the port after the HTTPS one.
+        let address = SocketAddr::new(address.ip(), cwbcode_proto::quic_port(address.port()));
         let bind: SocketAddr = if address.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
         let mut endpoint = quinn::Endpoint::client(bind)?;
         let mut config = quinn::ClientConfig::new(Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(tls(trust, b"h3"))?));
@@ -280,6 +282,28 @@ impl Client {
             return Err(Self::refused(status, &response.bytes().await.unwrap_or_default()));
         }
         Ok(response)
+    }
+
+    /// Fetch a page or file of the web client: its status and bytes. (How a browser asks,
+    /// for checking that both transports serve the same thing.)
+    pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>)> {
+        match self.transport() {
+            Transport::H3 { send, .. } => {
+                let request = http::Request::get(format!("{}{path}", self.base)).body(())?;
+                let mut stream = send.clone().send_request(request).await.map_err(broken)?;
+                stream.finish().await.map_err(broken)?;
+                let response = stream.recv_response().await.map_err(broken)?;
+                let mut body = Vec::new();
+                while let Some(mut chunk) = stream.recv_data().await.map_err(broken)? {
+                    body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+                }
+                Ok((response.status().as_u16(), body))
+            }
+            Transport::H2(client) => {
+                let response = client.get(format!("{}{path}", self.base)).send().await?;
+                Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+            }
+        }
     }
 
     /// One call and its answer. An error the server reports is an error here.

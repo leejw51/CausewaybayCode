@@ -44,8 +44,9 @@ fn free_port() -> u16 {
     // Below the range the system hands out to clients (49152 and up).
     let base = 21000 + (std::process::id() % 250) as u16 * 100;
     loop {
-        let port = base + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+        // Two at a time: HTTPS on one (TCP), HTTP/3 on the next (UDP).
+        let port = base + 2 * NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", cwbcode_proto::quic_port(port))).is_ok() {
             return port;
         }
     }
@@ -797,4 +798,38 @@ async fn a_wallet_fixed_in_the_environment_is_not_changed_by_setting_up() {
         assert!(refused.contains("the environment"), "{refused}");
     }
     assert!(!server.home.join(".cwbcode/settings.jsonl").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_web_client_is_served_whole_over_http3_as_over_http2() {
+    let server = Server::start("pages", HELLO, &[]);
+    let (quic, tcp) = (server.client(true).await, server.client(false).await);
+    assert_eq!((quic.protocol(), tcp.protocol()), ("h3", "h2"));
+    let (status, page) = tcp.get("/").await.unwrap();
+    assert_eq!(status, 200);
+    let page = String::from_utf8(page).unwrap();
+    // The page and everything it names: scripts, the WebAssembly, the stylesheet.
+    let mut paths = vec!["/".to_string(), "/some/route/of/the/app".to_string()];
+    for part in page.split(['"', '\'']) {
+        if part.starts_with('/') && (part.ends_with(".js") || part.ends_with(".wasm") || part.ends_with(".css")) {
+            paths.push(part.to_string());
+        }
+    }
+    paths.dedup();
+    let mut total = 0;
+    for path in &paths {
+        let over_tcp = tcp.get(path).await.unwrap();
+        // Several at once, as a browser asks.
+        let (a, b, c) = tokio::join!(quic.get(path), quic.get(path), quic.get(path));
+        for over_quic in [a.unwrap(), b.unwrap(), c.unwrap()] {
+            assert_eq!(over_quic.0, 200, "{path} over HTTP/3");
+            assert!(over_quic.1 == over_tcp.1, "{path}: {} bytes over HTTP/3, {} over HTTP/2", over_quic.1.len(), over_tcp.1.len());
+        }
+        total += over_tcp.1.len();
+    }
+    assert!(paths.len() >= 2 && total > 0, "{paths:?}");
+    // Nothing answers QUIC on the HTTPS port itself: a browser that tries HTTP/3 there (having
+    // been told of it by an earlier version) is turned away at once and stays on HTTP/2.
+    assert!(std::net::UdpSocket::bind(("127.0.0.1", server.port)).is_ok(), "something listens on UDP {}", server.port);
+    assert!(std::net::UdpSocket::bind(("127.0.0.1", cwbcode_proto::quic_port(server.port))).is_err(), "HTTP/3 is not on the port after");
 }
