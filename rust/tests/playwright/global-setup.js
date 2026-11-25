@@ -30,7 +30,7 @@ module.exports = async () => {
   const home = path.join(run, 'server');
   const port = await freePort();
   const log = fs.openSync(path.join(run, 'server.log'), 'w');
-  const server = spawn(binary, ['serve', '--bind', `127.0.0.1:${port}`], { env: { ...process.env, CWBCODE_HOME: home }, stdio: ['ignore', log, log], detached: false });
+  const server = spawn(binary, ['serve', '--env-file', '/dev/null', '--bind', `127.0.0.1:${port}`], { env: { ...process.env, CWBCODE_HOME: home, CWBCODE_WALLET: '' }, stdio: ['ignore', log, log], detached: false });
 
   // The token appears once the backend has started.
   const tokenFile = path.join(home, 'token');

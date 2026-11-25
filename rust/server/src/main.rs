@@ -1,16 +1,21 @@
-//! `cwbcode`: the backend of Causeway Bay Code. It holds the model (Inkling 2 Mini on Apple
+//! `cwbcode`: the backend of Causewaybay Code. It holds the model (Inkling 2 Mini on Apple
 //! MLX), runs the agent and its tools in any project folder under the home folder, keeps
 //! everything in SQLite (~/.cwbcode for itself, <project>/.cwbcode for each project), and
 //! serves the terminal client (`cwbcodeclient`) and the web client over HTTP/3, or HTTP/2
 //! where QUIC is not available, with a self-signed certificate.
 //!
-//!   cwbcode serve                  start the server (127.0.0.1:7443)
-//!   cwbcode serve --bind 0.0.0.0:7443   reachable from other machines (with the token)
+//!   cwbcode serve                  start the server: on 127.0.0.1:7443, or on 0.0.0.0:7443
+//!                                  (reachable from other machines, with the token) when
+//!                                  CWBCODE_WALLET is set in .env
+//!   cwbcode serve --bind ADDR      listen there, whatever .env says
 //!   cwbcode url                    where the web client is, and the token to give it
 
 mod agent;
 mod api;
+mod auth;
+mod control;
 mod dyntool;
+mod env;
 mod inkling;
 mod kb;
 mod llm;
@@ -18,6 +23,7 @@ mod net;
 mod projects;
 mod prompt;
 mod sandbox;
+mod settings;
 mod store;
 mod tools;
 mod ui;
@@ -33,7 +39,7 @@ use clap::{Args, Parser, Subcommand};
 pub const DEFAULT_PORT: u16 = 7443;
 
 #[derive(Parser)]
-#[command(name = "cwbcode", version, about = "Causeway Bay Code backend: a local AI coding agent (Inkling 2 Mini on Apple MLX) served over HTTP/3 and HTTP/2")]
+#[command(name = "cwbcode", version, about = "Causewaybay Code backend: a local AI coding agent (Inkling 2 Mini on Apple MLX) served over HTTP/3 and HTTP/2")]
 struct Cli {
     /// Where the server keeps its database, certificate, token and compiled tools [default: ~/.cwbcode].
     #[arg(long, value_name = "DIR", env = "CWBCODE_HOME", global = true)]
@@ -58,10 +64,24 @@ enum Cmd {
 
 #[derive(Args, Clone)]
 struct Serve {
-    /// The address to listen on (TCP for HTTP/2, UDP for HTTP/3). 0.0.0.0 makes the server
-    /// reachable from other machines.
-    #[arg(long, default_value = "127.0.0.1:7443", env = "CWBCODE_BIND")]
-    bind: SocketAddr,
+    /// The address to listen on (TCP for HTTP/2, UDP for HTTP/3). By default: 0.0.0.0:7443
+    /// (every interface, reachable from other machines) when CWBCODE_WALLET is set, in the
+    /// environment or the .env file; 127.0.0.1:7443 (this machine only) when it is not.
+    #[arg(long, env = "CWBCODE_BIND")]
+    bind: Option<SocketAddr>,
+
+    /// The port to listen on when --bind is not given.
+    #[arg(long, default_value_t = DEFAULT_PORT, env = "CWBCODE_PORT")]
+    port: u16,
+
+    /// The .env file to read CWBCODE_WALLET from [default: .env in the current folder].
+    #[arg(long, value_name = "FILE")]
+    env_file: Option<PathBuf>,
+
+    /// Ask for the backend's token even in local mode (no wallet, this machine only), where
+    /// no login is needed otherwise.
+    #[arg(long)]
+    require_token: bool,
 
     /// Do not offer HTTP/3: clients use HTTP/2.
     #[arg(long)]
@@ -134,13 +154,48 @@ fn addresses(bind: SocketAddr) -> Vec<(&'static str, String)> {
     out
 }
 
+/// The wallet (if set, and where) and the address to listen on.
+fn exposure(options: &Serve, home: &std::path::Path) -> Result<(Option<env::Wallet>, SocketAddr)> {
+    let wallet = env::wallet(std::env::var(env::WALLET).ok(), options.env_file.as_deref(), home)?;
+    let bind = env::bind(options.bind, &wallet, options.port);
+    Ok((wallet, bind))
+}
+
+/// The lines that say who can reach the backend and why.
+fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::Wallet>, bind: SocketAddr) -> Vec<String> {
+    let scope = if bind.ip().is_unspecified() { "every interface: reachable from other machines" } else if bind.ip().is_loopback() { "this machine only" } else { "that address only" };
+    let why = if options.bind.is_some() { "as asked with --bind" } else if wallet.is_some() { "remote mode: a wallet is set" } else { "local mode: no wallet is set" };
+    vec![
+        match wallet {
+            Some(w) if w.fixed() => format!("{:<9} {}  (CWBCODE_WALLET from {})", "wallet", w.address, w.source),
+            Some(w) => format!("{:<9} {}  (set up; in {})", "wallet", w.address, home.join(settings::FILE).display()),
+            None => format!("{:<9} none  (not set up, and no CWBCODE_WALLET in the environment or {})", "wallet", options.env_file.as_ref().map_or(".env".to_string(), |p| p.display().to_string())),
+        },
+        format!("{:<9} {bind}  ({scope}, {why})", "bind"),
+        match control::mode(wallet, bind, options.require_token) {
+            auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (it stays in your browser)", "login"),
+            auth::Mode::Open => format!("{:<9} none: local mode (turn remote mode on from the dashboard, or `cwbcodeclient remote on <wallet address>`)", "login"),
+            auth::Mode::Token => format!("{:<9} the backend's token", "login"),
+        },
+    ]
+}
+
 fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
+    let (wallet, bind) = exposure(serve, home)?;
     let identity = net::identity(home)?;
     let token = net::token(home)?;
-    for (what, address) in addresses(serve.bind) {
+    for line in exposure_lines(serve, home, &wallet, bind) {
+        println!("{line}");
+    }
+    for (what, address) in addresses(bind) {
         println!("{what:<9} {address}");
     }
-    println!("{:<9} {token}", "token");
+    // The token matters where it is the way in; with a wallet it works from this machine only.
+    match control::mode(&wallet, bind, serve.require_token) {
+        auth::Mode::Token => println!("{:<9} {token}", "token"),
+        auth::Mode::Wallet(_) => println!("{:<9} {} (for clients on this machine; others sign in with the wallet)", "token", home.join("token").display()),
+        auth::Mode::Open => {}
+    }
     println!("{:<9} {} (sha256 {})", "cert", home.join("cert.pem").display(), identity.fingerprint);
     Ok(())
 }
@@ -149,6 +204,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     prompt::effort_level(&options.think).with_context(|| format!("--think {}: use none, minimal, low, medium, high or max", options.think))?;
     std::fs::create_dir_all(&home).with_context(|| format!("cannot create {}", home.display()))?;
     let home = home.canonicalize()?;
+    let (wallet, bind) = exposure(&options, &home)?;
     let identity = net::identity(&home)?;
     let token = net::token(&home)?;
     let roots = projects::Roots::from_env(&home)?;
@@ -169,35 +225,73 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     };
 
     // Bind both ports before anything slow, so that a port in use fails at once.
-    let endpoint = if options.no_h3 { None } else { Some(net::bind_udp(options.bind, &identity)?) };
+    let mut endpoint = if options.no_h3 { None } else { Some(net::bind_udp(bind, &identity)?) };
     let shared = worker::start(config, roots)?;
-    let app = api::App { shared: shared.clone(), token: Arc::new(token), h3_port: endpoint.as_ref().map(|_| options.bind.port()) };
+    let auth = Arc::new(auth::Auth::new(control::mode(&wallet, bind, options.require_token), token, identity.fingerprint.clone(), &home));
+    let (rebind, mut moves) = tokio::sync::watch::channel(bind);
+    let control = Arc::new(control::Control {
+        home: home.clone(),
+        asked: options.bind,
+        port: options.port,
+        require_token: options.require_token,
+        fixed: wallet.as_ref().filter(|w| w.fixed()).map(|w| w.source.clone()),
+        bind: std::sync::Mutex::new(bind),
+        source: std::sync::Mutex::new(wallet.as_ref().map_or(String::new(), |w| w.source.clone())),
+        rebind,
+    });
+    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()) };
     let router = api::router(app.clone());
+    let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 
     eprintln!("cwbcode {} · {}", env!("CARGO_PKG_VERSION"), shared.sandbox_label());
-    for (what, address) in addresses(options.bind) {
-        eprintln!("cwbcode: listening on {address} ({what}; HTTP/2{})", if endpoint.is_some() { " and HTTP/3" } else { "" });
+    for line in exposure_lines(&options, &home, &wallet, bind) {
+        eprintln!("cwbcode: {line}");
     }
-    eprintln!("cwbcode: `cwbcode url` prints the token; home {}", home.display());
-    if options.bind.ip().is_unspecified() {
-        eprintln!("cwbcode: reachable from other machines. Anyone with the token can run commands here as you: keep it private.");
-    }
+    eprintln!("cwbcode: home {}", home.display());
 
-    if let Some(endpoint) = endpoint {
-        tokio::spawn(net::serve_udp(endpoint, router.clone(), Arc::new(move |headers: &http::HeaderMap| app.authorized(headers))));
-    }
-    tokio::select! {
-        result = net::serve_tcp(options.bind, &identity, router) => result,
-        _ = shutdown() => {
-            eprintln!("cwbcode: stopping");
-            // Stop what the model or a command is doing, and wait for it to be gone: a
-            // command runs in a process group of its own and would otherwise outlive us.
-            let waited = std::time::Instant::now();
-            while shared.busy.load(std::sync::atomic::Ordering::Relaxed) && waited.elapsed() < std::time::Duration::from_secs(8) {
-                agent::interrupt();
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Serve at `bind` until told to stop, or to listen somewhere else (remote mode turned on
+    // or off while running), and then serve there.
+    let mut bind = bind;
+    loop {
+        let quic = match endpoint.take() {
+            Some(endpoint) => Some(endpoint),
+            None if options.no_h3 => None,
+            None => Some(net::bind_udp(bind, &identity)?),
+        };
+        for (what, address) in addresses(bind) {
+            eprintln!("cwbcode: listening on {address} ({what}; HTTP/2{})", if quic.is_some() { " and HTTP/3" } else { "" });
+        }
+        if let Some(quic) = &quic {
+            tokio::spawn(net::serve_udp(quic.clone(), router.clone(), allowed.clone(), api::UNSIGNED_BYTES));
+        }
+        let handle = axum_server::Handle::new();
+        let tcp = net::serve_tcp(bind, &identity, router.clone(), handle.clone());
+        tokio::pin!(tcp);
+        tokio::select! {
+            result = &mut tcp => return result,
+            _ = shutdown() => {
+                eprintln!("cwbcode: stopping");
+                // Stop what the model or a command is doing, and wait for it to be gone: a
+                // command runs in a process group of its own and would otherwise outlive us.
+                let waited = std::time::Instant::now();
+                while shared.busy.load(std::sync::atomic::Ordering::Relaxed) && waited.elapsed() < std::time::Duration::from_secs(8) {
+                    agent::interrupt();
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                return Ok(());
             }
-            Ok(())
+            _ = moves.changed() => {
+                // Let the answer to the request that asked for this go out first.
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                handle.graceful_shutdown(Some(std::time::Duration::from_secs(3)));
+                if let Some(quic) = quic {
+                    quic.close(0u32.into(), b"listening elsewhere");
+                    quic.wait_idle().await;
+                }
+                let _ = tcp.await;
+                bind = *moves.borrow_and_update();
+                eprintln!("cwbcode: remote mode {}: moving to {bind}", if bind.ip().is_loopback() { "off" } else { "on" });
+            }
         }
     }
 }
@@ -216,7 +310,7 @@ fn main() {
     let home = cli.home.clone().unwrap_or_else(store::default_home);
     let result = match cli.command {
         Some(Cmd::Token) => std::fs::create_dir_all(&home).map_err(Into::into).and_then(|_| net::token(&home)).map(|t| println!("{t}")),
-        Some(Cmd::Url(options)) => std::fs::create_dir_all(&home).map_err(Into::into).and_then(|_| print_access(&home, &options)),
+        Some(Cmd::Url(options)) => std::fs::create_dir_all(&home).map_err(anyhow::Error::from).and_then(|_| Ok(home.canonicalize()?)).and_then(|home| print_access(&home, &options)),
         Some(Cmd::Serve(options)) => run(home, options),
         None => run(home, cli.serve),
     };

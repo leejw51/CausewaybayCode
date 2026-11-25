@@ -1,4 +1,4 @@
-// Causeway Bay Code's web client, driven by Playwright in the installed Google Chrome.
+// Causewaybay Code's web client, driven by Playwright in the installed Google Chrome.
 // The backend is started by global-setup.js with the real model, so this takes minutes
 // and needs about 22 GB of free memory.
 const { defineConfig } = require('@playwright/test');

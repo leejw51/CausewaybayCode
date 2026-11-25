@@ -1,4 +1,4 @@
-# Causeway Bay Code in Rust: a local coding and general-purpose agent on Inkling 2 Mini (MLX).
+# Causewaybay Code in Rust: a local coding and general-purpose agent on Inkling 2 Mini (MLX).
 #   proto   the Cap'n Proto messages the three programs exchange
 #   server  cwbcode: the backend (model, agent, tools, SQLite, HTTP/3 + HTTP/2)
 #   client  cwbcodeclient: the terminal client

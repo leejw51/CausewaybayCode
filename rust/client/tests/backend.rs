@@ -93,9 +93,16 @@ impl Server {
     fn spawn(home: &Path, port: u16, args: &[String]) -> Child {
         let real_home = std::env::var("HOME").unwrap();
         Command::new(backend_binary())
-            .args(["serve", "--bind", &format!("127.0.0.1:{port}"), "--script"])
+            // (No .env of the developer's is to decide how a test's backend behaves.)
+            .args(["serve", "--env-file", "/dev/null", "--script"])
             .arg(home.join("script.json"))
-            .args(args)
+            // "movable": the backend chooses its address by its mode (this machine only, or
+            // every interface in remote mode) instead of being told one.
+            .args(if args.iter().any(|a| a == "movable") { vec!["--port".to_string(), port.to_string()] } else { vec!["--bind".to_string(), format!("127.0.0.1:{port}")] })
+            // An argument "env:NAME=value" is given to the backend as an environment variable.
+            .args(args.iter().filter(|a| !a.starts_with("env:") && *a != "movable"))
+            .env_remove("CWBCODE_WALLET")
+            .envs(args.iter().filter_map(|a| a.strip_prefix("env:")?.split_once('=')))
             .env("HOME", home)
             .env("CWBCODE_HOME", home.join(".cwbcode"))
             // The Rust toolchain (for tools made at runtime) lives in the real home folder.
@@ -215,7 +222,8 @@ async fn http3_is_used_and_http2_when_quic_is_off() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_token_and_the_certificate_are_required() {
-    let server = Server::start("auth", HELLO, &[]);
+    // A backend that asks for its token (as one listening beyond this machine without a wallet does).
+    let server = Server::start("auth", HELLO, &["--require-token"]);
     for h3 in [true, false] {
         let wrong = Client::connect(&server.url, "not-the-token", server.trust.clone(), h3).await.unwrap();
         let refused = wrong.call(&Request::new(Method::Status)).await.unwrap_err().to_string();
@@ -225,27 +233,38 @@ async fn the_token_and_the_certificate_are_required() {
         assert!(none.call(&Request::new(Method::Projects)).await.is_err());
     }
     // Another certificate than the server's is not trusted, over either protocol.
-    let other = Server::start("auth-other", HELLO, &[]);
+    let other = Server::start("auth-other", HELLO, &["--require-token"]);
     let mismatched = Client::connect(&server.url, &server.token, other.trust.clone(), true).await.unwrap();
     assert_eq!(mismatched.protocol(), "h2", "QUIC with the wrong certificate must not connect");
     assert!(mismatched.call(&Request::new(Method::Status)).await.is_err());
     // The web page itself needs no token; the API behind it does.
     let page = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap().get(&server.url).send().await.unwrap();
     assert!(page.status().is_success());
-    assert!(page.headers().get("alt-svc").unwrap().to_str().unwrap().starts_with("h3=\":"));
+    // HTTP/3 is not advertised to browsers (they would try it and refuse the certificate).
+    assert_eq!(page.headers().get("alt-svc").unwrap().to_str().unwrap(), "clear");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn projects_are_folders_under_home_with_their_own_store() {
     let server = Server::start("projects", HELLO, &[]);
     let client = server.client(true).await;
+    // A folder that does not exist is not a project to talk in ...
     for outside in ["/etc", "/", "/tmp", "~", "~/.cwbcode", "~/missing", "relative/path"] {
-        let refused = client.call(&Request::new(Method::OpenProject).text(outside)).await;
-        assert!(refused.is_err(), "{outside} was accepted as a project");
         assert!(client.call(&Request::new(Method::Sessions).project(outside)).await.is_err(), "{outside}");
         let mut stream = client.chat(&Request::new(Method::Chat).project(outside).text("hi")).await.unwrap();
         assert!(read_all(&mut stream).await.iter().any(|w| matches!(w, What::Error(_))), "{outside}");
     }
+    assert!(!server.home.join("missing").exists());
+    // ... and where the backend may not work, none is opened or made.
+    for outside in ["/etc", "/", "/tmp", "/tmp/cwbcode-it-made-outside", "~", "~/.cwbcode", "~/.cwbcode/new", "~/.ssh/new", "~/proj/../../escaped", "relative/path"] {
+        assert!(client.call(&Request::new(Method::OpenProject).text(outside)).await.is_err(), "{outside} was accepted as a project");
+    }
+    assert!(!Path::new("/tmp/cwbcode-it-made-outside").exists() && !server.home.join(".ssh").exists() && !server.home.parent().unwrap().join("escaped").exists());
+    // Opening a folder under home that does not exist makes it, with the folders above it.
+    let made = client.call(&Request::new(Method::OpenProject).text("~/brand/new/project")).await.unwrap();
+    assert!(made.text.starts_with("created ") && made.text.ends_with("/brand/new/project"), "{}", made.text);
+    assert!(server.home.join("brand/new/project/.cwbcode/cwbcode.db").exists());
+    assert_eq!(client.call(&Request::new(Method::OpenProject).text("~/brand/new/project")).await.unwrap().text, "", "opening it again makes nothing");
     let opened = client.call(&Request::new(Method::OpenProject).text("~/proj")).await.unwrap();
     assert_eq!(opened.projects[0].path, server.project());
     assert_eq!(opened.projects[0].name, "proj");
@@ -263,7 +282,8 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     let events = read_all(&mut client.chat(&chat(&server, 0, "hello there", "")).await.unwrap()).await;
     let session = session_of(&events);
     let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
-    assert_eq!((listed.len(), listed[0].sessions), (1, 1));
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.iter().find(|p| p.name == "proj").unwrap().sessions, 1);
     client.call(&Request::new(Method::NameSession).project(&server.project()).session(session).name("greeting")).await.unwrap();
     let sessions = client.call(&Request::new(Method::Sessions).project(&server.project())).await.unwrap().sessions;
     assert_eq!((sessions[0].id, sessions[0].name.as_str(), sessions[0].first.as_str()), (session, "greeting", "hello there"));
@@ -509,7 +529,7 @@ async fn a_client_goes_on_after_the_backend_restarts() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_without_the_token_is_turned_away_before_its_body_is_read() {
-    let server = Server::start("preauth", HELLO, &[]);
+    let server = Server::start("preauth", HELLO, &["--require-token"]);
     // 30 MB that would be buffered if the body were read first; over HTTP/3 and HTTP/2.
     let mut big = Request::new(Method::KbAdd).project(&server.project());
     big.files = vec![Upload { name: "big.bin".into(), data: vec![7; 30 << 20] }];
@@ -581,4 +601,200 @@ async fn a_steered_model_cannot_write_through_a_link_or_read_the_token() {
     assert!(!results[2].0 && results[2].1.contains("off limits"), "{:?}", results[2]);
     assert!(!results[3].1.contains(&server.token), "the search printed the token");
     assert!(!events.iter().any(|w| matches!(w, What::ToolEnd { text, .. } | What::Text(text) if text.contains(&server.token))));
+}
+
+const TEST_PHRASE: &str = "test test test test test test test test test test test junk";
+const TEST_WALLET: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
+    // No wallet, this machine only.
+    let server = Server::start("open", HELLO, &[]);
+    for h3 in [true, false] {
+        let client = Client::connect(&server.url, "", server.trust.clone(), h3).await.unwrap();
+        let hello = client.call(&Request::new(Method::Hello)).await.unwrap().status.unwrap();
+        assert_eq!((hello.auth.as_str(), hello.wallet.as_str()), ("open", ""));
+        assert_eq!(hello.fingerprint.len(), 64);
+        // No token, and everything works.
+        assert_eq!(client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().auth, "open");
+        let events = read_all(&mut client.chat(&chat(&server, 0, "hi", "")).await.unwrap()).await;
+        assert!(events.iter().any(|w| matches!(w, What::Text(_))), "h3={h3}: {events:?}");
+        assert!(client.call(&Request::new(Method::Challenge)).await.is_err(), "there is nothing to sign in to");
+    }
+    // A page of another website, open in the same browser, is turned away: with its Origin,
+    // without one but marked cross-site, and for the sign-in calls too.
+    let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let post = |header: (&'static str, &'static str), request: Request| http.post(format!("{}/api/call", server.url)).header(header.0, header.1).body(request.encode()).send();
+    for foreign in [("origin", "https://evil.example"), ("origin", "null"), ("sec-fetch-site", "cross-site")] {
+        assert_eq!(post(foreign, Request::new(Method::Projects)).await.unwrap().status(), 401, "{foreign:?}");
+        assert_eq!(post(foreign, Request::new(Method::Hello)).await.unwrap().status(), 401, "{foreign:?}");
+        let chat = http.post(format!("{}/api/chat", server.url)).header(foreign.0, foreign.1).body(chat(&server, 0, "hi", "auto").encode()).send().await.unwrap();
+        assert_eq!(chat.status(), 401, "{foreign:?}");
+    }
+    // The backend's own page is not.
+    let own = format!("https://127.0.0.1:{}", server.port);
+    let from_own_page = http.post(format!("{}/api/call", server.url)).header("origin", own).body(Request::new(Method::Projects).encode()).send().await.unwrap();
+    assert_eq!(from_own_page.status(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_wallet_one_signs_in_with_its_recovery_phrase() {
+    use cwbcode_proto::wallet;
+    let wallet_env = format!("env:CWBCODE_WALLET={TEST_WALLET}");
+    let server = Server::start("wallet", HELLO, &[&wallet_env]);
+    for h3 in [true, false] {
+        let client = Client::connect(&server.url, "", server.trust.clone(), h3).await.unwrap();
+        let hello = client.call(&Request::new(Method::Hello)).await.unwrap().status.unwrap();
+        assert_eq!(hello.auth, "wallet");
+        assert!(wallet::same_address(&hello.wallet, TEST_WALLET));
+        // Without signing in: nothing but the sign-in calls.
+        let refused = client.call(&Request::new(Method::Status)).await.unwrap_err().to_string();
+        assert!(refused.contains("not signed in"), "{refused}");
+        assert!(client.chat(&chat(&server, 0, "hi", "")).await.is_err());
+
+        // Another wallet's signature (the same phrase's second account) is refused, and says why.
+        let challenge = client.call(&Request::new(Method::Challenge)).await.unwrap().text;
+        let other = wallet::key_from_phrase(TEST_PHRASE, 1).unwrap();
+        let wrong = client.call(&Request::new(Method::Login).text(&challenge).name(&wallet::sign(&other, &challenge).unwrap())).await.unwrap_err().to_string();
+        assert!(wrong.contains("belongs to"), "{wrong}");
+
+        // The wallet's own signature of a fresh challenge signs in.
+        let challenge = client.call(&Request::new(Method::Challenge)).await.unwrap().text;
+        assert_eq!(wallet::challenge_field(&challenge, "server"), Some(hello.fingerprint.as_str()));
+        let key = wallet::key_from_phrase(TEST_PHRASE, 0).unwrap();
+        let signature = wallet::sign(&key, &challenge).unwrap();
+        let session = client.call(&Request::new(Method::Login).text(&challenge).name(&signature)).await.unwrap().text;
+        assert_eq!(session.len(), 64);
+        // The same signature cannot be used again.
+        assert!(client.call(&Request::new(Method::Login).text(&challenge).name(&signature)).await.is_err());
+
+        client.set_token(&session);
+        let status = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
+        assert_eq!(status.auth, "wallet");
+        if h3 {
+            let events = read_all(&mut client.chat(&chat(&server, 0, "hi", "")).await.unwrap()).await;
+            assert_eq!(text_of(&events), "Hello from the script, in several pieces.");
+        }
+        // Signing out ends the session.
+        client.call(&Request::new(Method::Logout)).await.unwrap();
+        assert!(client.call(&Request::new(Method::Status)).await.is_err());
+        // The backend's own page can make the sign-in calls (a browser names the host in the
+        // request's address over HTTP/2, not in a Host header); another site's page cannot.
+        let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+        let hello = |origin: String| http.post(format!("{}/api/call", server.url)).header("origin", origin).body(Request::new(Method::Hello).encode()).send();
+        assert_eq!(hello(format!("https://127.0.0.1:{}", server.port)).await.unwrap().status(), 200);
+        assert_eq!(hello("https://evil.example".to_string()).await.unwrap().status(), 401);
+        // On the backend's own machine its token file still lets the terminal client in.
+        client.set_token(&server.token);
+        assert!(client.call(&Request::new(Method::Status)).await.is_ok());
+        client.set_token("a-guess");
+        assert!(client.call(&Request::new(Method::Status)).await.is_err());
+    }
+}
+
+/// What the backend tells anyone: how to sign in, and where it listens.
+async fn hello(client: &Client) -> anyhow::Result<cwbcode_proto::Status> {
+    Ok(client.call(&Request::new(Method::Hello)).await?.status.unwrap())
+}
+
+/// An address of this machine that other machines reach it by, if it has one.
+fn lan_address() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() {
+    use cwbcode_proto::wallet;
+    let mut server = Server::start("remote", HELLO, &["movable"]);
+    let local = format!("127.0.0.1:{}", server.port);
+    let everywhere = format!("0.0.0.0:{}", server.port);
+    let settings = server.home.join(".cwbcode/settings.jsonl");
+
+    // Local mode: this machine only, no login, nothing set up.
+    let client = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
+    let before = hello(&client).await.unwrap();
+    assert_eq!((before.auth.as_str(), before.bind.as_str(), before.wallet_source.as_str()), ("open", local.as_str(), ""));
+    if let Some(ip) = lan_address() {
+        let from_outside = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), false).await.unwrap();
+        assert!(hello(&from_outside).await.is_err(), "local mode answered on {ip}");
+    }
+    // Something that is not an address sets nothing up.
+    assert!(client.call(&Request::new(Method::Setup).text("0x1234")).await.is_err());
+    assert!(!settings.exists());
+
+    // Remote mode on: said in the answer, and in force at once.
+    let on = client.call(&Request::new(Method::Setup).text(TEST_WALLET)).await.unwrap();
+    assert!(on.text.contains("Remote mode is on"), "{}", on.text);
+    let status = on.status.unwrap();
+    assert_eq!((status.auth.as_str(), status.bind.as_str(), status.wallet_source.as_str()), ("wallet", everywhere.as_str(), "settings"));
+    assert!(wallet::same_address(&status.wallet, TEST_WALLET));
+    let line: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&settings).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!((line["set"].as_str(), line["value"].as_str()), (Some("wallet"), Some(TEST_WALLET)));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The backend now answers on the machine's other addresses, and asks who is there.
+    let sign_in = |client: Client| async move {
+        let challenge = client.call(&Request::new(Method::Challenge)).await.unwrap().text;
+        let key = wallet::key_from_phrase(TEST_PHRASE, 0).unwrap();
+        let session = client.call(&Request::new(Method::Login).text(&challenge).name(&wallet::sign(&key, &challenge).unwrap())).await.unwrap().text;
+        client.set_token(&session);
+        client
+    };
+    if let Some(ip) = lan_address() {
+        for h3 in [true, false] {
+            let remote = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), h3).await.unwrap();
+            assert_eq!(hello(&remote).await.unwrap().auth, "wallet", "h3={h3}");
+            assert!(remote.call(&Request::new(Method::Status)).await.is_err(), "h3={h3}: no login was asked for");
+            // The backend's own token is not a way in from another address.
+            remote.set_token(&server.token);
+            assert!(remote.call(&Request::new(Method::Status)).await.is_err(), "h3={h3}: the token file worked from {ip}");
+            remote.set_token("");
+            let remote = sign_in(remote).await;
+            assert_eq!(remote.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().bind, everywhere);
+        }
+    }
+    // On this machine the same client goes on (it reconnects), with the token file or a session.
+    client.set_token(&server.token);
+    assert_eq!(client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().auth, "wallet");
+
+    // A restart reads the setting: still remote mode.
+    server.restart();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let again = Client::connect(&server.url, &server.token, server.trust.clone(), true).await.unwrap();
+    let after = hello(&again).await.unwrap();
+    assert_eq!((after.auth.as_str(), after.bind.as_str(), after.wallet_source.as_str()), ("wallet", everywhere.as_str(), "settings"));
+
+    // Off: by someone signed in. Local mode again, at once.
+    let stranger = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
+    assert!(stranger.call(&Request::new(Method::Setup).text("")).await.is_err(), "remote mode was turned off without signing in");
+    let owner = sign_in(Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap()).await;
+    let off = owner.call(&Request::new(Method::Setup).text("")).await.unwrap();
+    assert!(off.text.contains("Remote mode is off"), "{}", off.text);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let fresh = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
+    let finally = hello(&fresh).await.unwrap();
+    assert_eq!((finally.auth.as_str(), finally.bind.as_str(), finally.wallet_source.as_str()), ("open", local.as_str(), ""));
+    assert!(fresh.call(&Request::new(Method::Status)).await.is_ok());
+    if let Some(ip) = lan_address() {
+        let from_outside = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), false).await.unwrap();
+        assert!(hello(&from_outside).await.is_err(), "still answering on {ip} after remote mode was turned off");
+    }
+    assert_eq!(std::fs::read_to_string(&settings).unwrap().lines().count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wallet_fixed_in_the_environment_is_not_changed_by_setting_up() {
+    let wallet_env = format!("env:CWBCODE_WALLET={TEST_WALLET}");
+    let server = Server::start("fixed", HELLO, &[&wallet_env]);
+    let client = Client::connect(&server.url, &server.token, server.trust.clone(), true).await.unwrap();
+    let hello = client.call(&Request::new(Method::Hello)).await.unwrap().status.unwrap();
+    assert_eq!((hello.auth.as_str(), hello.wallet_source.as_str()), ("wallet", "the environment"));
+    for value in ["", "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"] {
+        let refused = client.call(&Request::new(Method::Setup).text(value)).await.unwrap_err().to_string();
+        assert!(refused.contains("the environment"), "{refused}");
+    }
+    assert!(!server.home.join(".cwbcode/settings.jsonl").exists());
 }

@@ -2,7 +2,7 @@
 name = "cwbcodeclient"
 version = "0.1.0"
 edition = "2024"
-description = "Causeway Bay Code terminal client: talks to the cwbcode backend over HTTP/3, or HTTP/2 where QUIC is not available"
+description = "Causewaybay Code terminal client: talks to the cwbcode backend over HTTP/3, or HTTP/2 where QUIC is not available"
 license = "MIT"
 
 [lib]
@@ -30,5 +30,6 @@ futures = "0.3"
 rustyline = "17"
 libc = "0.2"
 serde_json = "1"
+rpassword = "7"
 
 [dev-dependencies]

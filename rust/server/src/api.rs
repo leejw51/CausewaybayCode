@@ -1,5 +1,5 @@
 //! The API: two POST routes whose bodies are Cap'n Proto messages (see cwbcode_proto), and
-//! the web client's files. Every API request must carry the server's token.
+//! the web client's files. Who may use the API is decided in auth.rs.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -26,7 +26,8 @@ struct Web;
 #[derive(Clone)]
 pub struct App {
     pub shared: Arc<Shared>,
-    pub token: Arc<String>,
+    pub auth: Arc<crate::auth::Auth>,
+    pub control: Arc<crate::control::Control>,
     /// The port, for the Alt-Svc header that tells browsers about HTTP/3 (None: no HTTP/3).
     pub h3_port: Option<u16>,
 }
@@ -49,33 +50,38 @@ fn protocol(version: Version) -> &'static str {
     }
 }
 
-/// Say on every response how the request arrived, and that HTTP/3 is offered.
-async fn stamp(State(app): State<App>, request: HttpRequest, next: Next) -> HttpResponse {
+/// Say on every response how the request arrived. HTTP/3 is not advertised (and an earlier
+/// advertisement is withdrawn): a browser does not carry its "visit anyway" exception for the
+/// self-signed certificate over to QUIC, so one that was told about HTTP/3 would try it, fail,
+/// and show the site as unreachable. The terminal client needs no advertisement: it tries
+/// HTTP/3 by itself, with the certificate pinned.
+async fn stamp(State(_app): State<App>, request: HttpRequest, next: Next) -> HttpResponse {
     let version = request.version();
     let mut response = next.run(request).await;
     response.headers_mut().insert(PROTOCOL_HEADER, HeaderValue::from_static(protocol(version)));
-    if let (Some(port), true) = (app.h3_port, version != Version::HTTP_3) {
-        if let Ok(value) = HeaderValue::from_str(&format!("h3=\":{port}\"; ma=3600")) {
-            response.headers_mut().insert(header::ALT_SVC, value);
-        }
+    if version != Version::HTTP_3 {
+        response.headers_mut().insert(header::ALT_SVC, HeaderValue::from_static("clear"));
     }
     response
 }
 
-/// Compare without stopping at the first difference.
-fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
+/// What a request without credentials may send: enough for a sign-in, no more.
+pub const UNSIGNED_BYTES: usize = 64 << 10;
 
 impl App {
-    /// Does a request carry the server's token?
-    pub fn authorized(&self, headers: &HeaderMap) -> bool {
-        authorized(self, headers)
+    /// May this request use the API?
+    pub fn allowed(&self, headers: &HeaderMap, uri: &axum::http::Uri, peer: Option<std::net::IpAddr>) -> bool {
+        let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+        self.auth.allowed(headers, uri.authority().map(|a| a.as_str()).or(host), peer)
     }
 }
 
-fn authorized(app: &App, headers: &HeaderMap) -> bool {
-    headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|given| same(given.trim().as_bytes(), app.token.as_bytes()))
+fn peer(request: &HttpRequest) -> Option<std::net::IpAddr> {
+    request.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|info| info.0.ip())
+}
+
+fn refused() -> HttpResponse {
+    (StatusCode::UNAUTHORIZED, "sign in first: the token or session is missing or wrong").into_response()
 }
 
 fn capnp(bytes: Vec<u8>) -> HttpResponse {
@@ -83,17 +89,44 @@ fn capnp(bytes: Vec<u8>) -> HttpResponse {
 }
 
 async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
-    if !authorized(&app, request.headers()) {
-        return (StatusCode::UNAUTHORIZED, "the token is missing or wrong").into_response();
-    }
+    let allowed = app.allowed(request.headers(), request.uri(), peer(&request));
     let version = request.version();
-    let Ok(body) = axum::body::to_bytes(request.into_body(), cwbcode_proto::MAX_MESSAGE_BYTES).await else {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large").into_response();
+    let headers = request.headers().clone();
+    // The host the request names: over HTTP/2 and HTTP/3 it is in the address, not a header.
+    let authority = request.uri().authority().map(|a| a.to_string()).or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()).map(String::from));
+    // Without credentials only a sign-in is read, and it is small.
+    let limit = if allowed { cwbcode_proto::MAX_MESSAGE_BYTES } else { UNSIGNED_BYTES };
+    let Ok(body) = axum::body::to_bytes(request.into_body(), limit).await else {
+        return if allowed { (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large").into_response() } else { refused() };
     };
     let request = match Request::decode(&body) {
         Ok(request) => request,
+        Err(_) if !allowed => return refused(),
         Err(e) => return (StatusCode::BAD_REQUEST, format!("the request is not a cwbcode message: {e}")).into_response(),
     };
+    // Signing in needs no credentials, but still comes from the backend's own page or a client.
+    if matches!(request.method, Method::Hello | Method::Challenge | Method::Login) {
+        if !crate::auth::same_origin(&headers, authority.as_deref()) {
+            return refused();
+        }
+        return capnp(sign_in(&app, &request).unwrap_or_else(|e| Response::error(format!("{e:#}"))).encode());
+    }
+    if !allowed {
+        return refused();
+    }
+    if request.method == Method::Logout {
+        app.auth.logout(&headers);
+        return capnp(Response::default().encode());
+    }
+    if request.method == Method::Setup {
+        // Remote mode on or off: by whoever may use the backend now (in local mode, anyone
+        // on this machine; in remote mode, the wallet's owner).
+        let response = match app.control.setup(&app.auth, &request.text) {
+            Ok(said) => Response { text: said, status: Some(hello(&app)), ..Response::default() },
+            Err(e) => Response::error(format!("{e:#}")),
+        };
+        return capnp(response.encode());
+    }
     let response = match request.method {
         // These need the model thread, in turn.
         Method::KbAdd | Method::Compact | Method::Undo => queued(&app, request).await,
@@ -102,12 +135,37 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         // The rest is answered at once, also while the model is busy.
         _ => {
             let shared = app.shared.clone();
-            tokio::task::spawn_blocking(move || direct(&shared, &request, protocol(version)).unwrap_or_else(|e| Response::error(format!("{e:#}"))))
+            let known = hello(&app);
+            tokio::task::spawn_blocking(move || direct(&shared, &known, &request, protocol(version)).unwrap_or_else(|e| Response::error(format!("{e:#}"))))
                 .await
                 .unwrap_or_else(|e| Response::error(format!("the call failed: {e}")))
         }
     };
     capnp(response.encode())
+}
+
+/// What a client may know before it has credentials: how to sign in, and to what.
+fn hello(app: &App) -> Status {
+    Status {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        auth: app.auth.label().to_string(),
+        wallet: app.auth.wallet(),
+        fingerprint: app.auth.fingerprint.clone(),
+        bind: app.control.bind.lock().unwrap().to_string(),
+        wallet_source: app.control.source.lock().unwrap().clone(),
+        ..Status::default()
+    }
+}
+
+/// Hello, challenge and login: what a client does before it has credentials.
+fn sign_in(app: &App, request: &Request) -> Result<Response> {
+    let auth = &app.auth;
+    Ok(match request.method {
+        Method::Hello => Response { status: Some(hello(app)), ..Response::default() },
+        Method::Challenge => Response::text(auth.challenge()?),
+        Method::Login => Response::text(auth.login(&request.text, &request.name)?),
+        _ => bail!("not a sign-in call"),
+    })
 }
 
 async fn queued(app: &App, request: Request) -> Response {
@@ -119,8 +177,8 @@ async fn queued(app: &App, request: Request) -> Response {
 }
 
 async fn chat(State(app): State<App>, request: HttpRequest) -> HttpResponse {
-    if !authorized(&app, request.headers()) {
-        return (StatusCode::UNAUTHORIZED, "the token is missing or wrong").into_response();
+    if !app.allowed(request.headers(), request.uri(), peer(&request)) {
+        return refused();
     }
     let Ok(body) = axum::body::to_bytes(request.into_body(), cwbcode_proto::MAX_MESSAGE_BYTES).await else {
         return (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large").into_response();
@@ -171,7 +229,7 @@ fn project_info(path: &str, opened: &str) -> Project {
 }
 
 /// The calls answered without the model thread.
-fn direct(shared: &Shared, request: &Request, protocol: &str) -> Result<Response> {
+fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) -> Result<Response> {
     let mut out = Response::default();
     match request.method {
         Method::Status => {
@@ -192,6 +250,11 @@ fn direct(shared: &Shared, request: &Request, protocol: &str) -> Result<Response
                 home: config.home.display().to_string(),
                 h3: config.h3,
                 queued: shared.queued.load(Ordering::Relaxed),
+                auth: known.auth.clone(),
+                wallet: known.wallet.clone(),
+                fingerprint: known.fingerprint.clone(),
+                bind: known.bind.clone(),
+                wallet_source: known.wallet_source.clone(),
             });
         }
         Method::Projects => {
@@ -206,7 +269,11 @@ fn direct(shared: &Shared, request: &Request, protocol: &str) -> Result<Response
             }
         }
         Method::OpenProject => {
-            let path = shared.roots.resolve(&request.text)?;
+            // A folder that does not exist yet is made (with those above it).
+            let (path, created) = shared.roots.resolve_or_create(&request.text)?;
+            if created {
+                out.text = format!("created {}", path.display());
+            }
             Store::open_project(&path)?;
             let global = Store::open(&shared.config.home)?;
             let text = path.to_string_lossy().into_owned();
@@ -295,7 +362,7 @@ fn direct(shared: &Shared, request: &Request, protocol: &str) -> Result<Response
                 out.changes = store.changes(request.session)?;
             }
         }
-        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat => bail!("{:?} is not answered here", request.method),
+        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup => bail!("{:?} is not answered here", request.method),
     }
     Ok(out)
 }

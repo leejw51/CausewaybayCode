@@ -1,7 +1,7 @@
 {
   "name": "cwbcode-playwright",
   "private": true,
-  "description": "Causeway Bay Code's web client driven by Playwright, with the real model",
+  "description": "Causewaybay Code's web client driven by Playwright, with the real model",
   "scripts": { "test": "playwright test" },
   "devDependencies": { "@playwright/test": "^1.49.0" }
 }

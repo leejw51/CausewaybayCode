@@ -1,17 +1,26 @@
-//! Causeway Bay Code in the browser: a dashboard of the backend (model, memory, protocol,
+//! Causewaybay Code in the browser: a dashboard of the backend (model, memory, protocol,
 //! projects) and a client for talking to the agent in any project, with its knowledge base
 //! and the tools it has made. Built with Leptos; movement by Motion (motion.dev).
 
 mod api;
+mod i18n;
 mod motion;
 
 use cwbcode_proto::{Doc, Hit, Method, Project, Request, Session, Status, Tool, Upload, What};
+use i18n::{Lang, tr, tr_with};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
+// What the browser keeps, so that a refresh brings everything back:
+/// the session (or the backend's token),
 const TOKEN_KEY: &str = "cwbcode-token";
+/// the preferences and where the user was: theme, layout, language, view, project, conversation,
+const PREFS_KEY: &str = "cwbcode-prefs";
+/// and, when "remember on this device" is ticked, the wallet's recovery phrase and account,
+/// with which the page signs in again by itself when the session has ended.
+const PHRASE_KEY: &str = "cwbcode-phrase";
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -19,6 +28,26 @@ enum View {
     Chat,
     Knowledge,
     Tools,
+}
+
+impl View {
+    fn code(self) -> &'static str {
+        match self {
+            View::Dashboard => "dashboard",
+            View::Chat => "chat",
+            View::Knowledge => "knowledge",
+            View::Tools => "tools",
+        }
+    }
+
+    fn from_code(code: &str) -> View {
+        match code {
+            "dashboard" => View::Dashboard,
+            "knowledge" => View::Knowledge,
+            "tools" => View::Tools,
+            _ => View::Chat,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,7 +80,22 @@ struct Item {
 
 #[derive(Clone, Copy)]
 struct App {
+    /// How the backend wants clients to sign in: "" (not known yet), "open" (local mode: no
+    /// login), "wallet" or "token".
+    auth: RwSignal<String>,
+    /// The wallet the backend belongs to, and its certificate's fingerprint.
+    wallet: RwSignal<String>,
+    fingerprint: RwSignal<String>,
     token: RwSignal<String>,
+    /// Preferences: "dark" or "light"; "horizontal" (side by side) or "vertical" (stacked);
+    /// the interface language.
+    theme: RwSignal<String>,
+    layout: RwSignal<String>,
+    lang: RwSignal<Lang>,
+    /// The project and conversation to come back to after a refresh, until they are restored.
+    resume: RwSignal<(String, i64)>,
+    /// Something to tell the user that is not an error.
+    notice: RwSignal<String>,
     view: RwSignal<View>,
     status: RwSignal<Option<Status>>,
     projects: RwSignal<Vec<Project>>,
@@ -76,6 +120,38 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
 }
 
+fn stored(key: &str) -> Option<String> {
+    storage()?.get_item(key).ok().flatten()
+}
+
+fn store(key: &str, value: &str) {
+    if let Some(storage) = storage() {
+        let _ = storage.set_item(key, value);
+    }
+}
+
+fn forget(key: &str) {
+    if let Some(storage) = storage() {
+        let _ = storage.remove_item(key);
+    }
+}
+
+/// The preferences kept from the last visit (an empty object the first time).
+fn stored_prefs() -> serde_json::Value {
+    stored(PREFS_KEY).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// The recovery phrase and account kept on this device, if any.
+fn stored_phrase() -> Option<(String, u32)> {
+    let saved: serde_json::Value = serde_json::from_str(&stored(PHRASE_KEY)?).ok()?;
+    Some((saved["phrase"].as_str().filter(|p| !p.trim().is_empty())?.to_string(), saved["index"].as_u64().unwrap_or(0) as u32))
+}
+
+/// Does the system ask for a light interface?
+fn system_prefers_light() -> bool {
+    web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten()).is_some_and(|m| m.matches())
+}
+
 /// The token: from the address (`#token=...`, then removed from it) or from an earlier visit.
 fn initial_token() -> String {
     let Some(window) = web_sys::window() else { return String::new() };
@@ -94,9 +170,21 @@ fn initial_token() -> String {
 
 impl App {
     fn new() -> Self {
+        // Preferences and place from the last visit; for a first visit, what the system says.
+        let prefs = stored_prefs();
+        let text = |key: &str, fallback: &str| prefs[key].as_str().unwrap_or(fallback).to_string();
+        let browser = web_sys::window().and_then(|w| w.navigator().language()).unwrap_or_default();
         Self {
+            auth: RwSignal::new(String::new()),
+            wallet: RwSignal::new(String::new()),
+            fingerprint: RwSignal::new(String::new()),
             token: RwSignal::new(initial_token()),
-            view: RwSignal::new(View::Chat),
+            theme: RwSignal::new(text("theme", if system_prefers_light() { "light" } else { "dark" })),
+            layout: RwSignal::new(text("layout", "horizontal")),
+            lang: RwSignal::new(prefs["lang"].as_str().and_then(Lang::from_code).unwrap_or_else(|| Lang::from_browser(&browser))),
+            resume: RwSignal::new((text("project", ""), prefs["session"].as_i64().unwrap_or(0))),
+            notice: RwSignal::new(String::new()),
+            view: RwSignal::new(View::from_code(&text("view", "chat"))),
             status: RwSignal::new(None),
             projects: RwSignal::new(Vec::new()),
             project: RwSignal::new(String::new()),
@@ -106,12 +194,155 @@ impl App {
             open: RwSignal::new(None),
             todos: RwSignal::new(String::new()),
             busy: RwSignal::new(false),
-            mode: RwSignal::new("ask".to_string()),
-            think: RwSignal::new(String::new()),
+            mode: RwSignal::new(text("mode", "ask")),
+            think: RwSignal::new(text("think", "")),
             error: RwSignal::new(String::new()),
             next: RwSignal::new(0),
             grew: RwSignal::new(0),
         }
+    }
+
+    /// The text for `key` in the interface language, as something a view can show: it
+    /// changes when the language does.
+    fn t(self, key: &'static str) -> impl Fn() -> &'static str + Copy + Send + Sync + 'static {
+        let lang = self.lang;
+        move || tr(lang.get(), key)
+    }
+
+    /// Write the preferences and the place the user is at to the browser's storage.
+    fn save_prefs(&self) {
+        // While a refresh is still finding its way back, the place to return to is kept.
+        let (resume_project, resume_session) = self.resume.get();
+        let project = self.project.get();
+        let (project, session) = if project.is_empty() && !resume_project.is_empty() { (resume_project, resume_session) } else { (project, self.session.get()) };
+        let prefs = serde_json::json!({
+            "theme": self.theme.get(), "layout": self.layout.get(), "lang": self.lang.get().code(),
+            "view": self.view.get().code(), "project": project, "session": session,
+            "mode": self.mode.get(), "think": self.think.get(),
+        });
+        store(PREFS_KEY, &prefs.to_string());
+    }
+
+    /// Say something that is not an error, for a few seconds.
+    fn tell(&self, text: String) {
+        self.notice.set(text);
+        let notice = self.notice;
+        set_timeout(move || notice.set(String::new()), std::time::Duration::from_secs(5));
+    }
+
+    /// May the app be shown: local mode, or signed in?
+    fn ready(&self) -> bool {
+        match self.auth.get().as_str() {
+            "" => false,
+            "open" => true,
+            _ => !self.token.get().is_empty(),
+        }
+    }
+
+    fn ready_untracked(&self) -> bool {
+        match self.auth.get_untracked().as_str() {
+            "" => false,
+            "open" => true,
+            _ => !self.token.get_untracked().is_empty(),
+        }
+    }
+
+    /// Ask the backend how to sign in (needs no credentials).
+    async fn hello(&self) {
+        match api::call("", &Request::new(Method::Hello)).await {
+            Ok(response) => {
+                let status = response.status.unwrap_or_default();
+                self.wallet.set(status.wallet);
+                self.fingerprint.set(status.fingerprint);
+                let wallet_mode = status.auth == "wallet";
+                self.auth.set(status.auth);
+                // A phrase remembered on this device signs in by itself.
+                if wallet_mode && self.token.get_untracked().is_empty() {
+                    self.sign_in_remembered().await;
+                }
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
+    /// Sign in with the phrase kept on this device, if there is one. A phrase that no longer
+    /// fits (the backend belongs to another wallet now) is forgotten.
+    async fn sign_in_remembered(&self) {
+        if let Some((phrase, index)) = stored_phrase() {
+            if self.sign_in(phrase, index, true).await.is_err() {
+                forget(PHRASE_KEY);
+            }
+        }
+    }
+
+    fn remember(&self, token: &str) {
+        store(TOKEN_KEY, token);
+        self.token.set(token.to_string());
+    }
+
+    /// Sign in with the wallet's recovery phrase. The key is derived here, in the browser;
+    /// the backend gets a signature of its one-time challenge and nothing else. With
+    /// `keep`, the phrase is kept in this browser's storage, so that a refresh, or a session
+    /// that has ended, signs in again without typing it.
+    async fn sign_in(&self, phrase: String, index: u32, keep: bool) -> Result<(), String> {
+        use cwbcode_proto::wallet;
+        let key = wallet::key_from_phrase(&phrase, index)?;
+        let normal = phrase.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>().join(" ");
+        drop(phrase);
+        let address = wallet::address(&key)?;
+        let expected = self.wallet.get_untracked();
+        if !wallet::same_address(&address, &expected) {
+            return Err(format!("That phrase is wallet {address} (account {index}); this backend belongs to {}.", expected.to_lowercase()));
+        }
+        let challenge = api::call("", &Request::new(Method::Challenge)).await?.text;
+        // Sign only what is a sign-in for this wallet at this server.
+        let for_us = challenge.starts_with("Causewaybay Code sign-in")
+            && wallet::challenge_field(&challenge, "wallet").is_some_and(|w| wallet::same_address(w, &address))
+            && wallet::challenge_field(&challenge, "server") == Some(self.fingerprint.get_untracked().as_str());
+        if !for_us {
+            return Err("The backend sent something that is not a sign-in request for this wallet; nothing was signed.".to_string());
+        }
+        let signature = wallet::sign(&key, &challenge)?;
+        let session = api::call("", &Request::new(Method::Login).text(&challenge).name(&signature)).await?.text;
+        if keep {
+            store(PHRASE_KEY, &serde_json::json!({"phrase": normal, "index": index}).to_string());
+        } else {
+            forget(PHRASE_KEY);
+        }
+        self.remember(&session);
+        Ok(())
+    }
+
+    /// Turn remote mode on (a wallet address) or off (""). The backend applies it at once:
+    /// what it says about signing in afterwards is taken from its answer.
+    async fn setup(&self, value: String) -> Result<String, String> {
+        let response = api::call(&self.token.get_untracked(), &Request::new(Method::Setup).text(&value)).await?;
+        if let Some(status) = response.status {
+            // The session of the mode before is over, either way.
+            forget(TOKEN_KEY);
+            if status.auth != "wallet" {
+                forget(PHRASE_KEY);
+            }
+            self.token.set(String::new());
+            self.status.set(None);
+            self.wallet.set(status.wallet);
+            self.fingerprint.set(status.fingerprint);
+            self.auth.set(status.auth);
+        }
+        Ok(response.text)
+    }
+
+    async fn sign_out(&self) {
+        let _ = api::call(&self.token.get_untracked(), &Request::new(Method::Logout)).await;
+        // Signing out forgets the session and the phrase kept on this device.
+        forget(TOKEN_KEY);
+        forget(PHRASE_KEY);
+        self.resume.set((String::new(), 0));
+        self.token.set(String::new());
+        self.projects.set(Vec::new());
+        self.project.set(String::new());
+        self.sessions.set(Vec::new());
+        self.new_conversation();
     }
 
     fn request(&self, method: Method) -> Request {
@@ -121,10 +352,11 @@ impl App {
     /// Show an error; a refused token sends the user back to the token page.
     fn fail(&self, error: String) {
         if error == "unauthorized" {
-            if let Some(storage) = storage() {
-                let _ = storage.remove_item(TOKEN_KEY);
-            }
+            forget(TOKEN_KEY);
             self.token.set(String::new());
+            // The session has ended: with the phrase kept on this device, sign in again.
+            let app = *self;
+            spawn_local(async move { app.sign_in_remembered().await });
             return;
         }
         self.error.set(error);
@@ -211,7 +443,11 @@ impl App {
     }
 
     async fn refresh_status(&self) {
-        if self.token.get_untracked().is_empty() {
+        if self.auth.get_untracked().is_empty() {
+            // The backend was not reachable when the page loaded: ask again.
+            self.hello().await;
+        }
+        if !self.ready_untracked() {
             return;
         }
         match api::call(&self.token.get_untracked(), &Request::new(Method::Status)).await {
@@ -225,9 +461,16 @@ impl App {
     async fn refresh_projects(&self) {
         if let Some(response) = self.call(Request::new(Method::Projects)).await {
             if self.project.get_untracked().is_empty() {
-                if let Some(first) = response.projects.first() {
-                    self.select_project(first.path.clone()).await;
+                // After a refresh: the project and conversation the user was in, if still there.
+                let (wanted, conversation) = self.resume.get_untracked();
+                let back = response.projects.iter().find(|p| p.path == wanted);
+                if let Some(project) = back.or(response.projects.first()) {
+                    self.select_project(project.path.clone()).await;
+                    if back.is_some() && conversation != 0 {
+                        self.load_session(conversation).await;
+                    }
                 }
+                self.resume.set((String::new(), 0));
             }
             self.projects.set(response.projects);
         }
@@ -257,6 +500,10 @@ impl App {
 
     async fn open_project(&self, path: String) {
         if let Some(response) = self.call(Request::new(Method::OpenProject).text(&path)).await {
+            // A folder that did not exist was made.
+            if let Some(made) = response.text.strip_prefix("created ") {
+                self.tell(tr_with(self.lang.get_untracked(), "created", made));
+            }
             if let Some(project) = response.projects.first() {
                 self.select_project(project.path.clone()).await;
             }
@@ -266,14 +513,29 @@ impl App {
     }
 
     async fn select_session(&self, id: i64) {
-        if let Some(response) = self.call(self.request(Method::Transcript).session(id)).await {
-            self.new_conversation();
-            self.session.set(id);
-            for event in response.events {
-                self.apply_past(event.what);
-            }
-            self.todos.set(response.text);
+        if self.load_session(id).await {
             self.view.set(View::Chat);
+        }
+    }
+
+    /// Show a conversation from its log (without leaving the view the user is on).
+    async fn load_session(&self, id: i64) -> bool {
+        match api::call(&self.token.get_untracked(), &self.request(Method::Transcript).session(id)).await {
+            Ok(response) => {
+                self.new_conversation();
+                self.session.set(id);
+                for event in response.events {
+                    self.apply_past(event.what);
+                }
+                self.todos.set(response.text);
+                true
+            }
+            Err(e) if e == "unauthorized" => {
+                self.fail(e);
+                false
+            }
+            // (A conversation that is gone is simply not come back to.)
+            Err(_) => false,
         }
     }
 
@@ -321,6 +583,11 @@ fn main() {
     leptos::mount::mount_to_body(Root);
 }
 
+/// Run something once the page has drawn what was just changed.
+fn after_draw(f: impl FnOnce() + 'static) {
+    set_timeout(f, std::time::Duration::from_millis(30));
+}
+
 #[component]
 fn Root() -> impl IntoView {
     let app = App::new();
@@ -331,62 +598,199 @@ fn Root() -> impl IntoView {
         let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), 3000);
     }
     tick.forget();
-    // Once there is a token: what the backend knows.
+    spawn_local(async move { app.hello().await });
+    // Once signed in (or in local mode, at once): what the backend knows.
     Effect::new(move |_| {
-        if !app.token.get().is_empty() {
+        if app.ready() {
             spawn_local(async move {
                 app.refresh_status().await;
                 app.refresh_projects().await;
             });
         }
     });
+    // The theme and language are the page's; every change of a preference, or of where the
+    // user is, is written down, so that a refresh comes back to the same place.
+    Effect::new(move |_| {
+        if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
+            let _ = root.set_attribute("data-theme", &app.theme.get());
+            let _ = root.set_attribute("lang", app.lang.get().code());
+        }
+    });
+    Effect::new(move |_| app.save_prefs());
+    Effect::new(move |_| after_draw(motion::install));
     view! {
-        <Show when=move || !app.token.get().is_empty() fallback=|| view! { <Login/> }>
-            <div class="app">
+        <div class="glow a"></div>
+        <div class="glow b"></div>
+        <Show when=move || app.ready() fallback=move || view! { <Login/> }>
+            <div class="app" class:vertical=move || app.layout.get() == "vertical">
                 <Sidebar/>
-                <div class="main">
-                    {move || match app.view.get() {
-                        View::Dashboard => view! { <Dashboard/> }.into_any(),
-                        View::Chat => view! { <Chat/> }.into_any(),
-                        View::Knowledge => view! { <Knowledge/> }.into_any(),
-                        View::Tools => view! { <Tools/> }.into_any(),
-                    }}
-                </div>
+                <div class="main"><ViewHost/></div>
             </div>
         </Show>
         <Show when=move || !app.error.get().is_empty()>
-            <div class="toast" id="toast">{move || app.error.get()}</div>
+            <Toast id="toast" class="toast" text=app.error/>
+        </Show>
+        <Show when=move || !app.notice.get().is_empty()>
+            <Toast id="notice" class="toast good" text=app.notice/>
         </Show>
     }
 }
 
 #[component]
+fn Toast(id: &'static str, class: &'static str, text: RwSignal<String>) -> impl IntoView {
+    let node = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        if let Some(el) = node.get() {
+            motion::sheet(&el);
+        }
+    });
+    view! { <div class=class id=id node_ref=node>{move || text.get()}</div> }
+}
+
+/// The view the user is on. A change of view arrives from the side it lies on.
+#[component]
+fn ViewHost() -> impl IntoView {
+    let app = expect_context::<App>();
+    let host = NodeRef::<leptos::html::Div>::new();
+    let before = StoredValue::new(app.view.get_untracked() as i32);
+    Effect::new(move |_| {
+        let now = app.view.get() as i32;
+        let was = before.get_value();
+        before.set_value(now);
+        if let Some(el) = host.get() {
+            if now != was {
+                motion::view_in(&el, if now > was { 36.0 } else { -36.0 });
+            }
+        }
+    });
+    view! {
+        <div class="view" node_ref=host>
+            {move || match app.view.get() {
+                View::Dashboard => view! { <Dashboard/> }.into_any(),
+                View::Chat => view! { <Chat/> }.into_any(),
+                View::Knowledge => view! { <Knowledge/> }.into_any(),
+                View::Tools => view! { <Tools/> }.into_any(),
+            }}
+        </div>
+    }
+}
+
+fn icon(path: &'static str) -> impl IntoView {
+    view! { <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d=path></path></svg> }
+}
+
+const ICON_SUN: &str = "M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m0-11.4L4.9 4.9m14.2 14.2-1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z";
+const ICON_MOON: &str = "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z";
+const ICON_COLUMNS: &str = "M4 5h16v14H4zM10 5v14";
+const ICON_ROWS: &str = "M4 5h16v14H4zM4 10h16";
+const ICON_GLOBE: &str = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm-9 9h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.500 5.600 12 3z";
+const ICON_DASH: &str = "M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-3H4zM14 7h6V4h-6z";
+const ICON_CHAT: &str = "M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z";
+const ICON_BOOK: &str = "M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zm0 13a3 3 0 0 1 3-3h10";
+const ICON_TOOL: &str = "M14.5 6.500a4 4 0 0 0-5.200 5.200L3.500 17.500l3 3 5.800-5.800a4 4 0 0 0 5.200-5.200l-2.700 2.700-2.300-.700-.700-2.300z";
+
+/// Light or dark, side by side or stacked, and the language: three small controls.
+#[component]
+fn Prefs() -> impl IntoView {
+    let app = expect_context::<App>();
+    let flip = move |signal: RwSignal<String>, a: &'static str, b: &'static str| {
+        // The page dips, changes, and comes back.
+        let apply = Closure::once_into_js(move || signal.update(|v| *v = if v == a { b.to_string() } else { a.to_string() }));
+        motion::retheme(apply.unchecked_ref());
+    };
+    view! {
+        <div class="prefs">
+            <button class="ghost round" id="theme-toggle" title=app.t("theme") on:click=move |_| flip(app.theme, "dark", "light")>
+                {move || if app.theme.get() == "dark" { icon(ICON_SUN).into_any() } else { icon(ICON_MOON).into_any() }}
+            </button>
+            <button class="ghost round" id="layout-toggle" title=app.t("layout") on:click=move |_| flip(app.layout, "horizontal", "vertical")>
+                {move || if app.layout.get() == "vertical" { icon(ICON_COLUMNS).into_any() } else { icon(ICON_ROWS).into_any() }}
+            </button>
+            <label class="lang" title=app.t("language")>
+                {icon(ICON_GLOBE)}
+                <select id="lang" on:change=move |ev| if let Some(lang) = Lang::from_code(&event_target_value(&ev)) { app.lang.set(lang) } prop:value=move || app.lang.get().code()>
+                    {Lang::ALL.into_iter().map(|lang| view! { <option value=lang.code() selected=move || app.lang.get() == lang>{lang.name()}</option> }).collect_view()}
+                </select>
+            </label>
+        </div>
+    }
+}
+
+fn brand(app: App) -> impl IntoView {
+    view! { <div class="brand"><div class="logo">"CC"</div><div>"Causewaybay Code"<small>{app.t("brand_sub")}</small></div></div> }
+}
+
+#[component]
 fn Login() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let typed = RwSignal::new(String::new());
-    let enter = move || {
+    let index = RwSignal::new(String::new());
+    let problem = RwSignal::new(String::new());
+    let working = RwSignal::new(false);
+    let shown = RwSignal::new(false);
+    let keep = RwSignal::new(true);
+    let enter_token = move || {
         let token = typed.get_untracked().trim().to_string();
         if !token.is_empty() {
-            if let Some(storage) = storage() {
-                let _ = storage.set_item(TOKEN_KEY, &token);
-            }
-            app.token.set(token);
+            app.remember(&token);
         }
+    };
+    let enter_phrase = move || {
+        let phrase = typed.get_untracked();
+        if phrase.trim().is_empty() || working.get_untracked() {
+            return;
+        }
+        let account: u32 = index.get_untracked().trim().parse().unwrap_or(0);
+        working.set(true);
+        problem.set(String::new());
+        spawn_local(async move {
+            match app.sign_in(phrase, account, keep.get_untracked()).await {
+                Ok(()) => typed.set(String::new()),
+                Err(e) => problem.set(e),
+            }
+            working.set(false);
+        });
     };
     let card = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
         if let Some(el) = card.get() {
-            motion::enter(&el, 0.05);
+            motion::sheet(&el);
         }
     });
     view! {
         <div class="login">
-            <div class="card" node_ref=card>
-                <div class="brand" style="padding:0"><div class="logo"></div><div>"Causeway Bay Code"<small>"local AI coding agent"</small></div></div>
-                <p>"Enter the backend's token. On the machine it runs on: " <code>"cwbcode url"</code></p>
-                <input id="token" type="password" placeholder="token" prop:value=move || typed.get() on:input=move |ev| typed.set(event_target_value(&ev))
-                    on:keydown=move |ev| if ev.key() == "Enter" { enter() }/>
-                <button class="primary" id="signin" on:click=move |_| enter()>"Connect"</button>
+            <div class="login-prefs"><Prefs/></div>
+            <div class="card glass" node_ref=card>
+                {move || match app.auth.get().as_str() {
+                    "" => view! { {brand(app)}<p id="connecting">{t("connecting")}</p> }.into_any(),
+                    "wallet" => view! {
+                        {brand(app)}
+                        <p>{t("login_belongs")}</p>
+                        <code id="backend-wallet" style="word-break:break-all">{move || app.wallet.get()}</code>
+                        <p>{t("login_explain")}</p>
+                        <textarea id="phrase" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder=t("phrase_ph")
+                            class:masked=move || !shown.get()
+                            prop:value=move || typed.get() on:input=move |ev| typed.set(event_target_value(&ev))
+                            on:keydown=move |ev| if ev.key() == "Enter" && !ev.shift_key() { ev.prevent_default(); enter_phrase() }></textarea>
+                        <div class="rowf wrap">
+                            <label class="chip"><input type="checkbox" on:change=move |ev| shown.set(event_target_checked(&ev))/>{t("show")}</label>
+                            <label class="chip"><input type="checkbox" id="remember" prop:checked=move || keep.get() on:change=move |ev| keep.set(event_target_checked(&ev))/>{t("remember")}</label>
+                            <span class="sub">{t("account")}</span>
+                            <input id="phrase-index" style="width:64px;flex:0" inputmode="numeric" placeholder="0" prop:value=move || index.get() on:input=move |ev| index.set(event_target_value(&ev))/>
+                        </div>
+                        <Show when=move || !problem.get().is_empty()><div class="note bad" id="login-problem" style="text-align:left">{move || problem.get()}</div></Show>
+                        <button class="primary" id="signin" disabled=move || working.get() on:click=move |_| enter_phrase()>{move || if working.get() { tr(app.lang.get(), "signing_in") } else { tr(app.lang.get(), "sign_in") }}</button>
+                        <p class="sub fine">{t("cert_note")}" "<span style="word-break:break-all">{move || app.fingerprint.get()}</span></p>
+                    }.into_any(),
+                    _ => view! {
+                        {brand(app)}
+                        <p>{t("token_explain")}</p>
+                        <input id="token" type="password" placeholder="token" prop:value=move || typed.get() on:input=move |ev| typed.set(event_target_value(&ev))
+                            on:keydown=move |ev| if ev.key() == "Enter" { enter_token() }/>
+                        <button class="primary" id="signin" on:click=move |_| enter_token()>{t("connect")}</button>
+                    }.into_any(),
+                }}
             </div>
         </div>
     }
@@ -395,10 +799,18 @@ fn Login() -> impl IntoView {
 #[component]
 fn Sidebar() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let path = RwSignal::new(String::new());
-    let nav = move |view: View, label: &'static str| {
-        view! { <button class:on=move || app.view.get() == view on:click=move |_| app.view.set(view)>{label}</button> }
+    let nav = move |view: View, id: &'static str, key: &'static str, shape: &'static str| {
+        view! { <button id=id class:on=move || app.view.get() == view on:click=move |_| app.view.set(view)>{icon(shape)}<span>{t(key)}</span></button> }
     };
+    // The selection slides to the chosen view, also when the layout or the words change size.
+    Effect::new(move |_| {
+        app.view.get();
+        app.layout.get();
+        app.lang.get();
+        after_draw(|| motion::slide_selection("#nav"));
+    });
     let open = move || {
         let typed = path.get_untracked().trim().to_string();
         if !typed.is_empty() {
@@ -413,56 +825,72 @@ fn Sidebar() -> impl IntoView {
         }
     });
     view! {
-        <div class="side" node_ref=side>
-            <div class="brand"><div class="logo"></div><div>"Causeway Bay Code"<small>"local AI coding agent"</small></div></div>
-            <div class="nav">
-                {nav(View::Dashboard, "Dashboard")}
-                {nav(View::Chat, "Chat")}
-                {nav(View::Knowledge, "Knowledge")}
-                {nav(View::Tools, "Tools")}
+        <div class="side glass" node_ref=side>
+            <div class="side-head">{brand(app)}<Prefs/></div>
+            <div class="nav seg" id="nav">
+                <div class="selection"></div>
+                {nav(View::Dashboard, "nav-dashboard", "nav_dashboard", ICON_DASH)}
+                {nav(View::Chat, "nav-chat", "nav_chat", ICON_CHAT)}
+                {nav(View::Knowledge, "nav-knowledge", "nav_knowledge", ICON_BOOK)}
+                {nav(View::Tools, "nav-tools", "nav_tools", ICON_TOOL)}
             </div>
-            <h4>"Projects"</h4>
-            <div class="open">
-                <input id="open-path" placeholder="~/folder to open" prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
-                    on:keydown=move |ev| if ev.key() == "Enter" { open() }/>
-                <button id="open-go" on:click=move |_| open()>"Open"</button>
-            </div>
-            <div class="list" style="max-height:28vh">
-                <For each=move || app.projects.get() key=|p| p.path.clone() children=move |p: Project| {
-                    let (path, title) = (p.path.clone(), p.path.clone());
-                    let selected = p.path.clone();
-                    view! {
-                        <div class="row project" class:on=move || app.project.get() == selected title=title
-                            on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
-                            {p.name.clone()}<small>{p.path.clone()}</small>
-                        </div>
-                    }
-                }/>
-            </div>
-            <h4>"Conversations"<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); }>"+ new"</button></h4>
-            <div class="list grow">
-                <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
-                    let id = s.id;
-                    let label = if s.name.is_empty() { s.first.clone() } else { s.name.clone() };
-                    view! {
-                        <div class="row session" class:on=move || app.session.get() == id on:click=move |_| spawn_local(async move { app.select_session(id).await })>
-                            {if label.is_empty() { format!("conversation #{id}") } else { label }}
-                            <small>{format!("#{id} · {} · {} msgs", s.updated.get(5..16).unwrap_or(""), s.messages)}</small>
-                        </div>
-                    }
-                }/>
-            </div>
-            <div class="pill" id="status-pill">
-                {move || match app.status.get() {
-                    None => view! { <span><span class="dot bad"></span>"backend not reachable"</span> }.into_any(),
-                    Some(s) => {
-                        let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
+            <div class="group">
+                <h4>{t("projects")}</h4>
+                <div class="open">
+                    <input id="open-path" placeholder=t("open_ph") prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
+                        on:keydown=move |ev| if ev.key() == "Enter" { open() }/>
+                    <button id="open-go" on:click=move |_| open()>{t("open")}</button>
+                </div>
+                <div class="list projects">
+                    <For each=move || app.projects.get() key=|p| p.path.clone() children=move |p: Project| {
+                        let (path, title) = (p.path.clone(), p.path.clone());
+                        let selected = p.path.clone();
                         view! {
-                            <span><span class=dot></span>{if s.busy { "working".to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
-                            <div>{format!("{:.1} GB · {} ctx", gb(s.memory_active), s.context_tokens)}</div>
-                        }.into_any()
-                    }
-                }}
+                            <div class="row project" class:on=move || app.project.get() == selected title=title
+                                on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
+                                {p.name.clone()}<small>{p.path.clone()}</small>
+                            </div>
+                        }
+                    }/>
+                </div>
+            </div>
+            <div class="group grow">
+                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); }>{t("new")}</button></h4>
+                <div class="list sessions">
+                    <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
+                        let id = s.id;
+                        let label = if s.name.is_empty() { s.first.clone() } else { s.name.clone() };
+                        view! {
+                            <div class="row session" class:on=move || app.session.get() == id on:click=move |_| spawn_local(async move { app.select_session(id).await })>
+                                {if label.is_empty() { format!("#{id}") } else { label }}
+                                <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small>
+                            </div>
+                        }
+                    }/>
+                </div>
+            </div>
+            <div class="side-foot">
+                <Show when=move || app.auth.get() != "open">
+                    <button class="ghost" id="signout" on:click=move |_| spawn_local(async move { app.sign_out().await })>{t("sign_out")}</button>
+                </Show>
+                <div class="pill" id="status-pill">
+                    {move || match app.status.get() {
+                        None => view! { <span><span class="dot bad"></span>{t("offline")}</span> }.into_any(),
+                        Some(s) => {
+                            let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
+                            let lang = app.lang.get();
+                            view! {
+                                <span><span class=dot></span>{if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
+                                <div>{format!("{:.1} GB · {} ctx", gb(s.memory_active), s.context_tokens)}</div>
+                                <div id="login-state">{match s.auth.as_str() {
+                                    "open" => tr(lang, "local_short").to_string(),
+                                    "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
+                                    _ => "token".to_string(),
+                                }}</div>
+                            }.into_any()
+                        }
+                    }}
+                </div>
             </div>
         </div>
     }
@@ -470,12 +898,12 @@ fn Sidebar() -> impl IntoView {
 
 /// A number that counts to its new value.
 #[component]
-fn Counter(value: Signal<f64>, decimals: u32, suffix: &'static str) -> impl IntoView {
+fn Counter(value: Signal<f64>, decimals: u32, suffix: Signal<String>) -> impl IntoView {
     let node = NodeRef::<leptos::html::Span>::new();
     Effect::new(move |_| {
-        let v = value.get();
+        let (v, suffix) = (value.get(), suffix.get());
         if let Some(el) = node.get() {
-            motion::count_to(&el, v, decimals, suffix);
+            motion::count_to(&el, v, decimals, &suffix);
         }
     });
     view! { <span node_ref=node>"0"</span> }
@@ -484,6 +912,7 @@ fn Counter(value: Signal<f64>, decimals: u32, suffix: &'static str) -> impl Into
 #[component]
 fn Dashboard() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     Effect::new(move |_| {
         spawn_local(async move { app.refresh_projects().await });
         motion::enter_all(".cards .card");
@@ -493,37 +922,39 @@ fn Dashboard() -> impl IntoView {
         let s = s();
         if s.context_limit == 0 { 0.0 } else { (s.context_tokens as f64 / s.context_limit as f64 * 100.0).min(100.0) }
     };
+    let fixed = |text: &'static str| Signal::derive(move || text.to_string());
     view! {
-        <div class="top"><h2>"Dashboard"<small>{move || s().home}</small></h2></div>
+        <div class="top"><h2>{t("nav_dashboard")}<small>{move || s().home}</small></h2></div>
         <div class="scroll">
-            <div class="col" style="max-width:1100px">
+            <div class="col wide">
                 <div class="cards">
-                    <div class="card"><h5>"Model"</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { "offline".to_string() } else if s().busy { "working".to_string() } else { s().model_state }}</div>
+                    <div class="card glass"><h5>{t("d_model")}</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { tr(app.lang.get(), "d_offline").to_string() } else if s().busy { tr(app.lang.get(), "working").to_string() } else { s().model_state }}</div>
                         <div class="sub">{move || s().model}</div></div>
-                    <div class="card"><h5>"Memory"</h5><div class="big"><Counter value=Signal::derive(move || gb(s().memory_active)) decimals=1 suffix=" GB"/></div>
-                        <div class="sub">{move || format!("peak {:.1} GB", gb(s().memory_peak))}</div>
+                    <div class="card glass"><h5>{t("d_memory")}</h5><div class="big"><Counter value=Signal::derive(move || gb(s().memory_active)) decimals=1 suffix=fixed(" GB")/></div>
+                        <div class="sub">{move || tr_with(app.lang.get(), "peak", &format!("{:.1}", gb(s().memory_peak)))}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", (gb(s().memory_active) / 36.0 * 100.0).min(100.0))></i></div></div>
-                    <div class="card"><h5>"Context"</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=""/></div>
-                        <div class="sub">{move || format!("of {} tokens before summarizing", s().context_limit)}</div>
+                    <div class="card glass"><h5>{t("d_context")}</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=fixed("")/></div>
+                        <div class="sub">{move || tr_with(app.lang.get(), "ctx_sub", &s().context_limit.to_string())}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", context_share())></i></div></div>
-                    <div class="card"><h5>"Transport"</h5><div class="big" id="protocol">{move || s().protocol.to_uppercase()}</div>
-                        <div class="sub">{move || if s().h3 { "Cap'n Proto · server offers HTTP/3 and HTTP/2" } else { "Cap'n Proto · HTTP/2 only" }}</div></div>
-                    <div class="card"><h5>"Safety"</h5><div class="big" style="font-size:15px;line-height:1.9">{move || s().sandbox}</div>
-                        <div class="sub">"token required · folders under ~ only"</div></div>
-                    <div class="card"><h5>"Uptime"</h5><div class="big"><Counter value=Signal::derive(move || s().uptime_seconds as f64 / 60.0) decimals=0 suffix=" min"/></div>
-                        <div class="sub">{move || format!("cwbcode {} · {} waiting", s().version, s().queued)}</div></div>
+                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || s().protocol.to_uppercase()}</div>
+                        <div class="sub">{move || if s().h3 { tr(app.lang.get(), "transport_both") } else { tr(app.lang.get(), "transport_h2") }}</div></div>
+                    <div class="card glass"><h5>{t("d_safety")}</h5><div class="big small">{move || s().sandbox}</div>
+                        <div class="sub">{move || tr(app.lang.get(), match s().auth.as_str() { "open" => "safety_open", "wallet" => "safety_wallet", _ => "safety_token" })}</div></div>
+                    <div class="card glass"><h5>{t("d_uptime")}</h5><div class="big"><Counter value=Signal::derive(move || s().uptime_seconds as f64 / 60.0) decimals=0 suffix=Signal::derive(move || tr(app.lang.get(), "min").to_string())/></div>
+                        <div class="sub">{move || format!("cwbcode {} · {}", s().version, tr_with(app.lang.get(), "waiting", &s().queued.to_string()))}</div></div>
                 </div>
-                <div class="card">
-                    <h5>"Projects"</h5>
-                    <Show when=move || !app.projects.get().is_empty() fallback=|| view! { <div class="empty">"No project yet. Open a folder under your home folder from the sidebar."</div> }>
+                <RemoteAccess/>
+                <div class="card glass">
+                    <h5>{t("projects")}</h5>
+                    <Show when=move || !app.projects.get().is_empty() fallback=move || view! { <div class="empty">{t("no_projects")}</div> }>
                         <table>
-                            <thead><tr><th>"Project"</th><th>"Folder"</th><th>"Conversations"</th><th>"Last opened"</th></tr></thead>
+                            <thead><tr><th>{t("th_project")}</th><th>{t("th_folder")}</th><th>{t("conversations")}</th><th>{t("th_opened")}</th></tr></thead>
                             <tbody>
                                 <For each=move || app.projects.get() key=|p| (p.path.clone(), p.sessions) children=move |p: Project| {
                                     let path = p.path.clone();
                                     view! {
                                         <tr class="click" on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
-                                            <td>{p.name.clone()}</td><td style="color:var(--dim)">{p.path.clone()}</td><td>{p.sessions}</td><td style="color:var(--dim)">{p.updated.clone()}</td>
+                                            <td>{p.name.clone()}</td><td class="dim">{p.path.clone()}</td><td>{p.sessions}</td><td class="dim">{p.updated.clone()}</td>
                                         </tr>
                                     }
                                 }/>
@@ -532,6 +963,82 @@ fn Dashboard() -> impl IntoView {
                     </Show>
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// Remote mode: in local mode, set a wallet to open the backend to other machines; in
+/// remote mode, see it and turn it off.
+#[component]
+fn RemoteAccess() -> impl IntoView {
+    use cwbcode_proto::wallet;
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    let typed = RwSignal::new(String::new());
+    let problem = RwSignal::new(String::new());
+    let working = RwSignal::new(false);
+    // What was typed is an address, or a recovery phrase whose address is worked out here.
+    let address = move || -> Result<String, String> {
+        let text = typed.get();
+        let text = text.trim();
+        if text.split_whitespace().count() > 11 {
+            wallet::address(&wallet::key_from_phrase(text, 0)?)
+        } else if text.len() == 42 && text.starts_with("0x") && text[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+            Ok(text.to_string())
+        } else {
+            Err(tr(app.lang.get(), "remote_bad").to_string())
+        }
+    };
+    let apply = move |value: String| {
+        working.set(true);
+        problem.set(String::new());
+        spawn_local(async move {
+            if let Err(e) = app.setup(value).await {
+                problem.set(e);
+            }
+            working.set(false);
+        });
+    };
+    let turn_on = move || match address() {
+        Ok(address) => {
+            typed.set(String::new());
+            apply(address)
+        }
+        Err(e) => problem.set(e),
+    };
+    let s = move || app.status.get().unwrap_or_default();
+    let looks_like_phrase = move || typed.get().split_whitespace().count() > 11;
+    // (More than one word is a recovery phrase being typed: not shown in the clear.)
+    let several_words = move || typed.get().split_whitespace().count() > 1;
+    view! {
+        <div class="card glass form" id="remote">
+            <h5>{t("remote_title")}</h5>
+            {move || match app.auth.get().as_str() {
+                "open" => view! {
+                    <div><b>{t("local_mode")}</b>{t("local_desc")}<span class="sub">{move || tr_with(app.lang.get(), "listening", &s().bind)}</span></div>
+                    <div class="sub">{t("remote_explain")}</div>
+                    <div class="rowf">
+                        <input id="remote-wallet" autocomplete="off" spellcheck="false" placeholder=t("remote_ph")
+                            class:masked=several_words
+                            prop:value=move || typed.get() on:input=move |ev| { problem.set(String::new()); typed.set(event_target_value(&ev)) } on:keydown=move |ev| if ev.key() == "Enter" { turn_on() }/>
+                        <button class="primary fit" id="remote-on" disabled=move || working.get() on:click=move |_| turn_on()>{t("remote_on")}</button>
+                    </div>
+                    <Show when=looks_like_phrase>
+                        <div class="sub" id="remote-derived">{move || match address() { Ok(a) => tr_with(app.lang.get(), "remote_derived", &a), Err(e) => e }}</div>
+                    </Show>
+                }.into_any(),
+                "wallet" => view! {
+                    <div><b>{t("remote_mode")}</b>" · "<code id="remote-wallet-shown">{move || app.wallet.get()}</code></div>
+                    <div class="sub">{move || tr_with(app.lang.get(), "remote_sub", &s().bind)}</div>
+                    {move || if s().wallet_source == "settings" {
+                        view! { <div class="rowf"><button class="danger fit" id="remote-off" disabled=move || working.get() on:click=move |_| apply(String::new())>{t("remote_off")}</button><span></span></div> }.into_any()
+                    } else {
+                        view! { <div class="sub">{move || tr_with(app.lang.get(), "remote_fixed", &s().wallet_source)}</div> }.into_any()
+                    }}
+                }.into_any(),
+                _ => view! { <div class="sub">{t("token_explain")}</div> }.into_any(),
+            }}
+            <Show when=move || !problem.get().is_empty()><div class="note bad" id="remote-problem" style="text-align:left">{move || problem.get()}</div></Show>
         </div>
     }
 }
@@ -555,14 +1062,17 @@ fn rendered(text: String) -> impl IntoView {
 #[component]
 fn ItemView(item: Item) -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let node = NodeRef::<leptos::html::Div>::new();
     let (kind, past) = (item.kind, item.past);
     Effect::new(move |_| {
         if let Some(el) = node.get() {
             if !past {
-                motion::enter(&el, 0.0);
                 if kind == Kind::Approval {
+                    motion::sheet(&el);
                     motion::attention(&el);
+                } else {
+                    motion::enter(&el, 0.0);
                 }
             }
         }
@@ -571,20 +1081,20 @@ fn ItemView(item: Item) -> impl IntoView {
     let body = match item.kind {
         Kind::User => view! { <div class="msg user">{move || text.get()}</div> }.into_any(),
         Kind::Thinking => view! { <div class="msg thinking">{move || text.get()}</div> }.into_any(),
-        Kind::Text => view! { <div class="msg text">{move || rendered(text.get())}</div> }.into_any(),
+        Kind::Text => view! { <div class="msg text glass">{move || rendered(text.get())}</div> }.into_any(),
         Kind::Note => view! { <div class="note">{move || text.get()}</div> }.into_any(),
         Kind::Warning => view! { <div class="note warn">{move || text.get()}</div> }.into_any(),
         Kind::Error => view! { <div class="note bad">{move || text.get()}</div> }.into_any(),
         Kind::Tool => {
             let result = item.result;
             view! {
-                <details class="tool" class:bad=move || result.get().is_some_and(|r| !r.0)>
+                <details class="tool glass" class:bad=move || result.get().is_some_and(|r| !r.0)>
                     <summary>
                         <span class=move || match result.get() { None => "dot busy", Some((true, ..)) => "dot ok", Some((false, ..)) => "dot bad" }></span>
                         <span class="t">{move || text.get()}</span>
                         <small>{move || result.get().map(|r| if r.2 >= 0.1 { format!("{:.1}s", r.2) } else { String::new() })}</small>
                     </summary>
-                    <pre>{move || result.get().map(|r| r.1).unwrap_or_else(|| "running ...".to_string())}</pre>
+                    <pre>{move || result.get().map(|r| r.1).unwrap_or_else(|| tr(app.lang.get(), "running").to_string())}</pre>
                 </details>
             }
             .into_any()
@@ -602,12 +1112,12 @@ fn ItemView(item: Item) -> impl IntoView {
             view! {
                 <div class="approval" class:done=move || !answered.get().is_empty() || past>
                     <pre>{move || text.get()}</pre>
-                    <Show when=move || answered.get().is_empty() && !past fallback=move || view! { <div class="note">{move || format!("answered: {}", if answered.get().is_empty() { "—".to_string() } else { answered.get() })}</div> }>
+                    <Show when=move || answered.get().is_empty() && !past fallback=move || view! { <div class="note">{move || tr_with(app.lang.get(), "answered", &if answered.get().is_empty() { "—".to_string() } else { answered.get() })}</div> }>
                         <div class="acts">
-                            <button class="primary approve-yes" on:click=move |_| answer("y".to_string())>"Allow"</button>
-                            <Show when=move || offer_always><button class="approve-always" on:click=move |_| answer("a".to_string())>"Always this session"</button></Show>
-                            <button class="danger approve-no" on:click=move |_| answer("n".to_string())>"No"</button>
-                            <input placeholder="or say what to do instead, then Enter" prop:value=move || instead.get() on:input=move |ev| instead.set(event_target_value(&ev))
+                            <button class="primary approve-yes" on:click=move |_| answer("y".to_string())>{t("allow")}</button>
+                            <Show when=move || offer_always><button class="approve-always" on:click=move |_| answer("a".to_string())>{t("always")}</button></Show>
+                            <button class="danger approve-no" on:click=move |_| answer("n".to_string())>{t("no")}</button>
+                            <input placeholder=t("instead_ph") prop:value=move || instead.get() on:input=move |ev| instead.set(event_target_value(&ev))
                                 on:keydown=move |ev| if ev.key() == "Enter" && !instead.get_untracked().trim().is_empty() { answer(instead.get_untracked()) }/>
                         </div>
                     </Show>
@@ -622,6 +1132,7 @@ fn ItemView(item: Item) -> impl IntoView {
 #[component]
 fn Chat() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let draft = RwSignal::new(String::new());
     let attached = RwSignal::new(Vec::<Upload>::new());
     let scroller = NodeRef::<leptos::html::Div>::new();
@@ -670,21 +1181,21 @@ fn Chat() -> impl IntoView {
     };
     view! {
         <div class="top">
-            <h2>{move || { let p = app.project.get(); p.rsplit('/').next().unwrap_or("").to_string() }}<small>{move || if app.session.get() == 0 { "new conversation".to_string() } else { format!("conversation #{}", app.session.get()) }}</small></h2>
-            <button class="ghost" id="undo" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>"Undo changes"</button>
-            <button class="ghost" id="compact" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>"Summarize"</button>
+            <h2>{move || { let p = app.project.get(); p.rsplit('/').next().unwrap_or("").to_string() }}<small>{move || if app.session.get() == 0 { tr(app.lang.get(), "new_conversation").to_string() } else { tr_with(app.lang.get(), "conversation_n", &app.session.get().to_string()) }}</small></h2>
+            <button class="ghost" id="undo" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>{t("undo")}</button>
+            <button class="ghost" id="compact" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>{t("summarize")}</button>
         </div>
         <div class="scroll" node_ref=scroller id="transcript">
             <div class="col">
                 <Show when=move || app.project.get().is_empty()>
-                    <div class="empty"><h3>"Open a project"</h3>"Type a folder under your home folder in the sidebar (for example ~/code/myapp) and press Open."</div>
+                    <div class="empty"><h3>{t("empty_open_title")}</h3>{t("empty_open")}</div>
                 </Show>
                 <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty()>
-                    <div class="empty"><h3>"What shall we work on?"</h3>{move || app.project.get()}</div>
+                    <div class="empty" id="empty-chat"><h3>{t("empty_chat_title")}</h3>{move || app.project.get()}</div>
                 </Show>
                 <For each=move || app.items.get() key=|item| item.id children=move |item: Item| view! { <ItemView item=item/> }/>
                 <Show when=move || !todo_lines().is_empty()>
-                    <div class="todos" id="todos">
+                    <div class="todos glass" id="todos">
                         {move || todo_lines().into_iter().map(|(content, status)| {
                             let (class, mark) = match status.as_str() { "completed" => ("done", "☒ "), "in_progress" => ("doing", "◐ "), _ => ("", "☐ ") };
                             view! { <div class=class>{mark}{content}</div> }
@@ -694,22 +1205,24 @@ fn Chat() -> impl IntoView {
             </div>
         </div>
         <div class="composer">
-            <div class="box">
-                <textarea id="draft" rows="2" placeholder="Ask, or describe what to change ...  (Enter sends, Shift+Enter for a new line)"
+            <div class="box glass">
+                <textarea id="draft" rows="2" placeholder=t("draft_ph")
                     prop:value=move || draft.get() on:input=move |ev| draft.set(event_target_value(&ev))
                     on:keydown=move |ev| if ev.key() == "Enter" && !ev.shift_key() { ev.prevent_default(); send() }></textarea>
                 <div class="bar">
-                    <label class="chip" style="cursor:pointer">"+ image"<input type="file" accept="image/*" multiple style="display:none" on:change=pick/></label>
+                    <label class="chip">{t("image")}<input type="file" accept="image/*" multiple style="display:none" on:change=pick/></label>
                     <For each=move || attached.get() key=|u| (u.name.clone(), u.data.len()) children=move |u: Upload| view! { <span class="chip">{u.name.clone()}</span> }/>
                     <span class="sp"></span>
                     <select id="mode" on:change=move |ev| app.mode.set(event_target_value(&ev)) prop:value=move || app.mode.get()>
-                        <option value="ask">"ask first"</option><option value="auto">"auto"</option><option value="read-only">"read-only"</option>
+                        <option value="ask" selected=move || app.mode.get() == "ask">{t("mode_ask")}</option>
+                        <option value="auto" selected=move || app.mode.get() == "auto">{t("mode_auto")}</option>
+                        <option value="read-only" selected=move || app.mode.get() == "read-only">{t("mode_ro")}</option>
                     </select>
                     <select id="think" on:change=move |ev| app.think.set(event_target_value(&ev)) prop:value=move || app.think.get()>
-                        <option value="">"thinking: default"</option><option value="none">"none"</option><option value="low">"low"</option><option value="medium">"medium"</option><option value="high">"high"</option>
+                        <option value="">{t("think_default")}</option><option value="none">"none"</option><option value="low">"low"</option><option value="medium">"medium"</option><option value="high">"high"</option>
                     </select>
-                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary" id="send" disabled=move || app.project.get().is_empty() on:click=move |_| send()>"Send"</button> }>
-                        <button class="danger" id="stop" on:click=move |_| spawn_local(async move { app.call(Request::new(Method::Interrupt)).await; })>"Stop"</button>
+                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary" id="send" disabled=move || app.project.get().is_empty() on:click=move |_| send()>{t("send")}</button> }>
+                        <button class="danger" id="stop" on:click=move |_| spawn_local(async move { app.call(Request::new(Method::Interrupt)).await; })>{t("stop")}</button>
                     </Show>
                 </div>
             </div>
@@ -720,6 +1233,7 @@ fn Chat() -> impl IntoView {
 #[component]
 fn Knowledge() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let docs = RwSignal::new(Vec::<Doc>::new());
     let hits = RwSignal::new(None::<Vec<Hit>>);
     let query = RwSignal::new(String::new());
@@ -803,13 +1317,13 @@ fn Knowledge() -> impl IntoView {
         })
     };
     view! {
-        <div class="top"><h2>"Knowledge"<small>{move || app.project.get()}</small></h2><span class="chip">{move || if working.get() { "working ..." } else { "BM25 + semantic" }}</span></div>
+        <div class="top"><h2>{t("nav_knowledge")}<small>{move || app.project.get()}</small></h2><span class="chip">{move || if working.get() { tr(app.lang.get(), "working_dots") } else { tr(app.lang.get(), "kb_chip") }}</span></div>
         <div class="scroll">
-            <div class="col" style="max-width:1000px">
-                <div class="card form">
+            <div class="col mid">
+                <div class="card glass form">
                     <div class="rowf">
-                        <input id="kb-query" placeholder="Search by keywords and meaning ..." prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev)) on:keydown=move |ev| if ev.key() == "Enter" { search() }/>
-                        <button style="flex:0" id="kb-search" on:click=move |_| search()>"Search"</button>
+                        <input id="kb-query" placeholder=t("kb_search_ph") prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev)) on:keydown=move |ev| if ev.key() == "Enter" { search() }/>
+                        <button class="fit" id="kb-search" on:click=move |_| search()>{t("search")}</button>
                     </div>
                 </div>
                 <Show when=move || hits.get().is_some()>
@@ -817,41 +1331,41 @@ fn Knowledge() -> impl IntoView {
                         {move || {
                             let found = hits.get().unwrap_or_default();
                             if found.is_empty() {
-                                view! { <div class="note">"No matches."</div> }.into_any()
+                                view! { <div class="note">{t("no_matches")}</div> }.into_any()
                             } else {
                                 found.into_iter().map(|h| {
                                     let how = match (h.bm25_rank, h.semantic_rank) { (0, 0) => String::new(), (b, 0) => format!("bm25 #{b}"), (0, s) => format!("semantic #{s}"), (b, s) => format!("bm25 #{b} · semantic #{s}") };
                                     let id = h.doc;
-                                    view! { <div class="card" style="cursor:pointer" on:click=move |_| open(id)><h5>{format!("#{} {} · {how}", h.doc, h.kind)}</h5><b>{h.title}</b><div class="sub" style="white-space:pre-wrap">{h.snippet}</div></div> }
+                                    view! { <div class="card glass pressable" on:click=move |_| open(id)><h5>{format!("#{} {} · {how}", h.doc, h.kind)}</h5><b>{h.title}</b><div class="sub pre">{h.snippet}</div></div> }
                                 }).collect_view().into_any()
                             }
                         }}
                     </div>
                 </Show>
-                <div class="card form">
-                    <h5>"Save a note or a file"</h5>
-                    <input id="kb-title" placeholder="Title (optional)" prop:value=move || title.get() on:input=move |ev| title.set(event_target_value(&ev))/>
-                    <textarea id="kb-note" rows="3" placeholder="Something to remember ..." prop:value=move || note.get() on:input=move |ev| note.set(event_target_value(&ev))></textarea>
+                <div class="card glass form">
+                    <h5>{t("kb_save_title")}</h5>
+                    <input id="kb-title" placeholder=t("kb_title_ph") prop:value=move || title.get() on:input=move |ev| title.set(event_target_value(&ev))/>
+                    <textarea id="kb-note" rows="3" placeholder=t("kb_note_ph") prop:value=move || note.get() on:input=move |ev| note.set(event_target_value(&ev))></textarea>
                     <div class="rowf">
                         <button class="primary" id="kb-save" disabled=move || note.get().trim().is_empty() || working.get()
-                            on:click=move |_| save(Request::new(Method::KbAdd).name(title.get_untracked().trim()).text(note.get_untracked().trim()))>"Save note"</button>
-                        <label class="chip" style="cursor:pointer;text-align:center;padding:8px">"Upload files (text, images, anything)"<input type="file" multiple style="display:none" on:change=upload/></label>
+                            on:click=move |_| save(Request::new(Method::KbAdd).name(title.get_untracked().trim()).text(note.get_untracked().trim()))>{t("save_note")}</button>
+                        <label class="chip center">{t("upload")}<input type="file" multiple style="display:none" on:change=upload/></label>
                     </div>
                 </div>
                 <Show when=move || shown.get().is_some()>
                     {move || shown.get().map(|d| { let id = d.id; view! {
-                        <div class="card" id="kb-doc"><h5>{format!("#{} {} · {}", d.id, d.kind, d.created)}</h5><b>{d.title}</b>
-                            <pre style="white-space:pre-wrap;max-height:300px;overflow:auto">{d.text}</pre>
-                            <div class="rowf"><button class="danger" on:click=move |_| remove(id)>"Delete"</button><button on:click=move |_| shown.set(None)>"Close"</button></div>
+                        <div class="card glass" id="kb-doc"><h5>{format!("#{} {} · {}", d.id, d.kind, d.created)}</h5><b>{d.title}</b>
+                            <pre class="doc">{d.text}</pre>
+                            <div class="rowf"><button class="danger" on:click=move |_| remove(id)>{t("delete")}</button><button on:click=move |_| shown.set(None)>{t("close")}</button></div>
                         </div>
                     }})}
                 </Show>
-                <div class="card">
-                    <h5>{move || format!("{} entries", docs.get().len())}</h5>
+                <div class="card glass">
+                    <h5>{move || tr_with(app.lang.get(), "entries", &docs.get().len().to_string())}</h5>
                     <table id="kb-list"><tbody>
                         <For each=move || docs.get() key=|d| d.id children=move |d: Doc| {
                             let id = d.id;
-                            view! { <tr class="click" on:click=move |_| open(id)><td style="color:var(--dim)">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td style="color:var(--dim)">{d.text.chars().take(80).collect::<String>()}</td></tr> }
+                            view! { <tr class="click" on:click=move |_| open(id)><td class="dim">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td class="dim">{d.text.chars().take(80).collect::<String>()}</td></tr> }
                         }/>
                     </tbody></table>
                 </div>
@@ -863,6 +1377,7 @@ fn Knowledge() -> impl IntoView {
 #[component]
 fn Tools() -> impl IntoView {
     let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
     let tools = RwSignal::new(Vec::<Tool>::new());
     let load = move || {
         spawn_local(async move {
@@ -874,20 +1389,20 @@ fn Tools() -> impl IntoView {
     };
     Effect::new(move |_| load());
     view! {
-        <div class="top"><h2>"Tools"<small>"written by the agent in Rust, compiled, kept for every project"</small></h2></div>
+        <div class="top"><h2>{t("nav_tools")}<small>{t("tools_sub")}</small></h2></div>
         <div class="scroll">
-            <div class="col" id="tools" style="max-width:1000px">
+            <div class="col mid" id="tools">
                 <Show when=move || tools.get().is_empty()>
-                    <div class="empty"><h3>"No tools yet"</h3>"Ask the agent for something repetitive, or say \"make a tool that ...\"."</div>
+                    <div class="empty" id="no-tools"><h3>{t("no_tools_title")}</h3>{t("no_tools")}</div>
                 </Show>
-                <For each=move || tools.get() key=|t| (t.name.clone(), t.source.len()) children=move |t: Tool| {
-                    let name = t.name.clone();
+                <For each=move || tools.get() key=|t| (t.name.clone(), t.source.len()) children=move |tool: Tool| {
+                    let name = tool.name.clone();
                     view! {
-                        <div class="card">
-                            <div style="display:flex;align-items:center;gap:10px"><b style="font-family:var(--mono)">{t.name.clone()}</b><span class="sub" style="flex:1">{t.description.clone()}</span>
-                                <button class="danger" on:click=move |_| { let name = name.clone(); spawn_local(async move { if app.call(Request::new(Method::ToolDelete).name(&name)).await.is_some() { load(); } }) }>"Delete"</button></div>
-                            <details><summary class="sub" style="cursor:pointer;margin-top:6px">"arguments and source"</summary>
-                                <pre style="white-space:pre-wrap">{t.parameters.clone()}</pre><pre style="overflow:auto">{t.source.clone()}</pre></details>
+                        <div class="card glass">
+                            <div class="tool-head"><b class="mono">{tool.name.clone()}</b><span class="sub grow">{tool.description.clone()}</span>
+                                <button class="danger" on:click=move |_| { let name = name.clone(); spawn_local(async move { if app.call(Request::new(Method::ToolDelete).name(&name)).await.is_some() { load(); } }) }>{t("delete")}</button></div>
+                            <details><summary class="sub">{t("args_source")}</summary>
+                                <pre class="pre">{tool.parameters.clone()}</pre><pre class="scrollx">{tool.source.clone()}</pre></details>
                         </div>
                     }
                 }/>

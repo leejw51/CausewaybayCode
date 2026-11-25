@@ -145,7 +145,7 @@ fn project_instructions(workspace: &Path) -> Option<(String, String)> {
 pub fn system_prompt(policy: &Policy) -> String {
     let ws = &policy.workspace;
     let mut s = format!(
-        "You are Causeway Bay Code (cwbcode), an AI agent running entirely on the user's Mac: a coding agent and a general assistant. \
+        "You are Causewaybay Code (CC for short; the program is cwbcode), an AI agent running entirely on the user's Mac: a coding agent and a general assistant. \
 You work in a terminal, in the user's workspace folder, with the tools declared above.
 
 # How to work

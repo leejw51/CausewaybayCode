@@ -111,11 +111,13 @@ fn tls(identity: &Identity, alpn: &[&[u8]]) -> Result<rustls::ServerConfig> {
 }
 
 /// Serve the router over TLS on TCP: HTTP/2, and HTTP/1.1 for clients that ask for it.
-pub async fn serve_tcp(addr: SocketAddr, identity: &Identity, router: Router) -> Result<()> {
+pub async fn serve_tcp(addr: SocketAddr, identity: &Identity, router: Router, handle: axum_server::Handle) -> Result<()> {
     let config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls(identity, &[b"h2", b"http/1.1"])?));
     let listener = std::net::TcpListener::bind(addr).with_context(|| format!("cannot listen on tcp {addr}"))?;
     listener.set_nonblocking(true)?;
-    axum_server::from_tcp_rustls(listener, config).serve(router.into_make_service()).await?;
+    // (With the client's address, which sign-in rules look at.)
+    // (`handle` is how the caller stops it, to listen somewhere else.)
+    axum_server::from_tcp_rustls(listener, config).handle(handle).serve(router.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
 
@@ -135,19 +137,32 @@ pub fn bind_udp(addr: SocketAddr, identity: &Identity) -> Result<quinn::Endpoint
 }
 
 /// Serve the router over HTTP/3.
-pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router, authorized: Arc<dyn Fn(&http::HeaderMap) -> bool + Send + Sync>) {
+/// Says whether a request (its headers, address, and where it came from) may use the API.
+pub type Allowed = Arc<dyn Fn(&http::HeaderMap, &http::Uri, std::net::IpAddr) -> bool + Send + Sync>;
+
+pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router, allowed: Allowed, unsigned_bytes: usize) {
     while let Some(incoming) = endpoint.accept().await {
         let router = router.clone();
-        let authorized = authorized.clone();
+        let allowed = allowed.clone();
         tokio::spawn(async move {
-            let Ok(connection) = incoming.await else { return };
+            let from = incoming.remote_address();
+            let connection = match incoming.await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    // Worth a line: a browser that will not take the self-signed certificate
+                    // over QUIC shows up here, and nowhere else.
+                    eprintln!("cwbcode: HTTP/3 from {from}: the connection was not set up ({e})");
+                    return;
+                }
+            };
+            let remote = connection.remote_address();
             let Ok(mut h3) = h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(connection)).await else { return };
             while let Ok(Some(resolver)) = h3.accept().await {
                 let router = router.clone();
-                let authorized = authorized.clone();
+                let allowed = allowed.clone();
                 tokio::spawn(async move {
                     // A client that goes away mid-response is not an error worth a line.
-                    let _ = request(resolver, router, authorized).await;
+                    let _ = request(resolver, router, allowed, remote, unsigned_bytes).await;
                 });
             }
         });
@@ -155,27 +170,26 @@ pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router, authorized: Ar
 }
 
 /// One HTTP/3 request: read it whole, hand it to the router, stream the response back.
-async fn request(resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>, router: Router, authorized: Arc<dyn Fn(&http::HeaderMap) -> bool + Send + Sync>) -> Result<()> {
+async fn request(resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>, router: Router, allowed: Allowed, remote: SocketAddr, unsigned_bytes: usize) -> Result<()> {
     let (head, stream) = resolver.resolve_request().await?;
     let (mut send, mut recv) = stream.split();
-    // Nothing of an API request's body is read, let alone kept, before its token is checked.
-    if head.uri().path().starts_with("/api/") && !authorized(head.headers()) {
-        send.send_response(http::Response::builder().status(http::StatusCode::UNAUTHORIZED).body(())?).await?;
-        send.send_data(Bytes::from_static(b"the token is missing or wrong")).await?;
-        send.finish().await?;
-        return Ok(());
-    }
+    // Without credentials no more of a body is kept than a sign-in needs.
+    let limit = if allowed(head.headers(), head.uri(), remote.ip()) { cwbcode_proto::MAX_MESSAGE_BYTES } else { unsigned_bytes };
     let mut body = BytesMut::new();
     while let Some(mut chunk) = recv.recv_data().await? {
-        if body.len() + chunk.remaining() > cwbcode_proto::MAX_MESSAGE_BYTES {
-            send.send_response(http::Response::builder().status(http::StatusCode::PAYLOAD_TOO_LARGE).body(())?).await?;
+        if body.len() + chunk.remaining() > limit {
+            let status = if limit == unsigned_bytes { http::StatusCode::UNAUTHORIZED } else { http::StatusCode::PAYLOAD_TOO_LARGE };
+            send.send_response(http::Response::builder().status(status).body(())?).await?;
+            send.send_data(Bytes::from_static(b"sign in first: the token or session is missing or wrong")).await?;
             send.finish().await?;
             return Ok(());
         }
         body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
     }
     let (parts, ()) = head.into_parts();
-    let response = router.oneshot(http::Request::from_parts(parts, Body::from(body.freeze()))).await?;
+    let mut request = http::Request::from_parts(parts, Body::from(body.freeze()));
+    request.extensions_mut().insert(axum::extract::ConnectInfo(remote));
+    let response = router.oneshot(request).await?;
     let (parts, mut body) = response.into_parts();
     send.send_response(http::Response::from_parts(parts, ())).await?;
     while let Some(frame) = body.frame().await {

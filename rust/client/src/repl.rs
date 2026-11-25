@@ -102,17 +102,37 @@ pub fn format_hits(hits: &[Hit], snippet_chars: usize) -> String {
     out.trim_end().to_string()
 }
 
+/// What mode the backend is in, and how to change it.
+pub fn remote_lines(s: &cwbcode_proto::Status) -> String {
+    match s.auth.as_str() {
+        "wallet" => format!(
+            "remote mode: on\nwallet      {}{}\nlistening   {}\nlogin       the wallet's recovery phrase (web), `cwbcodeclient login` (terminal, other machines)\nturn off    {}",
+            s.wallet,
+            if s.wallet_source == "settings" { String::new() } else { format!("  (set in {})", s.wallet_source) },
+            s.bind,
+            if s.wallet_source == "settings" { "cwbcodeclient remote off".to_string() } else { format!("remove CWBCODE_WALLET from {} and restart the backend", s.wallet_source) },
+        ),
+        "open" => format!("remote mode: off (local mode)\nlistening   {}\nlogin       none\nturn on     cwbcodeclient remote on <wallet address>   (or the web client's dashboard)", s.bind),
+        _ => format!("remote mode: off, but the backend listens on {} and asks for its token", s.bind),
+    }
+}
+
 pub async fn status(session: &Session) -> Result<String> {
     let s = session.client.call(&Request::new(Method::Status)).await?.status.context("the server sent no status")?;
     let gb = |bytes: u64| bytes as f64 / 1e9;
     Ok(format!(
-        "backend   cwbcode {} at {} over {}{}\nmodel     {} ({}){}\ncontext   {} tokens in memory (summarized from {})\nmemory    {:.1} GB in use, peak {:.1} GB\nsafety    {}\nproject   {}\nstore     {} · <project>/.cwbcode\nuptime    {}m\n",
+        "backend   cwbcode {} at {} over {}{}\nlogin     {}\nmodel     {} ({}){}\ncontext   {} tokens in memory (summarized from {})\nmemory    {:.1} GB in use, peak {:.1} GB\nsafety    {}\nproject   {}\nstore     {} · <project>/.cwbcode\nuptime    {}m\n",
         s.version,
         session.client.base(),
         s.protocol,
         match &session.client.fallback {
             Some(why) => format!(" (HTTP/3 not available: {why})"),
             None => String::new(),
+        },
+        match s.auth.as_str() {
+            "open" => "none: local mode".to_string(),
+            "wallet" => format!("wallet {}", s.wallet),
+            _ => "the backend's token".to_string(),
         },
         s.model,
         s.model_state,
@@ -403,7 +423,7 @@ pub async fn run(session: &Session, mut state: State, first: &str) -> Result<()>
     let s = session.client.call(&Request::new(Method::Status)).await?.status.context("the server sent no status")?;
     // Registering the project also checks that the server may work in this folder.
     session.client.call(&Request::new(Method::OpenProject).text(&session.project)).await?;
-    println!("\x1b[1mCauseway Bay Code\x1b[0m {} · {} ({}) · {}", s.version, s.model, s.model_state, s.protocol);
+    println!("\x1b[1mCC\x1b[0m · Causewaybay Code {} · {} ({}) · {}", s.version, s.model, s.model_state, s.protocol);
     println!("{} · {} mode · {}", session.project, state.mode, s.sandbox);
     println!("\x1b[2m/help for commands · Ctrl-C stops · Ctrl-D leaves\x1b[0m");
     if let Some(why) = &session.client.fallback {

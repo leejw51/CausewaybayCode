@@ -1,4 +1,4 @@
-//! `cwbcodeclient`: Causeway Bay Code in the terminal. It talks to the `cwbcode` backend
+//! `cwbcodeclient`: Causewaybay Code in the terminal. It talks to the `cwbcode` backend
 //! (HTTP/3, or HTTP/2 where QUIC is not available) and works on the current folder.
 //!
 //!   cwbcodeclient                          talk to the agent about this folder
@@ -20,7 +20,7 @@ use cwbcode_proto::{Method, Request, Upload};
 use cwbcodeclient::net::{Client, Trust};
 
 #[derive(Parser)]
-#[command(name = "cwbcodeclient", version, about = "Causeway Bay Code in the terminal: a client of the cwbcode backend, working on the current folder", subcommand_precedence_over_arg = true)]
+#[command(name = "cwbcodeclient", version, about = "Causewaybay Code in the terminal: a client of the cwbcode backend, working on the current folder", subcommand_precedence_over_arg = true)]
 pub struct Cli {
     /// A first message. Without one, the client waits for you to type.
     prompt: Vec<String>,
@@ -69,7 +69,8 @@ pub struct Cli {
     #[arg(long, default_value = "https://127.0.0.1:7443", env = "CWBCODE_SERVER", global = true)]
     server: String,
 
-    /// The backend's token [default: read from ~/.cwbcode/token].
+    /// A token for the backend [default: none in local mode; otherwise the session saved by
+    /// `cwbcodeclient login`, or this machine's ~/.cwbcode/token].
     #[arg(long, env = "CWBCODE_TOKEN", hide_env_values = true, global = true)]
     token: Option<String>,
 
@@ -98,6 +99,23 @@ pub struct Cli {
 enum Cmd {
     /// The backend: model, memory, protocol in use.
     Status,
+    /// Sign in to a backend that belongs to a wallet, with the wallet's recovery phrase. The
+    /// phrase is typed here (or read from CWBCODE_PHRASE) and never leaves this machine: only
+    /// a signature is sent. The session is saved for later runs.
+    Login {
+        /// Which account of the phrase (0: the first).
+        #[arg(long, default_value_t = 0)]
+        index: u32,
+    },
+    /// End the saved session.
+    Logout,
+    /// Remote mode: show it, or turn it on (the backend then listens on every interface and
+    /// the wallet's owner signs in) or off (this machine only, no login). Takes effect at
+    /// once and is remembered in ~/.cwbcode/settings.jsonl.
+    Remote {
+        #[command(subcommand)]
+        action: Option<RemoteCmd>,
+    },
     /// The projects the backend has worked in.
     Projects,
     /// This project's conversations.
@@ -121,6 +139,22 @@ enum Cmd {
         #[arg(long, value_name = "NAME")]
         remove: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Turn remote mode on for a wallet.
+    On {
+        /// The wallet's public address (0x and 40 hex digits). Without one, the address is
+        /// worked out from the recovery phrase you type (or CWBCODE_PHRASE); the phrase
+        /// itself goes nowhere.
+        address: Option<String>,
+        /// Which account of the phrase (0: the first).
+        #[arg(long, default_value_t = 0)]
+        index: u32,
+    },
+    /// Turn remote mode off: this machine only, no login.
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -181,26 +215,118 @@ fn current_folder() -> Result<String> {
     Ok(real.to_string_lossy().into_owned())
 }
 
-async fn connect(cli: &Cli) -> Result<Session> {
+/// Where the session for a backend is kept between runs.
+fn session_file(cli: &Cli) -> PathBuf {
+    let name: String = cli.server.trim_start_matches("https://").chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    home(cli).join("client").join(format!("{name}.session"))
+}
+
+fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?.write_all(text.as_bytes())?;
+    Ok(())
+}
+
+/// Connect, without credentials yet, and ask the backend how it wants clients to sign in.
+async fn reach(cli: &Cli) -> Result<(Client, cwbcode_proto::Status)> {
     let home = home(cli);
-    let token = match &cli.token {
-        Some(token) => token.clone(),
-        None => std::fs::read_to_string(home.join("token")).map(|t| t.trim().to_string()).with_context(|| format!("no token: start the backend on this machine (make start), or pass --token (read {})", home.join("token").display()))?,
-    };
     let trust = if cli.insecure {
         Trust::Insecure
     } else {
         let path = cli.cert.clone().unwrap_or_else(|| home.join("cert.pem"));
-        let pem = std::fs::read(&path).with_context(|| format!("no certificate at {}: pass --cert with the backend's cert.pem, or --insecure", path.display()))?;
+        let pem = std::fs::read(&path).with_context(|| format!("no certificate at {}: is the backend running (make start)? For a backend elsewhere pass --cert with its cert.pem, or --insecure", path.display()))?;
         Trust::from_pem(&pem).with_context(|| format!("{} is not a certificate", path.display()))?
     };
-    let client = Client::connect(&cli.server, &token, trust, !cli.h2).await?;
+    let client = Client::connect(&cli.server, "", trust, !cli.h2).await?;
+    let hello = client.call(&Request::new(Method::Hello)).await?.status.context("the backend did not say how to sign in")?;
+    Ok((client, hello))
+}
+
+async fn connect(cli: &Cli) -> Result<Session> {
+    let (client, hello) = reach(cli).await?;
+    let saved = || std::fs::read_to_string(session_file(cli)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let own = || std::fs::read_to_string(home(cli).join("token")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    match hello.auth.as_str() {
+        // Local mode: no login.
+        "open" => {}
+        "wallet" => {
+            // A session from `login`; on the backend's own machine, its token works too.
+            let mut candidates: Vec<String> = cli.token.clone().into_iter().chain(saved()).chain(own()).collect();
+            candidates.dedup();
+            let mut signed_in = false;
+            for token in candidates {
+                client.set_token(&token);
+                if client.call(&Request::new(Method::Status)).await.is_ok() {
+                    signed_in = true;
+                    break;
+                }
+            }
+            if !signed_in {
+                bail!("this backend belongs to wallet {}: sign in first with `cwbcodeclient login`", hello.wallet);
+            }
+        }
+        _ => {
+            let token = cli.token.clone().or_else(own).with_context(|| format!("no token: pass --token (the backend prints it with `cwbcode url`), or run on its machine (read {})", home(cli).join("token").display()))?;
+            client.set_token(&token);
+        }
+    }
     let project = match &cli.dir {
         Some(dir) if dir.starts_with('/') || dir.starts_with('~') => dir.clone(),
         Some(dir) => std::env::current_dir()?.join(dir).to_string_lossy().into_owned(),
         None => current_folder()?,
     };
     Ok(Session { client, project })
+}
+
+/// Sign in with the wallet's recovery phrase and save the session.
+async fn login(cli: &Cli, index: u32) -> Result<()> {
+    use cwbcode_proto::wallet;
+    let (client, hello) = reach(cli).await?;
+    if hello.auth != "wallet" {
+        println!("{}", if hello.auth == "open" { "This backend is in local mode: no login is needed." } else { "This backend signs in with its token, not a wallet (pass --token)." });
+        return Ok(());
+    }
+    let phrase = match std::env::var("CWBCODE_PHRASE") {
+        Ok(phrase) if !phrase.trim().is_empty() => phrase,
+        _ => {
+            eprintln!("This backend belongs to wallet {}.", hello.wallet);
+            rpassword::prompt_password("Recovery phrase (not shown, not sent): ").context("cannot read the phrase from this terminal (set CWBCODE_PHRASE instead)")?
+        }
+    };
+    let key = wallet::key_from_phrase(&phrase, index).map_err(|e| anyhow::anyhow!("{e}"))?;
+    drop(phrase);
+    let address = wallet::address(&key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !wallet::same_address(&address, &hello.wallet) {
+        bail!("that phrase is wallet {address} (account {index}); this backend belongs to {}. Another account of the same phrase? Try --index.", hello.wallet.to_lowercase());
+    }
+    let challenge = client.call(&Request::new(Method::Challenge)).await?.text;
+    // Sign only what is a sign-in for this wallet at this server.
+    if wallet::challenge_field(&challenge, "wallet").is_none_or(|w| !wallet::same_address(w, &address)) || wallet::challenge_field(&challenge, "server") != Some(hello.fingerprint.as_str()) || !challenge.starts_with("Causewaybay Code sign-in") {
+        bail!("the backend sent something that is not a sign-in request for this wallet; nothing was signed");
+    }
+    let signature = wallet::sign(&key, &challenge).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let session = client.call(&Request::new(Method::Login).text(&challenge).name(&signature)).await?.text;
+    write_private(&session_file(cli), &session)?;
+    println!("Signed in as {address}. The session is saved in {}.", session_file(cli).display());
+    Ok(())
+}
+
+async fn logout(cli: &Cli) -> Result<()> {
+    let file = session_file(cli);
+    if let Ok(token) = std::fs::read_to_string(&file) {
+        let (client, _) = reach(cli).await?;
+        client.set_token(token.trim());
+        let _ = client.call(&Request::new(Method::Logout)).await;
+        std::fs::remove_file(&file)?;
+        println!("Signed out.");
+    } else {
+        println!("There is no saved session for {}.", cli.server);
+    }
+    Ok(())
 }
 
 pub fn read_upload(path: &Path) -> Result<Upload> {
@@ -214,6 +340,32 @@ pub fn read_upload(path: &Path) -> Result<Upload> {
 async fn command(session: &Session, cmd: &Cmd) -> Result<()> {
     match cmd {
         Cmd::Status => print!("{}", repl::status(session).await?),
+        Cmd::Login { .. } | Cmd::Logout => unreachable!("handled before connecting"),
+        Cmd::Remote { action } => {
+            use cwbcode_proto::wallet;
+            let value = match action {
+                None => {
+                    let hello = session.client.call(&Request::new(Method::Hello)).await?.status.context("the backend sent no status")?;
+                    println!("{}", repl::remote_lines(&hello));
+                    return Ok(());
+                }
+                Some(RemoteCmd::Off) => String::new(),
+                Some(RemoteCmd::On { address: Some(address), .. }) => address.clone(),
+                Some(RemoteCmd::On { address: None, index }) => {
+                    let phrase = match std::env::var("CWBCODE_PHRASE") {
+                        Ok(phrase) if !phrase.trim().is_empty() => phrase,
+                        _ => rpassword::prompt_password("Recovery phrase of the wallet (not shown, not sent; only its address is used): ").context("cannot read the phrase from this terminal (give the address instead)")?,
+                    };
+                    let key = wallet::key_from_phrase(&phrase, *index).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    wallet::address(&key).map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+            };
+            let response = session.client.call(&Request::new(Method::Setup).text(&value)).await?;
+            println!("{}", response.text);
+            if let Some(status) = &response.status {
+                println!("{}", repl::remote_lines(status));
+            }
+        }
         Cmd::Projects => {
             let projects = session.client.call(&Request::new(Method::Projects)).await?.projects;
             if projects.is_empty() {
@@ -271,6 +423,11 @@ async fn command(session: &Session, cmd: &Cmd) -> Result<()> {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    match &cli.command {
+        Some(Cmd::Login { index }) => return login(&cli, *index).await,
+        Some(Cmd::Logout) => return logout(&cli).await,
+        _ => {}
+    }
     let session = connect(&cli).await?;
     if let Some(cmd) = &cli.command {
         return command(&session, cmd).await;
@@ -353,6 +510,13 @@ mod tests {
         assert!(matches!(parse(&["kb", "search", "how", "do", "we", "deploy", "-n", "3"]).command, Some(Cmd::Kb { action: KbCmd::Search { limit: 3, .. } })));
         assert!(matches!(parse(&["tools", "--source", "shout"]).command, Some(Cmd::Tools { source: Some(_), remove: None })));
         assert!(matches!(parse(&["undo"]).command, Some(Cmd::Undo { session: None })));
+        assert!(matches!(parse(&["login"]).command, Some(Cmd::Login { index: 0 })));
+        assert!(matches!(parse(&["--server", "https://mac.local:7443", "login", "--index", "2"]).command, Some(Cmd::Login { index: 2 })));
+        assert!(matches!(parse(&["logout"]).command, Some(Cmd::Logout)));
+        assert!(matches!(parse(&["remote"]).command, Some(Cmd::Remote { action: None })));
+        assert!(matches!(parse(&["remote", "off"]).command, Some(Cmd::Remote { action: Some(RemoteCmd::Off) })));
+        assert!(matches!(parse(&["remote", "on", "0xabc"]).command, Some(Cmd::Remote { action: Some(RemoteCmd::On { address: Some(_), index: 0 }) })));
+        assert!(matches!(parse(&["remote", "on", "--index", "3"]).command, Some(Cmd::Remote { action: Some(RemoteCmd::On { address: None, index: 3 }) })));
         assert!(matches!(parse(&["-C", "/p", "undo", "demo"]).command, Some(Cmd::Undo { session: Some(_) })));
     }
 

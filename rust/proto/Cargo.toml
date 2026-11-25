@@ -7,6 +7,11 @@ license = "MIT"
 
 [dependencies]
 capnp = "0.28"
+# Wallet login: recovery phrase -> key (BIP-39, BIP-32 m/44'/60'/0'/0/i), EIP-191 signatures.
+bip39 = "2"
+bip32 = "0.5"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
 
 [build-dependencies]
 capnpc = "0.28"

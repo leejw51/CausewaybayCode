@@ -39,8 +39,7 @@ impl Roots {
         Self::new(Path::new(&std::env::var("HOME").context("HOME is not set")?), server_home)
     }
 
-    /// The folder a client named, resolved, if the server may work in it.
-    pub fn resolve(&self, path: &str) -> Result<PathBuf> {
+    fn expand(&self, path: &str) -> Result<PathBuf> {
         let path = path.trim();
         let expanded = if path == "~" {
             self.home.clone()
@@ -52,10 +51,52 @@ impl Roots {
         if !expanded.is_absolute() {
             bail!("give the project's folder as an absolute path or as ~/...");
         }
+        Ok(expanded)
+    }
+
+    /// Open a folder as a project, making it (and the folders above it that are missing)
+    /// if it does not exist. Returns the folder and whether it was made. Nothing is made
+    /// unless the folder would be one the server may work in.
+    pub fn resolve_or_create(&self, path: &str) -> Result<(PathBuf, bool)> {
+        let expanded = self.expand(path)?;
+        if expanded.exists() {
+            return Ok((self.resolve(path)?, false));
+        }
+        // Where it would be: the deepest folder that exists, resolved, plus the rest as named.
+        let mut rest = Vec::new();
+        let mut existing = expanded.as_path();
+        while !existing.exists() {
+            match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    rest.push(name.to_os_string());
+                    existing = parent;
+                }
+                // ("..", or nothing left to stand on.)
+                _ => bail!("{} is not a folder name cwbcode can create", expanded.display()),
+            }
+        }
+        if rest.iter().any(|part| part == ".." || part == ".") {
+            bail!("{} is not a folder name cwbcode can create", expanded.display());
+        }
+        let would_be = rest.iter().rev().fold(existing.canonicalize()?, |p, part| p.join(part));
+        self.check(&would_be)?;
+        std::fs::create_dir_all(&would_be).with_context(|| format!("cannot create {}", would_be.display()))?;
+        Ok((self.resolve(&would_be.to_string_lossy())?, true))
+    }
+
+    /// The folder a client named, resolved, if the server may work in it.
+    pub fn resolve(&self, path: &str) -> Result<PathBuf> {
+        let expanded = self.expand(path)?;
         let real = expanded.canonicalize().with_context(|| format!("there is no folder {}", expanded.display()))?;
         if !real.is_dir() {
             bail!("{} is not a folder", real.display());
         }
+        self.check(&real)?;
+        Ok(real)
+    }
+
+    /// May the server work in this (resolved) folder?
+    fn check(&self, real: &Path) -> Result<()> {
         if !self.allowed.iter().any(|root| real.starts_with(root)) {
             bail!("{} is not under your home folder: cwbcode works only in folders under ~", real.display());
         }
@@ -65,7 +106,7 @@ impl Roots {
         if real.starts_with(&self.server_home) || OFF_LIMITS.iter().any(|d| real.starts_with(self.home.join(d))) {
             bail!("{} is off limits (credentials, system data or cwbcode's own folder)", real.display());
         }
-        Ok(real)
+        Ok(())
     }
 }
 
@@ -100,5 +141,16 @@ mod tests {
             assert!(roots.resolve(refused).is_err(), "{refused} was accepted");
         }
         assert!(roots.resolve(&base.join("elsewhere/secret").to_string_lossy()).is_err());
+
+        // A folder that does not exist is made, with the folders above it, when opened.
+        let (made, created) = roots.resolve_or_create("~/code/new/deep/project").unwrap();
+        assert!(created && made == home.join("code/new/deep/project") && made.is_dir());
+        assert_eq!(roots.resolve_or_create("~/code/new/deep/project").unwrap(), (made, false));
+        assert_eq!(roots.resolve_or_create("~/vivid/fresh").unwrap(), (base.join("disk/vivid/fresh"), true));
+        // Nothing is made where the server may not work, however the path is spelled.
+        for refused in ["/tmp/cwbcode-roots-nope/x", "~/.ssh/new", "~/.cwbcode/proj", "~/Library/new", "~/code/escape/made", "~/code/missing/../../../outside", "relative/new", "~/file.txt/under-a-file"] {
+            assert!(roots.resolve_or_create(refused).is_err(), "{refused} was created");
+        }
+        assert!(!base.join("elsewhere/made").exists() && !home.join(".ssh/new").exists() && !base.join("outside").exists() && !std::path::Path::new("/tmp/cwbcode-roots-nope").exists());
     }
 }

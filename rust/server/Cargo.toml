@@ -2,7 +2,7 @@
 name = "cwbcode"
 version = "0.1.0"
 edition = "2024"
-description = "Causeway Bay Code backend: the model on Apple MLX, the agent, its tools and its SQLite stores, served over HTTP/3 and HTTP/2"
+description = "Causewaybay Code backend: the model on Apple MLX, the agent, its tools and its SQLite stores, served over HTTP/3 and HTTP/2"
 license = "MIT"
 
 [[bin]]

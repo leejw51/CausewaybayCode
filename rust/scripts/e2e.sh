@@ -20,8 +20,8 @@ if pgrep -f "cwbcode serve" > /dev/null; then fail "a cwbcode backend is already
 
 # The backend, with its own home; the model and the Rust toolchain stay where they are.
 HOME="$WORK/home" CWBCODE_HOME="$WORK/home/.cwbcode" OLLAMA_MODELS="${OLLAMA_MODELS:-$REAL_HOME/.ollama/models}" \
-  RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}" \
-  "$ROOT/bin/cwbcode" serve --bind "127.0.0.1:$PORT" > "$WORK/server.log" 2>&1 &
+  CWBCODE_WALLET= RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}" \
+  "$ROOT/bin/cwbcode" serve --env-file /dev/null --bind "127.0.0.1:$PORT" > "$WORK/server.log" 2>&1 &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null || true; wait $SERVER 2>/dev/null || true' EXIT
 

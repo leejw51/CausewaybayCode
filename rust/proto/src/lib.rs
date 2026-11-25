@@ -12,6 +12,8 @@ pub mod cwbcode_capnp {
     include!(concat!(env!("OUT_DIR"), "/cwbcode_capnp.rs"));
 }
 
+pub mod wallet;
+
 use capnp::message::{Builder, ReaderOptions};
 use cwbcode_capnp as schema;
 pub use cwbcode_capnp::Method;
@@ -151,6 +153,17 @@ pub struct Status {
     pub home: String,
     pub h3: bool,
     pub queued: u32,
+    /// How clients sign in: "open" (local mode, no login), "wallet" or "token".
+    pub auth: String,
+    /// The wallet address that may sign in ("" without one).
+    pub wallet: String,
+    /// SHA-256 of the server's certificate, in hex.
+    pub fingerprint: String,
+    /// The address the server listens on.
+    pub bind: String,
+    /// Where the wallet is set: "" (nowhere), "settings" (set up while running, changeable
+    /// with Method::Setup), or the name of what fixes it (the .env file, the environment).
+    pub wallet_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -403,6 +416,11 @@ impl Response {
             t.set_home(&s.home[..]);
             t.set_h3(s.h3);
             t.set_queued(s.queued);
+            t.set_auth(&s.auth[..]);
+            t.set_wallet(&s.wallet[..]);
+            t.set_fingerprint(&s.fingerprint[..]);
+            t.set_bind(&s.bind[..]);
+            t.set_wallet_source(&s.wallet_source[..]);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -493,6 +511,11 @@ impl Response {
                 home: text(s.get_home())?,
                 h3: s.get_h3(),
                 queued: s.get_queued(),
+                auth: text(s.get_auth())?,
+                wallet: text(s.get_wallet())?,
+                fingerprint: text(s.get_fingerprint())?,
+                bind: text(s.get_bind())?,
+                wallet_source: text(s.get_wallet_source())?,
             })
         } else {
             None
@@ -627,7 +650,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2 }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into() }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),

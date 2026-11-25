@@ -6,12 +6,14 @@
 #   POST /api/chat   -> a stream of Events, each framed as a 4-byte little-endian length
 #                       followed by that many bytes of message
 #
-# Every request carries the server's token in the Authorization header.
+# Unless the server is in local mode (Status.auth = open), every request but hello,
+# challenge and login carries a session token (or the server's own token) in the
+# Authorization header: `Bearer <token>`.
 
 enum Method {
   status @0;           # -> status
   projects @1;         # -> projects
-  openProject @2;      # text: folder path                    -> projects (the one opened)
+  openProject @2;      # text: folder path (made if missing)  -> projects (the one opened), text ("created ...")
   sessions @3;         # project                              -> sessions
   transcript @4;       # project, session                     -> events (everything that happened)
   newSession @5;       # project                              -> id
@@ -29,6 +31,12 @@ enum Method {
   compact @17;         # project, session                     -> text
   chat @18;            # project, session (0: a new one), text, files (images), mode, think  (POST /api/chat)
   changes @19;         # project, session                     -> changes (file versions saved)
+  # Signing in. These three need no credentials.
+  hello @20;           # -> status (version, auth, wallet, fingerprint only)
+  challenge @21;       # -> text (a one-time message for the wallet to sign)
+  login @22;           # text (the challenge), name (its signature, hex) -> text (a session token)
+  logout @23;          # ends the session the request carries
+  setup @24;           # text (a wallet address: remote mode on; "": off) -> status, text
 }
 
 struct Upload {
@@ -66,6 +74,13 @@ struct Status {
   home @12 :Text;
   h3 @13 :Bool;            # the server listens for HTTP/3
   queued @14 :UInt32;
+  auth @15 :Text;          # open (local mode: no login) | wallet (sign in with the wallet) | token
+  wallet @16 :Text;        # the wallet address that may sign in ("" without one)
+  fingerprint @17 :Text;   # SHA-256 of the server's certificate
+  bind @18 :Text;          # the address the server listens on
+  walletSource @19 :Text;  # where the wallet is set: "" (nowhere), "settings" (set up while
+                           # running; can be changed with Method.setup), or the .env file /
+                           # "the environment" (fixed there)
 }
 
 struct Project {

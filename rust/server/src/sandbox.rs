@@ -211,7 +211,7 @@ impl Policy {
 
     /// The server's own secrets: its database, its token and its TLS key.
     fn own_secrets(&self) -> Vec<PathBuf> {
-        ["cwbcode.db", "cwbcode.db-wal", "cwbcode.db-shm", "token", "key.pem"].iter().map(|f| self.home.join(f)).collect()
+        ["cwbcode.db", "cwbcode.db-wal", "cwbcode.db-shm", "token", "key.pem", "sessions"].iter().map(|f| self.home.join(f)).collect()
     }
 
     /// The project's own `.cwbcode` folder: cwbcode's records, which tools neither read nor write.

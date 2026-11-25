@@ -96,7 +96,8 @@ pub struct Client {
     trust: Trust,
     /// https://host:port
     base: String,
-    token: String,
+    /// What the Authorization header carries ("" in local mode: nothing).
+    token: std::sync::Mutex<String>,
     /// Why HTTP/3 was not used, when it was tried and HTTP/2 was used instead.
     pub fallback: Option<String>,
 }
@@ -153,17 +154,26 @@ impl Client {
         let mut fallback = None;
         if h3 {
             match tokio::time::timeout(H3_TIMEOUT, Self::quic(address, &host, &trust)).await {
-                Ok(Ok((send, endpoint))) => return Ok(Self { transport: std::sync::Mutex::new(Transport::H3 { send, _endpoint: endpoint }), address, host, trust, base, token: token.to_string(), fallback: None }),
+                Ok(Ok((send, endpoint))) => return Ok(Self { transport: std::sync::Mutex::new(Transport::H3 { send, _endpoint: endpoint }), address, host, trust, base, token: std::sync::Mutex::new(token.to_string()), fallback: None }),
                 Ok(Err(e)) => fallback = Some(format!("{e:#}")),
                 Err(_) => fallback = Some("no answer over QUIC".to_string()),
             }
         }
         let client = Self::tcp(&trust)?;
-        Ok(Self { transport: std::sync::Mutex::new(Transport::H2(client)), address, host, trust, base, token: token.to_string(), fallback })
+        Ok(Self { transport: std::sync::Mutex::new(Transport::H2(client)), address, host, trust, base, token: std::sync::Mutex::new(token.to_string()), fallback })
     }
 
     fn tcp(trust: &Trust) -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder().use_preconfigured_tls(tls(trust, b"h2")).http2_keep_alive_interval(Duration::from_secs(10)).connect_timeout(Duration::from_secs(5)).build()?)
+    }
+
+    /// Use this token (a session from signing in, or the backend's own) from now on.
+    pub fn set_token(&self, token: &str) {
+        *self.token.lock().unwrap() = token.to_string();
+    }
+
+    fn token(&self) -> String {
+        self.token.lock().unwrap().clone()
     }
 
     fn transport(&self) -> Transport {
@@ -216,13 +226,18 @@ impl Client {
     fn refused(status: http::StatusCode, body: &[u8]) -> anyhow::Error {
         let said = String::from_utf8_lossy(body);
         match status {
-            http::StatusCode::UNAUTHORIZED => anyhow!("the server refused the token ({})", said.trim()),
+            http::StatusCode::UNAUTHORIZED => anyhow!("the server refused the token: not signed in ({})", said.trim()),
             _ => anyhow!("the server answered {status}: {}", said.trim()),
         }
     }
 
     async fn h3_post(&self, send: &Sender, path: &str, body: Vec<u8>) -> Result<h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>> {
-        let request = http::Request::post(format!("{}{path}", self.base)).header(http::header::AUTHORIZATION, format!("Bearer {}", self.token)).body(())?;
+        let mut request = http::Request::post(format!("{}{path}", self.base));
+        let token = self.token();
+        if !token.is_empty() {
+            request = request.header(http::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let request = request.body(())?;
         let mut stream = send.clone().send_request(request).await.map_err(broken)?;
         stream.send_data(Bytes::from(body)).await.map_err(broken)?;
         stream.finish().await.map_err(broken)?;
@@ -254,7 +269,12 @@ impl Client {
     }
 
     async fn h2_post(&self, client: &reqwest::Client, path: &str, body: Vec<u8>) -> Result<reqwest::Response> {
-        let response = client.post(format!("{}{path}", self.base)).bearer_auth(&self.token).body(body).send().await.map_err(|e| anyhow!("cannot reach the server at {}: {}", self.base, root_cause(&e)))?;
+        let mut request = client.post(format!("{}{path}", self.base)).body(body);
+        let token = self.token();
+        if !token.is_empty() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|e| anyhow!("cannot reach the server at {}: {}", self.base, root_cause(&e)))?;
         if !response.status().is_success() {
             let status = response.status();
             return Err(Self::refused(status, &response.bytes().await.unwrap_or_default()));

@@ -1,13 +1,20 @@
-# Causeway Bay Code, the Rust implementation: a local AI coding agent on Inkling 2 Mini
+# Causewaybay Code, the Rust implementation: a local AI coding agent on Inkling 2 Mini
 # (Apple MLX). Run from this folder, or from the repository root, which passes targets on.
 #   cwbcode        the backend (model, agent, tools, SQLite; HTTP/3 + HTTP/2)
 #   cwbcodeclient  the terminal client
 #   web            the dashboard and web client, built into the backend
 
 MODEL ?= inkling-2-mini:26b-a5b-nvfp4
-# Where `make start` listens. 0.0.0.0 makes the backend reachable from other machines
-# (they need the token: `make url`). Use BIND=127.0.0.1:7443 to keep it to this machine.
-BIND  ?= 0.0.0.0:7443
+# Where `make start` listens is decided by whether a wallet is set (remote mode) or not
+# (local mode). A wallet is set up while running (web dashboard, `cwbcodeclient remote on`;
+# kept in ~/.cwbcode/settings.jsonl) or fixed as CWBCODE_WALLET=0x... in the .env file at
+# the repository root:
+#   a wallet is set:   0.0.0.0:7443, reachable from other machines, sign-in with the wallet
+#   no wallet:         127.0.0.1:7443, this machine only, no login
+# BIND=addr:port overrides that either way.
+BIND  ?=
+ENV_FILE ?= $(abspath ../.env)
+SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND))
 # Where `make install` copies the programs.
 BINDIR ?= $(HOME)/bin
 SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
@@ -20,8 +27,8 @@ help:
 	@echo "make pull        - download the model into Ollama's store (ollama pull $(MODEL), 20 GB)"
 	@echo "make build       - build the web client and both programs (release) into rust/bin"
 	@echo "make install     - build, then copy cwbcode and cwbcodeclient to $(BINDIR)"
-	@echo "make start       - start the backend under supervisor on $(BIND)"
-	@echo "                   (BIND=127.0.0.1:7443 keeps it to this machine)"
+	@echo "make start       - start the backend under supervisor: local mode (127.0.0.1, no login)"
+	@echo "                   or, with a wallet set, remote mode (0.0.0.0, wallet sign-in)"
 	@echo "make stop        - stop the backend"
 	@echo "make status      - is it running;  make logs - follow its log;  make url - address and token"
 	@echo "make test        - unit and integration tests (a scripted model, no 20 GB)"
@@ -61,10 +68,15 @@ start: .venv/bin/supervisord
 	@if $(RUNNING); then \
 		echo "already running (make stop to stop it)"; \
 	else \
-		CWBCODE_BIND=$(BIND) $(SUPERVISORD) && echo "started the backend on $(BIND); log: $(HOME)/.cwbcode/server.log"; \
+		bin/cwbcode url $(SERVE_ARGS) >/dev/null || exit 1; \
+		CWBCODE_SERVE_ARGS="$(SERVE_ARGS)" $(SUPERVISORD) && echo "started the backend; log: $(HOME)/.cwbcode/server.log"; \
 	fi
-	@sleep 1; bin/cwbcode url --bind $(BIND)
-	@case "$(BIND)" in 0.0.0.0*) echo "Reachable from other machines: anyone with the token can run commands here as you.";; esac
+	@sleep 1; bin/cwbcode url $(SERVE_ARGS)
+	@if bin/cwbcode url $(SERVE_ARGS) | grep "^bind  *0\.0\.0\.0" >/dev/null; then \
+		echo "Reachable from other machines: whoever holds the wallet's recovery phrase can run commands here as you."; \
+	else \
+		echo "This machine only, no login. To use it from other machines turn remote mode on: the web dashboard, or bin/cwbcodeclient remote on <wallet address>."; \
+	fi
 
 stop:
 	@if $(RUNNING); then \
@@ -84,7 +96,7 @@ logs:
 	tail -f $(HOME)/.cwbcode/server.log
 
 url:
-	@bin/cwbcode url --bind $(BIND)
+	@bin/cwbcode url $(SERVE_ARGS)
 
 # The integration tests start target/release/cwbcode, so it is built first.
 test:

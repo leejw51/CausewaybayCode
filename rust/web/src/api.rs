@@ -15,7 +15,10 @@ async fn post(token: &str, path: &str, body: Vec<u8>) -> Result<web_sys::Respons
     init.set_method("POST");
     init.set_body(&js_sys::Uint8Array::from(&body[..]));
     let headers = web_sys::Headers::new().map_err(js_error)?;
-    headers.set("authorization", &format!("Bearer {token}")).map_err(js_error)?;
+    // In local mode there is no login, and nothing to present.
+    if !token.is_empty() {
+        headers.set("authorization", &format!("Bearer {token}")).map_err(js_error)?;
+    }
     headers.set("content-type", "application/x-capnp").map_err(js_error)?;
     init.set_headers(&headers);
     let window = web_sys::window().ok_or("no window")?;
