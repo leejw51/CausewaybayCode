@@ -1,16 +1,17 @@
 .DS_Store
-/target
-# Built programs (make build) and the web client's build output
-/bin/
+# Build output of the Rust implementation (make build)
+/rust/target/
+/rust/bin/
 /rust/web/dist/
 /rust/web/target/
 # The Python environment that holds supervisor (make start)
-/.venv/
+.venv/
 # Each project's own cwbcode records
 .cwbcode/
 *.safetensors
 __pycache__/
 *.pyc
+node_modules/
 # Never commit these, wherever they turn up
 *.pem
 *.key

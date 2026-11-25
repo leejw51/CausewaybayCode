@@ -54,11 +54,14 @@ What the agent does:
 
 ```sh
 make pull       # ollama pull inkling-2-mini:26b-a5b-nvfp4  (20 GB, once)
-make build      # web client, then both programs in release mode, copied to ./bin
+make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
 make start      # start the backend under supervisor, on 0.0.0.0:7443
 make stop       # stop it
 ```
+
+The implementation is in `rust/`; other languages will get folders of their own beside it.
+The `make` targets work from the repository root (which passes them on) or from `rust/`.
 
 `make start` prints the web address and the token; `make url` prints them again, `make
 status` and `make logs` show how it is doing. The first build compiles MLX from source and
@@ -140,7 +143,7 @@ a time. One conversation's cache is in memory; asking for another reads it back 
 store. Everything else (status, lists, transcripts, keyword search, approvals, interrupt) is
 answered at once, also while the model works.
 
-**Protocol** (`rust/proto`, `schema/cwbcode.capnp`). `POST /api/call` takes a `Request` and
+**Protocol** (`rust/proto`, `rust/proto/schema/cwbcode.capnp`). `POST /api/call` takes a `Request` and
 answers a `Response`; `POST /api/chat` answers a stream of `Event`s, each framed by its
 length, with an empty frame as heartbeat. The same messages are used by the terminal client
 and, compiled to WebAssembly, by the web client.
