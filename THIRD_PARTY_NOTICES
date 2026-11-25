@@ -1,0 +1,65 @@
+Third-party notices
+===================
+
+rust/server/src/inkling/ (the Inkling 2 Mini model on MLX: the text model, its NVFP4/MXFP8
+activation quantizers, the draft network and speculative decoding, the image encoder) was
+brought over unchanged from CausewaybayMaker (rust/src/inkling), MIT License, Copyright (c)
+2026 jongwhan lee. The sampler and generation statistics in rust/server/src/llm.rs come from the
+same project (rust/src/llm.rs).
+
+That code, and the chat format in rust/server/src/prompt.rs, are derived from Ollama
+(https://github.com/ollama/ollama), version 0.40.18:
+  - mlxrunner/model/inkling2/*.go  (Inkling 2 text model, draft network, image encoder)
+  - mlx/nvfp4_activation.go  (NVFP4 "4 over 6" activation quantization)
+  - model/renderers/inkling2.go, model/parsers/inkling2.go  (chat and tool-call format)
+
+Ollama is distributed under the following license:
+
+
+MIT License
+
+Copyright (c) Ollama
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+rust/web/assets/motion.min.js is Motion (https://motion.dev), version 14.14.0, the
+animation library the web client uses, distributed unmodified under the following license:
+
+The MIT License (MIT)
+
+Copyright (c) 2024 [Motion](https://motion.dev) B.V.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

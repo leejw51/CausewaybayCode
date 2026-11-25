@@ -1,0 +1,44 @@
+[package]
+name = "cwbcode"
+version = "0.1.0"
+edition = "2024"
+description = "Causeway Bay Code backend: the model on Apple MLX, the agent, its tools and its SQLite stores, served over HTTP/3 and HTTP/2"
+license = "MIT"
+
+[[bin]]
+name = "cwbcode"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+# The model (src/inkling, brought over from CausewaybayMaker): MLX through mlx-rs.
+mlx-rs = { version = "0.32.0", features = ["safetensors"] }
+mlx-sys = "0.6.0"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+# The knowledge base and saved sessions: SQLite with FTS5 (BM25), compiled in.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# The server: HTTP/2 over TLS (axum) and HTTP/3 over QUIC (quinn + h3), one self-signed certificate.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = { version = "0.8", features = ["http2"] }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+futures = "0.3"
+tokio-stream = "0.1"
+rust-embed = "8"
+mime_guess = "2"
+regex = "1"
+sha2 = "0.10"
+cwbcode-proto = { path = "../proto" }

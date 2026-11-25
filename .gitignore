@@ -1,0 +1,13 @@
+.DS_Store
+/target
+# Built programs (make build) and the web client's build output
+/bin/
+/rust/web/dist/
+/rust/web/target/
+# The Python environment that holds supervisor (make start)
+/.venv/
+# Each project's own cwbcode records
+.cwbcode/
+*.safetensors
+__pycache__/
+*.pyc
