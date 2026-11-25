@@ -168,12 +168,19 @@ def main():
         # The typeface and the size: each changes what is drawn, and both are kept.
         assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("pixel", "m")
         assert "VT323" in page.js("getComputedStyle(document.body).fontFamily")
+        # Every typeface on the list is in the program, loads, and is the one then drawn.
+        codes = json.loads(page.js("JSON.stringify([...document.querySelectorAll('#font option')].map(o => o.value))"))
+        assert len(codes) == 31 and codes[0] == "pixel" and codes[-1] == "system", codes
         faces = {}
-        for font in ["dgm", "mono", "iosevka", "readable", "system", "pixel"]:
+        for font in codes[1:] + ["pixel"]:
             page.js(f"(() => {{ const s = document.querySelector('#font'); s.value = '{font}'; s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()")
             page.wait(f"document.documentElement.dataset.font === '{font}'", f"the {font} typeface")
-            faces[font] = page.js("getComputedStyle(document.body).fontFamily.split(',')[0]")
-        assert len(set(faces.values())) == 6, faces
+            faces[font] = page.js("getComputedStyle(document.body).fontFamily.split(',')[0].replaceAll('\"', '').trim()")
+            if font != "system":
+                page.js(f"window.__face = null; document.fonts.load('16px \"{faces[font]}\"', 'Az').then(f => window.__face = f.length, () => window.__face = -1)")
+                page.wait("window.__face !== null", f"the {font} typeface to load")
+                assert page.js("window.__face") >= 1, f"the {font} typeface ({faces[font]}) is not in the program"
+        assert len(set(faces.values())) == len(codes), faces
         assert page.js("document.fonts.check('16px VT323') && document.fonts.check('10px PressStart2P')"), "the pixel faces did not load"
         page.js("(() => { const s = document.querySelector('#font'); s.value = 'mono'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         sizes = [page.js("parseFloat(getComputedStyle(document.querySelector('#nav-chat')).fontSize)")]

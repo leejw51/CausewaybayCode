@@ -1,0 +1,83 @@
+Fonts shipped with Causewaybay Hacker, and where they come from.
+
+PressStart2P-Regular.ttf   Press Start 2P, CodeMan38            SIL OFL 1.1   PressStart2P-OFL.txt
+VT323-Regular.ttf          VT323, Peter Hull                    SIL OFL 1.1   VT323-OFL.txt
+Iosevka-Code.woff2         Iosevka (subset), Belleve Invis      SIL OFL 1.1   Iosevka-OFL.txt
+JetBrainsMono-Code.woff2   JetBrains Mono (subset), JetBrains   SIL OFL 1.1   JetBrainsMono-OFL.txt
+
+IBM-VGA-8x16.woff          "Web437 IBM VGA 8x16" from The Ultimate Oldschool PC
+                           Font Pack v2.2 by VileR, https://int10h.org/oldschool-pc-fonts/
+                           CC BY-SA 4.0                         OldschoolPC-CC-BY-SA-4.0.txt
+                           Renamed from Web437_IBM_VGA_8x16.woff; otherwise unmodified.
+neodgm.woff2               Neo둥근모 (NeoDunggeunmo) v1.601,
+neodgm_code.woff2          Neo둥근모 Code, Eunbin Jeong (Dalgona),
+                           https://github.com/neodgm/neodgm     SIL OFL 1.1   neodgm-OFL.txt
+Galmuri11.woff2            Galmuri11 and GalmuriMono11 v2.40.4, Lee Minseo (quiple),
+GalmuriMono11.woff2        https://github.com/quiple/galmuri    SIL OFL 1.1   Galmuri-OFL.txt
+ComicMono.ttf              Comic Mono, dtinth (from Comic Shanns by Shannon Miwa),
+                           https://github.com/dtinth/comic-mono-font  MIT  ComicMono-MIT.txt
+PRNumber3.ttf              PR Number 3 (Apple II 80-column text), Kreative Korporation /
+                           Kreative Software, https://kreativekorp.com/software/fonts/apple2/
+                           Kreative Software Relay Fonts Free Use License 1.2f
+                                                                Kreative-FreeLicense.txt
+                           Shipped byte-for-byte as downloaded; the licence forbids changes.
+MSX1-Code.woff2            MSX1 Korean v0.0.1 (pre-alpha), Noah Burney,
+                           https://github.com/nwah/korean-msx-font   SIL OFL 1.1   MSX1Korean-OFL.txt
+                           Subset to Latin and punctuation, and its vertical metrics set to
+                           the glyphs' own extent (the original's line box is two ems).
+TopazUnicode.woff2         Topaz Unicode KS13 (Amiga 500 Topaz), Screwtape,
+                           https://gitlab.com/Screwtapello/topaz-unicode   ISC   TopazUnicode-ISC.txt
+                           Converted from the release .ttf to WOFF2; otherwise unmodified.
+VictorMono-Regular.woff2   Victor Mono v1.5.6, Rune Bjørnerås,
+VictorMono-Italic.woff2    https://github.com/rubjo/victor-mono  SIL OFL 1.1   VictorMono-OFL.txt
+FantasqueSansMono-Regular.woff2
+                           Fantasque Sans Mono v1.8.0, Jany Belluz,
+                           https://github.com/belluzj/fantasque-sans  SIL OFL 1.1  FantasqueSansMono-OFL.txt
+MonaspaceRadon-Regular.woff2
+                           Monaspace Radon v1.400, GitHub Next,
+                           https://github.com/githubnext/monaspace  SIL OFL 1.1   Monaspace-OFL.txt
+                           Converted from the release .otf to WOFF2; otherwise unmodified.
+
+---- From FruitNation Messenger ----------------------------------------------
+
+Copied unmodified from FruitNation Messenger's font pack (its CREDITS.txt
+has the same entries). The outline faces are self-hosted Google Fonts builds:
+a Latin and a Latin Extended subset each, upright only.
+
+unifont.woff2              GNU Unifont, Roman Czyborra, Paul Hardy et al.,
+                           https://unifoundry.com/unifont/
+                           SIL OFL 1.1, or GNU GPL 2+ with the Font Embedding Exception
+                                                                unifont-LICENSE.txt
+                           Converted from the release .otf to WOFF2 with fontTools.
+ibm-plex-mono-400-latin.woff2
+ibm-plex-mono-400-latin-ext.woff2
+                           IBM Plex Mono, IBM, https://github.com/IBM/plex
+                                                  SIL OFL 1.1   OFL-ibm-plex-mono.txt
+NunitoSans-Latin.woff2     Nunito Sans (variable weight), The Nunito Sans Project Authors,
+                           https://github.com/Fonthausen/NunitoSans   NunitoSans-LICENSE.txt
+atkinson-hyperlegible-next-latin.woff2
+atkinson-hyperlegible-next-latin-ext.woff2
+                           Atkinson Hyperlegible Next, Braille Institute of America
+                                                  SIL OFL 1.1   atkinson-hyperlegible-next-OFL.txt
+dm-sans-latin.woff2        DM Sans, Colophon Foundry / Indian Type Foundry
+dm-sans-latin-ext.woff2                           SIL OFL 1.1   dm-sans-OFL.txt
+geist-latin.woff2          Geist, Vercel          SIL OFL 1.1   geist-OFL.txt
+geist-latin-ext.woff2
+ibm-plex-sans-latin.woff2  IBM Plex Sans, IBM     SIL OFL 1.1   ibm-plex-sans-OFL.txt
+ibm-plex-sans-latin-ext.woff2
+instrument-sans-latin.woff2
+instrument-sans-latin-ext.woff2
+                           Instrument Sans, Rodrigo Fuenzalida / Jordan Egstad
+                                                  SIL OFL 1.1   instrument-sans-OFL.txt
+space-grotesk-var-latin.woff2
+space-grotesk-var-latin-ext.woff2
+                           Space Grotesk (variable weight), Florian Karsten
+                                                  SIL OFL 1.1   OFL-space-grotesk.txt
+lora-latin.woff2           Lora, Cyreal           SIL OFL 1.1   lora-OFL.txt
+lora-latin-ext.woff2
+fraunces-latin.woff2       Fraunces, Undercase Type   SIL OFL 1.1   fraunces-OFL.txt
+fraunces-latin-ext.woff2
+newsreader-var-latin.woff2
+newsreader-var-latin-ext.woff2
+                           Newsreader (variable weight), Production Type
+                                                  SIL OFL 1.1   OFL-newsreader.txt

@@ -39,17 +39,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-rust/web/assets/fonts/ holds typefaces the web client offers, each distributed unmodified
-(the two "Code" files are subsets) under the SIL Open Font License 1.1, whose text stands
-beside each of them in that folder:
-
-  PressStart2P-Regular.ttf                  Press Start 2P, by CodeMan38        PressStart2P-OFL.txt
-  VT323-Regular.ttf                         VT323, by Peter Hull                VT323-OFL.txt
-  neodgm.woff2                              NeoDunggeunmo, by Eunbin Jeong      neodgm-OFL.txt
-  JetBrainsMono-Code.woff2                  JetBrains Mono, by JetBrains        JetBrainsMono-OFL.txt
-  Iosevka-Code.woff2                        Iosevka, by Belleve Invis           Iosevka-OFL.txt
-  atkinson-hyperlegible-next-latin*.woff2   Atkinson Hyperlegible Next,         atkinson-hyperlegible-next-OFL.txt
-                                            by the Braille Institute
+rust/web/assets/fonts/ holds the typefaces the web client offers, brought from Causewaybay
+Hacker's font pack. rust/web/assets/fonts/CREDITS.txt names each file, its authors, where it
+is from, whether it was subset or converted, and its licence; the licence texts stand beside
+the files in that folder. Most are under the SIL Open Font License 1.1. The others: the IBM
+VGA face (CC BY-SA 4.0), Comic Mono (MIT), Topaz Unicode (ISC), PR Number 3 (Kreative
+Software Relay Fonts Free Use License, shipped unmodified as it requires), and GNU Unifont
+(SIL OFL 1.1, or GNU GPL 2+ with the font embedding exception).
 
 rust/web/assets/art/ and design/images/ hold pictures made for this project with an image
 model (xAI's Grok); design/ is the layout they were drawn for.

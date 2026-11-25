@@ -181,8 +181,10 @@ plain ground where there is no WebGL). A button at the top left of the view fold
 sidebar away, so the work has the whole window.
 
 The controls beside the name: **light / dark**, **side by side / stacked** (the sidebar
-becomes a header), the **typeface** (VT323, NeoDGM, JetBrains Mono, Iosevka, Atkinson
-Hyperlegible, or the system's own; titles and buttons stay in Press Start 2P), the **size**
+becomes a header), the **typeface** (thirty, from Causewaybay Hacker's font pack: pixel
+faces such as VT323, NeoDunggeunmo, Galmuri, IBM VGA, Apple II and Amiga Topaz; code faces
+such as JetBrains Mono, Iosevka, IBM Plex Mono and Victor Mono; text faces such as Atkinson
+Hyperlegible, Geist, DM Sans, Lora and Noto Sans CJK; or the system's own), the **size**
 (A- and A+, four steps), and the **language**: English, 한국어, Čeština, 日本語, 廣東話,
 中文, Español, Türkçe (the interface; what the backend and the model say arrives as it is).
 These, and where you are (view, project, conversation), are kept in the browser, so a

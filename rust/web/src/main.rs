@@ -186,7 +186,7 @@ impl App {
             token: RwSignal::new(initial_token()),
             theme: RwSignal::new(text("theme", if system_prefers_light() { "light" } else { "dark" })),
             layout: RwSignal::new(text("layout", "horizontal")),
-            font: RwSignal::new(Some(text("font", "pixel")).filter(|f| FONTS.iter().any(|(code, _)| code == f)).unwrap_or_else(|| "pixel".into())),
+            font: RwSignal::new(Some(text("font", "pixel")).filter(|f| FONTS.iter().any(|(code, ..)| code == f)).unwrap_or_else(|| "pixel".into())),
             side: RwSignal::new(prefs["side"].as_bool().unwrap_or(true)),
             size: RwSignal::new(Some(text("size", "m")).filter(|s| SIZES.contains(&s.as_str())).unwrap_or_else(|| "m".into())),
             lang: RwSignal::new(prefs["lang"].as_str().and_then(Lang::from_code).unwrap_or_else(|| Lang::from_browser(&browser))),
@@ -623,7 +623,16 @@ fn Root() -> impl IntoView {
         if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
             let _ = root.set_attribute("data-theme", &app.theme.get());
             let _ = root.set_attribute("lang", app.lang.get().code());
-            let _ = root.set_attribute("data-font", &app.font.get());
+            let font = app.font.get();
+            let _ = root.set_attribute("data-font", &font);
+            // The face itself, and the scale that makes it read as the others do.
+            if let Some((_, _, family, scale)) = FONTS.iter().find(|(code, ..)| *code == font) {
+                let stack = if family.is_empty() { FONT_FALLBACK.replace("\"NeoDGM\", ", "") } else { format!("\"{family}\", {FONT_FALLBACK}") };
+                if let Some(style) = root.dyn_ref::<web_sys::HtmlElement>().map(|el| el.style()) {
+                    let _ = style.set_property("--body", &stack);
+                    let _ = style.set_property("--face", &scale.to_string());
+                }
+            }
             let _ = root.set_attribute("data-size", &app.size.get());
         }
     });
@@ -705,9 +714,45 @@ const ICON_BOOK: &str = "M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zm0 13a3 3 0 0 
 const ICON_TOOL: &str = "M14.5 6.500a4 4 0 0 0-5.200 5.200L3.500 17.500l3 3 5.800-5.800a4 4 0 0 0 5.200-5.200l-2.700 2.700-2.300-.700-.700-2.300z";
 
 /// Light or dark, side by side or stacked, and the language: three small controls.
-/// The typefaces to choose from (the code kept in the preferences, and the name shown; an
-/// empty name is "the system's own", in the language chosen) and the sizes, small to large.
-const FONTS: [(&str, &str); 6] = [("pixel", "VT323"), ("dgm", "NeoDGM"), ("mono", "JetBrains Mono"), ("iosevka", "Iosevka"), ("readable", "Atkinson"), ("system", "")];
+/// The typefaces to choose from: the code kept in the preferences, the name shown (an empty
+/// name is "the system's own", in the language chosen), the CSS family, and how much larger
+/// it must be set to read as the others do. All of them are in the program
+/// (assets/fonts, from Causewaybay Hacker); the browser fetches one only when it is chosen.
+const FONTS: [(&str, &str, &str, f64); 31] = [
+    ("pixel", "VT323", "VT323", 1.34),
+    ("dgm", "NeoDunggeunmo", "NeoDGM", 1.06),
+    ("dgmcode", "NeoDunggeunmo Code", "NeoDGMCode", 1.06),
+    ("galmuri", "Galmuri 11", "Galmuri11", 1.0),
+    ("galmurimono", "Galmuri Mono 11", "GalmuriMono11", 1.0),
+    ("dosvga", "IBM VGA 8x16", "DOSVGA", 1.12),
+    ("apple2", "Apple II", "AppleIIPR3", 1.0),
+    ("msx", "MSX1", "MSX1Code", 1.0),
+    ("topaz", "Amiga Topaz", "TopazUnicode", 1.0),
+    ("unifont", "GNU Unifont", "Unifont", 1.12),
+    ("press", "Press Start 2P", "PressStart2P", 0.72),
+    ("mono", "JetBrains Mono", "JetBrainsMonoCode", 0.92),
+    ("iosevka", "Iosevka", "IosevkaCode", 1.0),
+    ("plexmono", "IBM Plex Mono", "PlexMono", 0.92),
+    ("victor", "Victor Mono", "VictorMono", 0.92),
+    ("victorscript", "Victor Mono Italic", "VictorMonoScript", 0.92),
+    ("fantasque", "Fantasque Sans Mono", "FantasqueSansMono", 1.0),
+    ("radon", "Monaspace Radon", "MonaspaceRadon", 0.92),
+    ("comic", "Comic Mono", "ComicMono", 0.95),
+    ("readable", "Atkinson Hyperlegible", "Atkinson", 1.0),
+    ("nunito", "Nunito Sans", "NunitoSans", 1.0),
+    ("dmsans", "DM Sans", "DMSans", 1.0),
+    ("geist", "Geist", "Geist", 1.0),
+    ("plexsans", "IBM Plex Sans", "PlexSans", 1.0),
+    ("instrument", "Instrument Sans", "InstrumentSans", 1.0),
+    ("grotesk", "Space Grotesk", "SpaceGrotesk", 1.0),
+    ("lora", "Lora", "Lora", 1.0),
+    ("fraunces", "Fraunces", "Fraunces", 1.0),
+    ("newsreader", "Newsreader", "Newsreader", 1.0),
+    ("notocjk", "Noto Sans CJK", "NotoSansCJK", 1.0),
+    ("system", "", "", 1.0),
+];
+/// What stands in where a face has no glyph: the Korean pixel face, then the system's.
+const FONT_FALLBACK: &str = "\"NeoDGM\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Apple SD Gothic Neo\", \"Hiragino Sans\", \"PingFang HK\", \"PingFang SC\", sans-serif";
 const SIZES: [&str; 4] = ["s", "m", "l", "xl"];
 
 #[component]
@@ -728,7 +773,7 @@ fn Prefs() -> impl IntoView {
             </button>
             <label class="lang" title=app.t("font")>
                 <select id="font" on:change=move |ev| app.font.set(event_target_value(&ev)) prop:value=move || app.font.get()>
-                    {FONTS.into_iter().map(|(code, name)| view! { <option value=code selected=move || app.font.get() == code>{move || if name.is_empty() { tr(app.lang.get(), "font_system").to_string() } else { name.to_string() }}</option> }).collect_view()}
+                    {FONTS.into_iter().map(|(code, name, ..)| view! { <option value=code selected=move || app.font.get() == code>{move || if name.is_empty() { tr(app.lang.get(), "font_system").to_string() } else { name.to_string() }}</option> }).collect_view()}
                 </select>
             </label>
             <button class="ghost round" id="font-smaller" title=app.t("font_smaller") disabled=move || app.size.get() == SIZES[0] on:click=move |_| step_size(app, -1)>"A-"</button>
