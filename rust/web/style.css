@@ -219,6 +219,15 @@ pre, code, .mono { font-family: var(--mono); font-size: .9rem; }
 .outline .o { display: block; flex: 0 1 5px; min-height: 2px; border-radius: 3px; background: #6f78c8; cursor: pointer; }
 .outline .o.user { background: var(--gold); align-self: flex-end; } .outline .o.tool { background: var(--accent); } .outline .o.ask { background: var(--orange); }
 .outline .o.bad { background: var(--bad); } .outline .o.quiet { opacity: .35; }
+/* To scale (the page sets where each bar is and how tall): the whole conversation, top to
+   bottom, with a frame over the part that is on screen. Pressed or dragged, it scrolls. */
+.outline { position: relative; touch-action: none; cursor: pointer; }
+.outline.scaled { display: block; padding: 0; }
+.outline.scaled .o { position: absolute; left: .45rem; max-width: calc(100% - .9rem); }
+.outline.scaled .o.user { left: auto; right: .45rem; }
+.outline .viewport { display: none; position: absolute; left: 2px; right: 2px; top: 0; height: 100%; border: 1.5px solid var(--gold); border-radius: calc(var(--r) - 4px);
+  background: color-mix(in srgb, var(--gold) 14%, transparent); pointer-events: none; transition: top .12s linear, height .12s linear; }
+.outline.scaled .viewport { display: block; } .outline .viewport.all { opacity: .35; }
 .col, .col.mid, .col.wide { max-width: none; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); }
 .it { display: grid; grid-template-columns: minmax(0, 1fr); scroll-margin-top: .4rem; }
 .msg, .note, .approval, .todos, .composer textarea { font-family: var(--chat); font-size: calc(1rem * var(--chatface)); }

@@ -115,6 +115,58 @@ export function copy_text(text) {
   } catch (_) {}
   return false;
 }
+// The outline beside the conversation, kept to scale: each bar sits where its item is in the
+// whole conversation and is as tall as the item, and a frame marks the part now on screen.
+// It follows scrolling, new text and a change of size; pressing or dragging on the outline
+// scrolls the conversation there.
+let outlined = false;
+export function outline_install() {
+  if (outlined) return;
+  outlined = true;
+  let due = false;
+  const sync = () => {
+    due = false;
+    const scroller = document.getElementById('transcript');
+    const outline = document.getElementById('outline');
+    const frame = document.getElementById('outline-view');
+    if (!scroller || !outline || !frame) return;
+    const whole = Math.max(scroller.scrollHeight, 1);
+    const from = scroller.getBoundingClientRect().top - scroller.scrollTop;
+    const bars = outline.querySelectorAll('.o');
+    const items = scroller.querySelectorAll('.it');
+    bars.forEach((bar, i) => {
+      const item = items[i];
+      if (!item) return;
+      const box = item.getBoundingClientRect();
+      bar.style.top = (((box.top - from) / whole) * 100).toFixed(2) + '%';
+      bar.style.height = 'max(2px, calc(' + ((box.height / whole) * 100).toFixed(2) + '% - 2px))';
+    });
+    outline.classList.add('scaled');
+    // The part of the conversation on screen now.
+    frame.style.top = ((scroller.scrollTop / whole) * 100).toFixed(2) + '%';
+    frame.style.height = ((Math.min(scroller.clientHeight, whole) / whole) * 100).toFixed(2) + '%';
+    frame.classList.toggle('all', scroller.scrollHeight <= scroller.clientHeight + 1);
+  };
+  const soon = () => { if (!due) { due = true; requestAnimationFrame(sync); } };
+  document.addEventListener('scroll', (e) => { if (e.target && e.target.id === 'transcript') soon(); }, true);
+  addEventListener('resize', soon);
+  new MutationObserver(soon).observe(document.body, { childList: true, subtree: true, characterData: true });
+  // Pressing or dragging on the outline brings that part of the conversation to the middle.
+  let dragging = false;
+  const seek = (e) => {
+    const scroller = document.getElementById('transcript');
+    const outline = document.getElementById('outline');
+    if (!scroller || !outline) return;
+    const box = outline.getBoundingClientRect();
+    const share = Math.min(1, Math.max(0, (e.clientY - box.top) / Math.max(box.height, 1)));
+    scroller.scrollTop = share * scroller.scrollHeight - scroller.clientHeight / 2;
+  };
+  document.addEventListener('pointerdown', (e) => { if (e.target.closest && e.target.closest('#outline')) { dragging = true; seek(e); e.preventDefault(); } });
+  document.addEventListener('pointermove', (e) => { if (dragging) seek(e); });
+  document.addEventListener('pointerup', () => { dragging = false; });
+  document.addEventListener('pointercancel', () => { dragging = false; });
+  soon();
+}
 // Bring an element of the conversation into view.
 export function go_to(id) {
   const el = document.getElementById(id);
@@ -143,6 +195,8 @@ extern "C" {
     pub fn has_motion() -> bool;
     /// Put text on the clipboard; false where the browser will not.
     pub fn copy_text(text: &str) -> bool;
+    /// Keep the conversation's outline to scale, with a frame for the part on screen; once.
+    pub fn outline_install();
     /// Scroll to the element with this id.
     pub fn go_to(id: &str);
 }

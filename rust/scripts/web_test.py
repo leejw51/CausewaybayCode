@@ -276,6 +276,22 @@ def main():
         page.click("#nav-chat")
         page.wait("!!document.querySelector('#transcript .it')", "the conversation")
         assert page.js("document.querySelectorAll('#outline .o').length === document.querySelectorAll('#transcript .it').length"), "the outline does not follow the conversation"
+        # The outline is to scale, and a frame on it marks the part of the conversation on screen.
+        page.wait("document.querySelector('#outline').classList.contains('scaled') && !!document.querySelector('#outline-view')", "the outline to scale")
+        page.js("document.querySelector('.chatbody').style.maxHeight = '160px'")
+        page.wait("document.querySelector('#transcript').scrollHeight > document.querySelector('#transcript').clientHeight + 40", "a conversation longer than its box")
+        frame = "(() => { const o = document.querySelector('#outline').getBoundingClientRect(), f = document.querySelector('#outline-view').getBoundingClientRect(); return [(f.top - o.top) / o.height, f.height / o.height]; })()"
+        page.js("document.querySelector('#transcript').scrollTop = 0")
+        page.wait(f"{frame}[0] < 0.02 && {frame}[1] < 0.95", "the frame at the top of the outline")
+        page.wait(f"Math.abs({frame}[1] - document.querySelector('#transcript').clientHeight / document.querySelector('#transcript').scrollHeight) < 0.05", "the frame as tall as the part on screen")
+        page.js("document.querySelector('#transcript').scrollTop = 1e6")
+        page.wait(f"Math.abs({frame}[0] + {frame}[1] - 1) < 0.03", "the frame at the bottom after scrolling to the end")
+        # Each bar sits where its item is.
+        assert page.js("(() => { const bars = [...document.querySelectorAll('#outline .o')].map(b => b.getBoundingClientRect().top); return bars.every((t, i) => i === 0 || t >= bars[i - 1] - 0.5); })()"), "the bars are out of order"
+        # Pressing on the outline scrolls the conversation there.
+        page.js("(() => { const o = document.querySelector('#outline').getBoundingClientRect(); const at = { bubbles: true, clientX: o.left + 5, clientY: o.top + 2, pointerId: 1 }; document.querySelector('#outline').dispatchEvent(new PointerEvent('pointerdown', at)); document.dispatchEvent(new PointerEvent('pointerup', at)); })()")
+        page.wait("document.querySelector('#transcript').scrollTop < 5", "the top of the conversation after pressing the top of the outline")
+        page.js("document.querySelector('.chatbody').style.maxHeight = ''")
         assert page.js("!!document.querySelector('#ctx .bar2 i') && document.querySelector('#ctx-text').innerText.includes('/')"), page.text("#ctx")
         assert page.js("document.querySelector('#transcript').scrollWidth <= document.querySelector('#transcript').clientWidth + 1"), "the transcript is wider than its box"
         assert page.js("getComputedStyle(document.querySelector('#undo')).borderTopWidth !== '0px' && !document.querySelector('#undo').classList.contains('ghost')"), "undo does not look like a button"

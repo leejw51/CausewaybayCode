@@ -682,6 +682,7 @@ fn Root() -> impl IntoView {
     });
     Effect::new(move |_| app.save_prefs());
     Effect::new(move |_| after_draw(motion::install));
+    Effect::new(move |_| after_draw(motion::outline_install));
     view! {
         <div class="glow a"></div>
         <div class="glow b"></div>
@@ -1416,11 +1417,11 @@ fn Chat() -> impl IntoView {
         </div>
         // The outline: one bar for each thing said or done; a tap goes there.
         <div class="outline glass" id="outline" aria-hidden="true">
+            <div class="viewport" id="outline-view"></div>
             <For each=move || app.items.get() key=|item| item.id children=move |item: Item| {
-                let id = item.id;
                 let class = match item.kind { Kind::User => "o user", Kind::Tool => "o tool", Kind::Approval => "o ask", Kind::Text => "o text", Kind::Error | Kind::Warning => "o bad", _ => "o quiet" };
                 let text = item.text;
-                view! { <i class=class style:width=move || format!("{}%", 25 + (text.get().len() / 12).min(75)) on:click=move |_| motion::go_to(&format!("item-{id}"))></i> }
+                view! { <i class=class style:width=move || format!("{}%", 25 + (text.get().len() / 12).min(75))></i> }
             }/>
         </div>
         </div>
