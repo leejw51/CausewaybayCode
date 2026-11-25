@@ -67,6 +67,13 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+impl App {
+    /// Does a request carry the server's token?
+    pub fn authorized(&self, headers: &HeaderMap) -> bool {
+        authorized(self, headers)
+    }
+}
+
 fn authorized(app: &App, headers: &HeaderMap) -> bool {
     headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|given| same(given.trim().as_bytes(), app.token.as_bytes()))
 }
@@ -305,7 +312,18 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
             let mime = mime_guess::from_path(name).first_or_octet_stream();
             // The app's files carry a hash in their names; only the page itself must be fresh.
             let cache = if name == "index.html" { "no-cache" } else { "public, max-age=31536000, immutable" };
-            ([(header::CONTENT_TYPE, mime.as_ref().to_string()), (header::CACHE_CONTROL, cache.to_string())], file.data.into_owned()).into_response()
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                    (header::CACHE_CONTROL, cache.to_string()),
+                    // The page is not to be framed by another site, nor to load anything but its own files.
+                    (header::X_FRAME_OPTIONS, "DENY".to_string()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'".to_string()),
+                ],
+                file.data.into_owned(),
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
     }

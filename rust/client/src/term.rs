@@ -22,6 +22,12 @@ pub struct Term {
     at_line_start: bool,
 }
 
+/// Text from the model, a file or a command, made safe to print: control characters (escape
+/// sequences that could hide or rewrite what the terminal shows) become a visible mark.
+pub fn printable(text: &str) -> String {
+    text.chars().map(|c| if c == '\n' || c == '\t' || !c.is_control() { c } else { '\u{fffd}' }).collect()
+}
+
 pub fn kilo(n: u64) -> String {
     if n >= 1000 { format!("{:.1}k", n as f64 / 1000.0) } else { n.to_string() }
 }
@@ -79,7 +85,19 @@ impl Term {
     }
 
     pub fn show(&mut self, what: &What) {
-        match what {
+        // Whatever arrives is shown as text, never obeyed as terminal control.
+        let cleaned = match what {
+            What::Thinking(t) => What::Thinking(printable(t)),
+            What::Text(t) => What::Text(printable(t)),
+            What::ToolStart { name, summary, args } => What::ToolStart { name: name.clone(), summary: printable(summary), args: args.clone() },
+            What::ToolEnd { ok, text, images, seconds } => What::ToolEnd { ok: *ok, text: printable(text), images: *images, seconds: *seconds },
+            What::Todos(t) => What::Todos(printable(t)),
+            What::Note(t) => What::Note(printable(t)),
+            What::Warning(t) => What::Warning(printable(t)),
+            What::Error(t) => What::Error(printable(t)),
+            other => other.clone(),
+        };
+        match &cleaned {
             What::Thinking(text) => {
                 if !self.show_thinking || self.quiet {
                     return;
@@ -179,7 +197,7 @@ impl Term {
             // Keys typed before the question was shown are not an answer to it.
             // SAFETY: tcflush only discards the terminal's unread input.
             unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
-            eprint!("\n{}\n  Allow? [y]es{always} / [n]o, or say what to do instead: ", self.paint("33", &format!("? {what}")));
+            eprint!("\n{}\n  Allow? [y]es{always} / [n]o, or say what to do instead: ", self.paint("33", &format!("? {}", printable(what))));
             let _ = std::io::stderr().flush();
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {
@@ -203,5 +221,7 @@ mod tests {
         assert_eq!(usage_line(&Usage { tool_calls: 1, ..Usage::default() }), "[0 tokens in context · wrote 0 · 1 tool call · 0.0s]");
         assert_eq!(todo_lines(r#"[{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},{"content":"c","status":"pending"}]"#), ["☒ a", "◐ b", "☐ c"]);
         assert!(todo_lines("not json").is_empty());
+        // An escape sequence that would erase the line above it is shown, not obeyed.
+        assert_eq!(printable("rm -rf x\u{1b}[2K\u{1b}[1A\rls\tfine\n한글 \u{9b}31m"), "rm -rf x\u{fffd}[2K\u{fffd}[1A\u{fffd}ls\tfine\n한글 \u{fffd}31m");
     }
 }

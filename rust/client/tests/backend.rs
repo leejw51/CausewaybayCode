@@ -38,11 +38,14 @@ fn backend_binary() -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    // Free for both TCP and UDP.
+    // Each test in this process gets a port of its own (two tests asking the system for "any
+    // free port" at the same moment can be given the same one), free for both TCP and UDP.
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    // Below the range the system hands out to clients (49152 and up).
+    let base = 21000 + (std::process::id() % 250) as u16 * 100;
     loop {
-        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = tcp.local_addr().unwrap().port();
-        if std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+        let port = base + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
@@ -58,19 +61,30 @@ impl Server {
         std::fs::create_dir_all(home.join("proj")).unwrap();
         let home = home.canonicalize().unwrap();
         std::fs::write(home.join("script.json"), script).unwrap();
-        let port = free_port();
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let child = Self::spawn(&home, port, &args);
-        let mut server = Self { child, port, args, home: home.clone(), url: format!("https://127.0.0.1:{port}"), token: String::new(), trust: Trust::Insecure };
-        let start = Instant::now();
-        loop {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() && home.join(".cwbcode/token").exists() {
-                break;
+        // A port can be taken between finding it free and the backend binding it: try another.
+        let mut attempt = 0;
+        let mut server = loop {
+            attempt += 1;
+            let port = free_port();
+            let child = Self::spawn(&home, port, &args);
+            let mut server = Self { child, port, args: args.clone(), home: home.clone(), url: format!("https://127.0.0.1:{port}"), token: String::new(), trust: Trust::Insecure };
+            let start = Instant::now();
+            let up = loop {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() && home.join(".cwbcode/token").exists() {
+                    break true;
+                }
+                if server.child.try_wait().unwrap().is_some() {
+                    break false;
+                }
+                assert!(start.elapsed() < Duration::from_secs(20), "the backend did not start");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            if up {
+                break server;
             }
-            assert!(start.elapsed() < Duration::from_secs(20), "the backend did not start");
-            assert!(server.child.try_wait().unwrap().is_none(), "the backend exited at once");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+            assert!(attempt < 5, "the backend exited at once, five times: {}", std::fs::read_to_string(home.join("server.log")).unwrap_or_default());
+        };
         server.token = std::fs::read_to_string(home.join(".cwbcode/token")).unwrap();
         server.trust = Trust::from_pem(&std::fs::read(home.join(".cwbcode/cert.pem")).unwrap()).unwrap();
         server
@@ -89,7 +103,8 @@ impl Server {
             .env("CARGO_HOME", std::env::var("CARGO_HOME").unwrap_or_else(|_| format!("{real_home}/.cargo")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // Kept, so that a backend that stops says why.
+            .stderr(std::fs::OpenOptions::new().create(true).append(true).open(home.join("server.log")).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
             .spawn()
             .unwrap()
     }
@@ -490,4 +505,80 @@ async fn a_client_goes_on_after_the_backend_restarts() {
         assert_eq!(client.protocol(), if h3 { "h3" } else { "h2" });
         assert!(client.call(&Request::new(Method::Status)).await.is_ok());
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_without_the_token_is_turned_away_before_its_body_is_read() {
+    let server = Server::start("preauth", HELLO, &[]);
+    // 30 MB that would be buffered if the body were read first; over HTTP/3 and HTTP/2.
+    let mut big = Request::new(Method::KbAdd).project(&server.project());
+    big.files = vec![Upload { name: "big.bin".into(), data: vec![7; 30 << 20] }];
+    for h3 in [true, false] {
+        let stranger = Client::connect(&server.url, "not-the-token", server.trust.clone(), h3).await.unwrap();
+        let started = Instant::now();
+        for _ in 0..4 {
+            let refused = stranger.call(&big).await.unwrap_err().to_string();
+            assert!(refused.contains("refused the token") || refused.contains("broke") || refused.contains("reach"), "h3={h3}: {refused}");
+        }
+        assert!(started.elapsed() < Duration::from_secs(20), "h3={h3}: refusing took {:?}", started.elapsed());
+    }
+    // Nothing of it was stored, and the owner is served as before, also with a large upload.
+    let owner = server.client(true).await;
+    assert!(owner.call(&Request::new(Method::KbList).project(&server.project())).await.unwrap().docs.is_empty());
+    assert!(!server.home.join("proj/.cwbcode").exists());
+    let saved = owner.call(&big).await.unwrap().docs;
+    assert_eq!(saved[0].title, "big.bin");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_page_forbids_framing_and_foreign_scripts_and_the_stores_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("headers", HELLO, &[]);
+    let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let page = http.get(&server.url).send().await.unwrap();
+    let header = |name: &str| page.headers().get(name).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+    assert_eq!(header("x-frame-options"), "DENY");
+    assert_eq!(header("x-content-type-options"), "nosniff");
+    let csp = header("content-security-policy");
+    assert!(csp.contains("default-src 'self'") && csp.contains("frame-ancestors 'none'"), "{csp}");
+    // The server's folder and a project's records are for their owner only.
+    let client = server.client(true).await;
+    read_all(&mut client.chat(&chat(&server, 0, "hi", "")).await.unwrap()).await;
+    let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(server.home.join(".cwbcode")), 0o700);
+    assert_eq!(mode(server.home.join("proj/.cwbcode")), 0o700);
+    assert_eq!(mode(server.home.join(".cwbcode/token")), 0o600);
+    assert_eq!(mode(server.home.join(".cwbcode/key.pem")), 0o600);
+}
+
+const LINKS: &str = r#"[
+  {"calls": [{"name": "bash", "args": {"command": "ln -s ../planted-by-link.txt innocent.txt; ln -s \"$HOME/.cwbcode/token\" stolen; echo linked"}},
+             {"name": "write_file", "args": {"path": "innocent.txt", "content": "escaped"}},
+             {"name": "read_file", "args": {"path": "stolen"}},
+             {"name": "grep", "args": {"pattern": ".", "path": "~", "glob": ".cwbcode/*"}}]},
+  {"text": "Tried."}
+]"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steered_model_cannot_write_through_a_link_or_read_the_token() {
+    let server = Server::start("links", LINKS, &[]);
+    let client = server.client(true).await;
+    let mut stream = client.chat(&chat(&server, 0, "go", "auto")).await.unwrap();
+    // Even in auto mode, a write that would land outside the project stops to ask, and says where.
+    let mut events = read_until(&mut stream, |w| matches!(w, What::Approval { .. })).await;
+    let Some(What::Approval { id, what, offer_always }) = events.last().cloned() else { panic!("the write through the link did not ask: {events:?}") };
+    assert!(what.contains("OUTSIDE the workspace") && !offer_always, "{what}");
+    assert!(!server.home.join("planted-by-link.txt").exists());
+    client.call(&Request::new(Method::Approve).id(id).text("n")).await.unwrap();
+    events.extend(read_all(&mut stream).await);
+    let results: Vec<(bool, String)> = events.iter().filter_map(|w| if let What::ToolEnd { ok, text, .. } = w { Some((*ok, text.clone())) } else { None }).collect();
+    assert_eq!(results.len(), 4, "{events:?}");
+    assert!(results[0].0 && results[0].1.contains("linked"), "{:?}", results[0]);
+    // The write through the link to a file outside the project is refused, and nothing is made.
+    assert!(!results[1].0, "{:?}", results[1]);
+    assert!(!server.home.join("planted-by-link.txt").exists());
+    // The token is not read through a link, nor found by searching the home folder.
+    assert!(!results[2].0 && results[2].1.contains("off limits"), "{:?}", results[2]);
+    assert!(!results[3].1.contains(&server.token), "the search printed the token");
+    assert!(!events.iter().any(|w| matches!(w, What::ToolEnd { text, .. } | What::Text(text) if text.contains(&server.token))));
 }

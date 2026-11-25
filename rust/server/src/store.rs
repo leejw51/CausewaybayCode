@@ -147,6 +147,11 @@ pub fn default_home() -> PathBuf {
 impl Store {
     pub fn open(home: &Path) -> Result<Self> {
         std::fs::create_dir_all(home).with_context(|| format!("cannot create {}", home.display()))?;
+        // Conversations and file contents are in here: for the owner only.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700));
+        }
         let conn = Connection::open(home.join("cwbcode.db"))?;
         Self::init(conn, home)
     }
@@ -624,6 +629,8 @@ mod tests {
         assert_eq!(store.home, project.join(".cwbcode"));
         assert!(std::fs::read_to_string(project.join(".cwbcode/.gitignore")).unwrap().ends_with("*\n"));
         assert!(project.join(".cwbcode/cwbcode.db").exists());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(project.join(".cwbcode")).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     #[test]

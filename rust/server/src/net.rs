@@ -127,22 +127,27 @@ pub fn bind_udp(addr: SocketAddr, identity: &Identity) -> Result<quinn::Endpoint
     // Keep-alives flow both ways, so a connection is only idle when the client is gone.
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+    // A client needs few requests at once; one without the token gets no room to hoard.
+    transport.max_concurrent_bidi_streams(16u32.into());
+    transport.max_concurrent_uni_streams(8u32.into());
     config.transport_config(Arc::new(transport));
     quinn::Endpoint::server(config, addr).with_context(|| format!("cannot listen on udp {addr}"))
 }
 
 /// Serve the router over HTTP/3.
-pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router) {
+pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router, authorized: Arc<dyn Fn(&http::HeaderMap) -> bool + Send + Sync>) {
     while let Some(incoming) = endpoint.accept().await {
         let router = router.clone();
+        let authorized = authorized.clone();
         tokio::spawn(async move {
             let Ok(connection) = incoming.await else { return };
             let Ok(mut h3) = h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(connection)).await else { return };
             while let Ok(Some(resolver)) = h3.accept().await {
                 let router = router.clone();
+                let authorized = authorized.clone();
                 tokio::spawn(async move {
                     // A client that goes away mid-response is not an error worth a line.
-                    let _ = request(resolver, router).await;
+                    let _ = request(resolver, router, authorized).await;
                 });
             }
         });
@@ -150,9 +155,16 @@ pub async fn serve_udp(endpoint: quinn::Endpoint, router: Router) {
 }
 
 /// One HTTP/3 request: read it whole, hand it to the router, stream the response back.
-async fn request(resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>, router: Router) -> Result<()> {
+async fn request(resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>, router: Router, authorized: Arc<dyn Fn(&http::HeaderMap) -> bool + Send + Sync>) -> Result<()> {
     let (head, stream) = resolver.resolve_request().await?;
     let (mut send, mut recv) = stream.split();
+    // Nothing of an API request's body is read, let alone kept, before its token is checked.
+    if head.uri().path().starts_with("/api/") && !authorized(head.headers()) {
+        send.send_response(http::Response::builder().status(http::StatusCode::UNAUTHORIZED).body(())?).await?;
+        send.send_data(Bytes::from_static(b"the token is missing or wrong")).await?;
+        send.finish().await?;
+        return Ok(());
+    }
     let mut body = BytesMut::new();
     while let Some(mut chunk) = recv.recv_data().await? {
         if body.len() + chunk.remaining() > cwbcode_proto::MAX_MESSAGE_BYTES {

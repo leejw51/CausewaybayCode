@@ -119,14 +119,26 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 /// The real location of a path that may not exist yet: its deepest existing ancestor with
-/// symlinks resolved, plus the rest.
+/// symlinks resolved, plus the rest. A symlink whose target does not exist (yet) is followed
+/// too: writing "through" it would create that target, wherever it points.
 fn real(path: &Path) -> PathBuf {
+    real_within(path, 0)
+}
+
+fn real_within(path: &Path, depth: usize) -> PathBuf {
     let path = lexical(path);
     let mut existing = path.as_path();
-    let mut rest = Vec::new();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
     loop {
         if let Ok(canon) = existing.canonicalize() {
             return rest.iter().rev().fold(canon, |p, part| p.join(part));
+        }
+        // Not resolvable: a link to nowhere, or simply not there.
+        if depth < 32 && existing.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            if let (Ok(target), Some(parent)) = (std::fs::read_link(existing), existing.parent()) {
+                let pointed = rest.iter().rev().fold(parent.join(target), |p, part| p.join(part));
+                return real_within(&pointed, depth + 1);
+            }
         }
         match (existing.parent(), existing.file_name()) {
             (Some(parent), Some(name)) => {
@@ -136,6 +148,21 @@ fn real(path: &Path) -> PathBuf {
             _ => return path,
         }
     }
+}
+
+/// Write a file without following a symlink at its last step: the path was resolved and
+/// checked, and must not have become a link to somewhere else since.
+pub fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("cannot write {}: {e}{}", path.display(), if path.is_symlink() { " (it is a symbolic link)" } else { "" }))?;
+    file.write_all(bytes)?;
+    Ok(())
 }
 
 impl Policy {
@@ -190,6 +217,12 @@ impl Policy {
     /// The project's own `.cwbcode` folder: cwbcode's records, which tools neither read nor write.
     pub fn records(&self) -> PathBuf {
         self.workspace.join(crate::store::DIR)
+    }
+
+    /// Is this (resolved) path one that no tool may read or write: credentials, the
+    /// server's secrets, cwbcode's records?
+    pub fn off_limits(&self, path: &Path) -> bool {
+        self.secret(path)
     }
 
     fn secret(&self, path: &Path) -> bool {
@@ -280,6 +313,8 @@ impl Policy {
         if !self.network {
             sb.push_str("(deny network*)\n");
         }
+        // No handing work to programs outside the sandbox (`open`, AppleScript).
+        sb.push_str("(deny lsopen)\n(deny appleevent-send)\n");
         sb.push_str("(deny file-write*)\n(allow file-write*\n");
         let tmp = real(&std::env::temp_dir());
         for dir in [self.workspace.clone(), self.home.join("tools"), PathBuf::from("/private/tmp"), PathBuf::from("/private/var/folders"), tmp] {
@@ -423,6 +458,40 @@ mod tests {
     }
 
     #[test]
+    fn a_link_to_a_file_that_does_not_exist_yet_is_followed_before_the_check() {
+        let (mut p, base) = policy(Mode::Auto);
+        // In the workspace, links to places outside it where nothing exists yet.
+        std::os::unix::fs::symlink(base.join("outside/planted.txt"), base.join("ws/dangling")).unwrap();
+        std::os::unix::fs::symlink("../outside/relative.txt", base.join("ws/relative")).unwrap();
+        std::os::unix::fs::symlink(base.join("ws/dangling"), base.join("ws/chain")).unwrap();
+        std::os::unix::fs::symlink("loop-b", base.join("ws/loop-a")).unwrap();
+        std::os::unix::fs::symlink("loop-a", base.join("ws/loop-b")).unwrap();
+        assert_eq!(p.resolve("dangling"), base.join("outside/planted.txt"));
+        assert_eq!(p.resolve("relative"), base.join("outside/relative.txt"));
+        assert_eq!(p.resolve("chain"), base.join("outside/planted.txt"));
+        for link in ["dangling", "relative", "chain", "dangling/sub/file.txt"] {
+            assert!(!p.in_workspace(&p.resolve(link)), "{link}");
+            assert!(p.check_write(link, "write").is_err(), "{link} was writable");
+        }
+        // A link to a credential that is not there yet is still a credential.
+        std::os::unix::fs::symlink(home_dir().join(".ssh/authorized_keys_cwbcode_test"), base.join("ws/keys")).unwrap();
+        assert!(p.check_write("keys", "write").unwrap_err().to_string().contains("off limits"));
+        assert!(p.check_read("keys").is_err());
+        // Links in a circle resolve to something (and do not hang); a dangling link inside
+        // the workspace to inside the workspace is fine.
+        let _ = p.resolve("loop-a");
+        std::os::unix::fs::symlink("src/later.rs", base.join("ws/inside")).unwrap();
+        assert_eq!(p.check_write("inside", "write").unwrap(), base.join("ws/src/later.rs"));
+        // The write itself does not go through a link that appears at the last moment.
+        let target = base.join("outside/swapped.txt");
+        std::os::unix::fs::symlink(&target, base.join("ws/swapped")).unwrap();
+        assert!(write_file(&base.join("ws/swapped"), b"x").is_err());
+        assert!(!target.exists());
+        write_file(&base.join("ws/plain.txt"), b"ok").unwrap();
+        assert_eq!(std::fs::read(base.join("ws/plain.txt")).unwrap(), b"ok");
+    }
+
+    #[test]
     fn writes_follow_the_mode_and_never_leave_the_workspace_unasked() {
         let (mut p, _) = policy(Mode::Auto);
         assert!(p.check_write("src/a.rs", "write").is_ok());
@@ -531,6 +600,9 @@ mod tests {
         assert_ne!(secrets.status, Some(0));
         let net = sh("/usr/bin/curl -s -m 5 -o /dev/null http://1.1.1.1");
         assert_ne!(net.status, Some(0));
+        // Nor can it hand a file to a program outside the sandbox.
+        let handed = sh("echo 'touch escaped-by-open' > job.command; chmod +x job.command; /usr/bin/open job.command; sleep 1; ls escaped-by-open");
+        assert_ne!(handed.status, Some(0), "{} {}", handed.stdout, handed.stderr);
     }
 
     #[test]

@@ -11,3 +11,18 @@
 *.safetensors
 __pycache__/
 *.pyc
+# Never commit these, wherever they turn up
+*.pem
+*.key
+.env
+.env.*
+token
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.pid
+*.sock
+playwright-report/
+test-results/
+.run.json

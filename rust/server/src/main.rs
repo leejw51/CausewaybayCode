@@ -172,7 +172,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     let endpoint = if options.no_h3 { None } else { Some(net::bind_udp(options.bind, &identity)?) };
     let shared = worker::start(config, roots)?;
     let app = api::App { shared: shared.clone(), token: Arc::new(token), h3_port: endpoint.as_ref().map(|_| options.bind.port()) };
-    let router = api::router(app);
+    let router = api::router(app.clone());
 
     eprintln!("cwbcode {} · {}", env!("CARGO_PKG_VERSION"), shared.sandbox_label());
     for (what, address) in addresses(options.bind) {
@@ -184,7 +184,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     }
 
     if let Some(endpoint) = endpoint {
-        tokio::spawn(net::serve_udp(endpoint, router.clone()));
+        tokio::spawn(net::serve_udp(endpoint, router.clone(), Arc::new(move |headers: &http::HeaderMap| app.authorized(headers))));
     }
     tokio::select! {
         result = net::serve_tcp(options.bind, &identity, router) => result,

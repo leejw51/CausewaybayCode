@@ -25,6 +25,8 @@ const MAX_ENTRIES: usize = 300;
 const SNAPSHOT_FILES: usize = 4000;
 const SNAPSHOT_FILE_BYTES: u64 = 256 << 10;
 const SNAPSHOT_TOTAL_BYTES: u64 = 48 << 20;
+/// The longest a search walks a folder tree.
+const WALK_TIME: Duration = Duration::from_secs(20);
 /// Stands for the description of the sandbox in a tool's description (see `confinement`).
 const SANDBOXED: &str = "{sandbox}";
 const SKIP_DIRS: [&str; 10] = [".cwbcode", ".git", "target", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next"];
@@ -342,7 +344,7 @@ fn todo_write(ctx: &mut Ctx, todos: &Value) -> Result<String> {
 fn snapshot(policy: &Policy) -> Option<std::collections::HashMap<String, Vec<u8>>> {
     let mut files = std::collections::HashMap::new();
     let (mut total, mut fits) = (0u64, true);
-    walk(&policy.workspace, |path, rel| {
+    walk(policy, &policy.workspace, |path, rel| {
         let size = std::fs::metadata(path).map_or(u64::MAX, |m| m.len());
         // A large file is left out on its own; too many files, and nothing is versioned.
         if size <= SNAPSHOT_FILE_BYTES {
@@ -404,7 +406,7 @@ pub fn undo(policy: &Policy, store: &Store, session: i64) -> Result<Vec<String>>
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
-                    std::fs::write(&path, bytes)?;
+                    crate::sandbox::write_file(&path, &bytes)?;
                     done.push(format!("restored {shown}"));
                 }
                 None => {
@@ -488,7 +490,7 @@ fn write_file(ctx: &mut Ctx, path: &str, content: &str) -> Result<String> {
     // Both versions are kept, so the change can be undone.
     let before = if exists { Some(std::fs::read(&path)?) } else { None };
     ctx.store.record_file(ctx.session, &shown, if exists { "write" } else { "create" }, before.as_deref(), Some(content.as_bytes()))?;
-    std::fs::write(&path, content)?;
+    crate::sandbox::write_file(&path, content.as_bytes())?;
     Ok(format!("{} {shown}: {} lines, {} bytes.", if exists { "Overwrote" } else { "Created" }, content.lines().count(), content.len()))
 }
 
@@ -516,7 +518,7 @@ fn edit_file(ctx: &mut Ctx, path: &str, old: &str, new: &str, replace_all: bool)
     let path = ctx.policy.check_write(path, &what)?;
     let updated = if replace_all { text.replace(old, new) } else { text.replacen(old, new, 1) };
     ctx.store.record_file(ctx.session, &shown, "edit", Some(text.as_bytes()), Some(updated.as_bytes()))?;
-    std::fs::write(&path, updated)?;
+    crate::sandbox::write_file(&path, updated.as_bytes())?;
     let line = text[..text.find(old).unwrap_or(0)].matches('\n').count() + 1;
     Ok(format!("Edited {shown}: {count} replacement{} (first at line {line}).", if count == 1 { "" } else { "s" }))
 }
@@ -536,7 +538,7 @@ fn list_dir(ctx: &mut Ctx, path: &str) -> Result<String> {
         .with_context(|| format!("cannot list {}", dir.display()))?
         .flatten()
         // cwbcode's own records are not part of the project.
-        .filter(|e| e.file_name() != crate::store::DIR)
+        .filter(|e| e.file_name() != crate::store::DIR && !ctx.policy.off_limits(&e.path()))
         .map(|e| {
             let meta = e.metadata().ok();
             (meta.as_ref().is_some_and(|m| m.is_dir()), e.file_name().to_string_lossy().into_owned(), meta.map_or(0, |m| m.len()))
@@ -579,12 +581,18 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
     segs(&p, &s)
 }
 
-/// Every file under `root` (not following symlinks, skipping build and VCS folders), with
-/// its path relative to `root`.
-fn walk(root: &Path, mut each: impl FnMut(&Path, &str) -> bool) {
+/// Every file under `root` (not following symlinks, skipping build and VCS folders and
+/// whatever the policy puts off limits: credentials are not found by searching a folder
+/// above them), with its path relative to `root`.
+fn walk(policy: &Policy, root: &Path, mut each: impl FnMut(&Path, &str) -> bool) {
     let mut stack = vec![root.to_path_buf()];
     let mut visited = 0;
+    // A whole home folder would take minutes: a search gives up after a while.
+    let started = std::time::Instant::now();
     while let Some(dir) = stack.pop() {
+        if started.elapsed() > WALK_TIME {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         let mut entries: Vec<_> = entries.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
@@ -592,6 +600,9 @@ fn walk(root: &Path, mut each: impl FnMut(&Path, &str) -> bool) {
             let Ok(kind) = entry.file_type() else { continue };
             let path = entry.path();
             let name = entry.file_name();
+            if policy.off_limits(&path) {
+                continue;
+            }
             if kind.is_dir() {
                 if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
                     stack.push(path);
@@ -612,7 +623,7 @@ fn glob(ctx: &mut Ctx, pattern: &str, path: &str) -> Result<String> {
     // A pattern without a folder part matches names anywhere below.
     let pattern = if pattern.contains('/') { pattern.trim_start_matches("./").to_string() } else { format!("**/{pattern}") };
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    walk(&root, |file, rel| {
+    walk(ctx.policy, &root, |file, rel| {
         if glob_match(&pattern, rel) {
             found.push((file.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), file.to_path_buf()));
         }
@@ -662,7 +673,7 @@ fn grep(ctx: &mut Ctx, pattern: &str, path: &str, only: Option<&str>, ignore_cas
         search(&root, &ctx.policy.display(&root));
     } else {
         let policy = &*ctx.policy;
-        walk(&root, |file, rel| match &only {
+        walk(policy, &root, |file, rel| match &only {
             Some(g) if !glob_match(g, rel) => true,
             _ => search(file, &policy.display(file)),
         });
@@ -886,6 +897,44 @@ mod tests {
         assert!(!call(&mut p, &s, "write_file", json!({"path": "sub/.cwbcode/x.txt", "content": "x"})).ok);
         assert_eq!(call(&mut p, &s, "grep", json!({"pattern": "needle"})).text, "open.txt:1:needle\n[1 match in 1 file]");
         assert!(!call(&mut p, &s, "list_dir", json!({"path": "sub"})).text.contains(".cwbcode"));
+    }
+
+    #[test]
+    fn searching_a_folder_above_secrets_does_not_find_them() {
+        let (mut p, s) = workspace("secrets");
+        // The folder above the workspace holds the server's folder with its token and key.
+        let above = p.workspace.parent().unwrap().to_path_buf();
+        std::fs::write(p.home.join("token"), "needle-token").unwrap();
+        std::fs::write(p.home.join("key.pem"), "needle-key").unwrap();
+        std::fs::write(above.join("ws/plain.txt"), "needle-plain").unwrap();
+        let root = above.to_string_lossy().into_owned();
+        let found = call(&mut p, &s, "grep", json!({"pattern": "needle", "path": root})).text;
+        assert!(found.contains("plain.txt:1:needle-plain") && found.contains("[1 match in 1 file]"), "{found}");
+        let listed = call(&mut p, &s, "glob", json!({"pattern": "**/*", "path": root})).text;
+        assert!(listed.contains("plain.txt") && !listed.contains("token") && !listed.contains("key.pem"), "{listed}");
+        let home = p.home.to_string_lossy().into_owned();
+        assert!(!call(&mut p, &s, "list_dir", json!({"path": home})).text.contains("token"));
+        // The same rule covers real credentials: the walk leaves out what the policy puts off limits.
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap()).canonicalize().unwrap();
+        assert!(p.off_limits(&home.join(".ssh")) && p.off_limits(&home.join(".ssh/id_ed25519")) && p.off_limits(&home.join(".aws/credentials")) && p.off_limits(&home.join(".netrc")));
+        assert!(!p.off_limits(&home.join("code/project/src/main.rs")));
+    }
+
+    #[test]
+    fn a_write_does_not_go_through_a_link_out_of_the_workspace() {
+        let (mut p, s) = workspace("links");
+        let outside = p.workspace.parent().unwrap().join("planted.txt");
+        std::os::unix::fs::symlink(&outside, p.workspace.join("innocent.txt")).unwrap();
+        for (tool, args) in [("write_file", json!({"path": "innocent.txt", "content": "x"})), ("write_file", json!({"path": "innocent.txt/deeper.txt", "content": "x"}))] {
+            let out = call(&mut p, &s, tool, args);
+            assert!(!out.ok, "{}", out.text);
+        }
+        assert!(!outside.exists(), "a file was created outside the workspace");
+        // A link that stays inside the workspace is written through, to the file it names.
+        std::os::unix::fs::symlink("src/real.txt", p.workspace.join("alias.txt")).unwrap();
+        assert!(call(&mut p, &s, "write_file", json!({"path": "alias.txt", "content": "inside"})).ok);
+        assert_eq!(std::fs::read_to_string(p.workspace.join("src/real.txt")).unwrap(), "inside");
+        assert!(p.workspace.join("alias.txt").is_symlink());
     }
 
     #[test]

@@ -38,9 +38,9 @@ What the agent does:
   BM25 and by meaning together.
 - **Keeps everything**: every conversation, every event in it, and every version of every
   file it read or changed are in SQLite, so a turn's changes can be undone.
-- **Is safe to leave running**: no tool reaches the network, commands run in the macOS
-  sandbox, files change only inside the project, and by default every edit and command is
-  shown to you first.
+- **Is confined**: no tool reaches the network, commands run in the macOS sandbox, files
+  change only inside the project, and by default every edit and command is shown to you
+  first. What that does and does not cover is under [Safety](#how-it-works).
 
 ## Requirements
 
@@ -129,7 +129,7 @@ A project is any folder under your home folder (also through a link placed in it
 
 **Model** (`rust/server/src/inkling`, `llm.rs`). Inkling 2 Mini is a 26B-parameter
 routed-expert model with 5B active per token. The MLX port and its draft network come from
-[CausewaybayMaker](../CausewaybayMaker): the draft network proposes up to seven tokens, the
+CausewaybayMaker: the draft network proposes up to seven tokens, the
 model checks them in one pass and keeps the run it agrees with. Measured on an M5 Max: 60 to
 110 tokens/s while writing; a 15k-token prompt is read in about 12 s. The conversation lives
 in the model's KV cache, so each step reads only what is new.
@@ -179,17 +179,37 @@ question finds an English note.
 
 **Safety** (`sandbox.rs`, `projects.rs`, `api.rs`).
 
-- Every API request needs the token (`~/.cwbcode/token`, readable only by you).
+- Every API request needs the token (`~/.cwbcode/token`, readable only by you); over
+  HTTP/3 nothing of a request's body is read before the token is checked.
 - There are no network tools. Commands and made tools run under `sandbox-exec` with the
-  network denied and writes allowed only in the project, temporary folders and package
-  caches. `cwbcode serve --allow-network` opens the network to commands; with
-  `--no-sandbox` every command needs your approval, whatever the mode.
-- File tools write only inside the project, resolved through symlinks first.
-- Credentials, the backend's token and key, and each project's `.cwbcode` records are not
-  readable by the file tools or by sandboxed commands.
+  network denied, no hand-off to other programs (`open`, AppleScript), and writes allowed
+  only in the project, temporary folders and package caches. `cwbcode serve
+  --allow-network` opens the network to commands; with `--no-sandbox` every command needs
+  your approval, whatever the mode.
+- File tools write only inside the project. Paths are resolved through symlinks first,
+  including links to files that do not exist yet, and a write does not follow a link.
+- Credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh`,
+  `~/.config/gcloud`, keychains, `~/.netrc`, `~/.npmrc`, ...), the backend's token and key,
+  and every `.cwbcode` folder's contents are not readable by the file tools (searching a
+  folder above them skips them) or by sandboxed commands.
 - Modes: `ask` (default) shows each edit and command and waits for an answer; `auto` does
   not ask; `read-only` changes nothing. An approval nobody answers (a closed tab, an
   interrupt, 15 minutes) counts as no.
+
+What it does **not** do:
+
+- The sandbox starts from "allowed" and denies the above. A command can read the rest of
+  your home folder (shell history, other projects, browser profiles) and inherits the
+  backend's environment variables; with no network it cannot send them anywhere, but what
+  it reads becomes part of the conversation.
+- The approval prompt shows the first lines of an edit (8 to 12) or of a new tool (40), not
+  all of it.
+- The model can be steered by text it reads (a file, a page you paste). The limits above
+  are what holds then, not the model's judgement.
+- Whoever has the token is you, as far as the backend is concerned: they can choose `auto`
+  mode and any folder under your home folder.
+- A browser cannot pin the self-signed certificate: on first visit compare the fingerprint
+  it shows with the one `cwbcode url` prints.
 
 ## Tests
 
