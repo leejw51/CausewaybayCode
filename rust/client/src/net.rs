@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{Buf, Bytes};
-use cwbcode_proto::{CALL_PATH, CHAT_PATH, Event, Frames, Request, Response};
+use cwbcode_proto::{CALL_PATH, CHAT_PATH, EVENTS_PATH, Event, Frames, Progress, Request, Response};
 use futures::StreamExt;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -102,7 +102,7 @@ pub struct Client {
     pub fallback: Option<String>,
 }
 
-/// The events of a chat, as they arrive.
+/// The events of a chat (or the messages of the events stream), as they arrive.
 pub enum Events {
     H3 { stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>, frames: Frames },
     H2 { stream: futures::stream::BoxStream<'static, reqwest::Result<Bytes>>, frames: Frames },
@@ -111,12 +111,28 @@ pub enum Events {
 impl Events {
     /// The next event; None when the stream has ended.
     pub async fn next(&mut self) -> Result<Option<Event>> {
+        match self.next_message().await? {
+            Some(message) => Ok(Some(Event::decode(&message)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The next message of the events stream (`Client::progress`); None when it has ended.
+    pub async fn next_progress(&mut self) -> Result<Option<Progress>> {
+        match self.next_message().await? {
+            Some(message) => Ok(Some(Progress::decode(&message)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The next whole message, however it was cut; None when the stream has ended.
+    pub async fn next_message(&mut self) -> Result<Option<Vec<u8>>> {
         loop {
             let frames = match self {
                 Self::H3 { frames, .. } | Self::H2 { frames, .. } => frames,
             };
-            if let Some(event) = frames.next_event()? {
-                return Ok(Some(event));
+            if let Some(message) = frames.next()? {
+                return Ok(Some(message));
             }
             let more: Option<Bytes> = match self {
                 Self::H3 { stream, .. } => stream.recv_data().await.map_err(|e| anyhow!("the connection broke: {e}"))?.map(|mut chunk| chunk.copy_to_bytes(chunk.remaining())),
@@ -341,7 +357,17 @@ impl Client {
 
     /// Send a chat message; its events arrive as the model works.
     pub async fn chat(&self, request: &Request) -> Result<Events> {
-        Ok(match self.post(CHAT_PATH, request.encode()).await? {
+        self.stream(CHAT_PATH, request.encode()).await
+    }
+
+    /// Follow the model's state and its download: a Progress message on every change (read
+    /// them with `Events::next_progress`), until the model is ready.
+    pub async fn progress(&self) -> Result<Events> {
+        self.stream(EVENTS_PATH, Vec::new()).await
+    }
+
+    async fn stream(&self, path: &str, body: Vec<u8>) -> Result<Events> {
+        Ok(match self.post(path, body).await? {
             Posted::H3(stream) => Events::H3 { stream, frames: Frames::new() },
             Posted::H2(response) => Events::H2 { stream: response.bytes_stream().boxed(), frames: Frames::new() },
         })

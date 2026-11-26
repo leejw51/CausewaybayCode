@@ -43,8 +43,12 @@ pub struct Config {
     pub script: Option<PathBuf>,
     /// Start without a model: everything works but chat and semantic search.
     pub no_model: bool,
-    /// Download the model at start when it is missing (download.rs), then load it.
+    /// Download the model at start when it is missing (download.rs), then load it: the
+    /// default (`--no-download-model` turns it off).
     pub download_model: bool,
+    /// Tests: the script stands in for the model only once the model has been downloaded
+    /// (from a fake Hugging Face), so that a download can be watched to the end, "ready".
+    pub script_after_download: bool,
     /// HTTP/3 is offered.
     pub h3: bool,
 }
@@ -62,8 +66,16 @@ pub struct Shared {
     pub roots: Roots,
     pub started: Instant,
     /// loading | ready | none | scripted | missing (in no store; it can be downloaded) |
-    /// downloading | failed: ...
+    /// downloading | verifying | failed: ... Changed only by `set_model_state`, which tells
+    /// every client listening.
     pub model_state: Mutex<String>,
+    /// Where the model is, pushed to every client of the events stream (api.rs): one message
+    /// on each change of state, and every half second while it downloads.
+    pub events: tokio::sync::broadcast::Sender<cwbcode_proto::Progress>,
+    /// The number of the last message sent there.
+    seq: AtomicU64,
+    /// Held while a message is made and sent: they go out in the order of their numbers.
+    publishing: Mutex<()>,
     /// The model's download, when one runs (or ran): how far it is.
     pub download: crate::download::Download,
     pub busy: AtomicBool,
@@ -96,6 +108,55 @@ impl Shared {
         }
     }
 
+    /// Change the model's state, and tell every client listening.
+    pub fn set_model_state(&self, state: &str) {
+        *self.model_state.lock().unwrap() = state.to_string();
+        self.publish();
+    }
+
+    /// Change what is known of the download, and tell every client listening.
+    pub fn download_update(&self, f: impl FnOnce(&mut crate::download::Info)) {
+        self.download.update(f);
+        self.publish();
+    }
+
+    /// Where the model is now, as a message of the events stream (numbered as the last one
+    /// sent: a client that has that one skips it).
+    pub fn progress(&self) -> cwbcode_proto::Progress {
+        let state = self.model_state.lock().unwrap().clone();
+        let (done, info) = self.download.snapshot();
+        let (state, error) = match state.strip_prefix("failed: ") {
+            Some(why) => ("failed".to_string(), why.to_string()),
+            None if state == "missing" => (state, info.error.clone()),
+            None => (state, String::new()),
+        };
+        cwbcode_proto::Progress {
+            seq: self.seq.load(Ordering::SeqCst),
+            state,
+            error,
+            done,
+            total: info.total,
+            speed: info.speed,
+            files_done: info.files_done,
+            files_total: info.files_total,
+            source_kind: info.source_kind.clone(),
+            token: info.token,
+            token_from: info.token_from.clone(),
+            token_refused: info.token_refused,
+            verified: info.verified,
+            note: info.note,
+            model: self.config.model.clone(),
+        }
+    }
+
+    /// Send where the model is to every client listening (nobody listening is fine).
+    pub fn publish(&self) {
+        let _order = self.publishing.lock().unwrap();
+        let mut progress = self.progress();
+        progress.seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.events.send(progress);
+    }
+
     pub fn sandbox_label(&self) -> String {
         match (self.config.sandbox, self.config.network) {
             (true, false) => "commands sandboxed, no network",
@@ -109,13 +170,16 @@ impl Shared {
 /// Start the model thread. The model loads in the background; the server answers meanwhile.
 pub fn start(config: Config, roots: Roots) -> Result<Arc<Shared>> {
     let (tx, rx) = mpsc::channel();
-    let state = if config.script.is_some() { "scripted" } else if config.no_model { "none" } else { "loading" };
+    let state = if config.script.is_some() && !config.script_after_download { "scripted" } else if config.no_model { "none" } else { "loading" };
     let shared = Arc::new(Shared {
         config,
         roots,
         started: Instant::now(),
         model_state: Mutex::new(state.to_string()),
         download: crate::download::Download::default(),
+        events: tokio::sync::broadcast::channel(256).0,
+        seq: AtomicU64::new(0),
+        publishing: Mutex::new(()),
         busy: AtomicBool::new(false),
         busy_project: Mutex::new(String::new()),
         queued: AtomicU32::new(0),
@@ -187,14 +251,14 @@ impl Worker {
     }
 
     fn set_state(&self, state: &str) {
-        *self.shared.model_state.lock().unwrap() = state.to_string();
+        self.shared.set_model_state(state);
     }
 
     /// Load the model. One that is in no store and can be downloaded is "missing" (and, with
     /// `download`, downloaded: the download thread asks for this again when it is done).
     fn load(&mut self, download: bool) {
         let config = &self.shared.config;
-        if let Some(script) = &config.script {
+        if let Some(script) = config.script.as_ref().filter(|_| !config.script_after_download) {
             match std::fs::read_to_string(script).map_err(anyhow::Error::from).and_then(|json| Brain::script(&json)) {
                 Ok(brain) => self.brain = Some(brain),
                 Err(e) => self.set_state(&format!("failed: cannot read the script {}: {e:#}", script.display())),
@@ -208,16 +272,28 @@ impl Worker {
             eprintln!("cwbcode: the model {} is in neither Ollama's store nor {}", config.model, crate::inkling::ollama::own_store().display());
             self.set_state("missing");
             if download {
-                eprintln!("cwbcode: downloading it (--download-model)");
+                eprintln!("cwbcode: downloading it (start with --no-download-model not to)");
                 if let Err(e) = crate::download::start(&self.shared) {
                     eprintln!("cwbcode: cannot download it: {e:#}");
                 }
             } else {
-                eprintln!("cwbcode: run `make download`, start with --download-model, or download it from the web client");
+                eprintln!("cwbcode: not downloading it (--no-download-model): run `make download`, or download it from the web client");
             }
             return;
         }
         self.set_state("loading");
+        if let (Some(script), true) = (&config.script, config.script_after_download) {
+            // (Tests: a moment in "loading", as a real model takes, then the script.)
+            std::thread::sleep(Duration::from_millis(1500));
+            match std::fs::read_to_string(script).map_err(anyhow::Error::from).and_then(|json| Brain::script(&json)) {
+                Ok(brain) => {
+                    self.brain = Some(brain);
+                    self.set_state("ready");
+                }
+                Err(e) => self.set_state(&format!("failed: cannot read the script {}: {e:#}", script.display())),
+            }
+            return;
+        }
         let t = Instant::now();
         eprintln!("cwbcode: loading {} ...", config.model);
         match Engine::load(&config.model, Sampler { temp: config.temp, top_k: config.top_k }) {
@@ -282,7 +358,7 @@ impl Worker {
                 let state = self.shared.model_state.lock().unwrap().clone();
                 match state.as_str() {
                     "missing" => bail!("the model is not downloaded yet: download it from the chat view or the dashboard (about 20 GB)"),
-                    "downloading" => bail!("the model is still downloading; it loads by itself when it is done"),
+                    "downloading" | "verifying" => bail!("the model is still downloading; it loads by itself when it is done"),
                     _ => bail!("no model is loaded ({state})"),
                 }
             }

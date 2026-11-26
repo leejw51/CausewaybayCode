@@ -64,7 +64,13 @@ impl Server {
         std::fs::create_dir_all(home.join("proj")).unwrap();
         let home = home.canonicalize().unwrap();
         std::fs::write(home.join("script.json"), script).unwrap();
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        // An argument "file:PATH=content" is a file in the home folder, there before it starts.
+        for (path, content) in args.iter().filter_map(|a| a.strip_prefix("file:")?.split_once('=')) {
+            let path = home.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        let args: Vec<String> = args.iter().filter(|a| !a.starts_with("file:")).map(|a| a.to_string()).collect();
         // A port can be taken between finding it free and the backend binding it: try another.
         let mut attempt = 0;
         let mut server = loop {
@@ -107,6 +113,12 @@ impl Server {
             // An argument "env:NAME=value" is given to the backend as an environment variable.
             .args(args.iter().filter(|a| !a.starts_with("env:") && *a != "movable" && *a != "no-script"))
             .env_remove("CWBCODE_WALLET")
+            // (Nor the developer's Hugging Face token, nor how they like their downloads.)
+            .env_remove("HF_TOKEN")
+            .env_remove("HUGGING_FACE_HUB_TOKEN")
+            .env_remove("HF_TOKEN_PATH")
+            .env_remove("HF_HOME")
+            .env_remove("CWBCODE_DOWNLOAD_MODEL")
             .envs(args.iter().filter_map(|a| a.strip_prefix("env:")?.split_once('=')))
             .env("HOME", home)
             .env("CWBCODE_HOME", home.join(".cwbcode"))
@@ -1237,8 +1249,20 @@ fn ranged(data: &[u8], range: Option<&String>) -> (u16, Vec<(String, String)>, V
     (206, vec![("Content-Range".into(), format!("bytes {a}-{b}/{}", data.len()))], data[a..=b].to_vec())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up_where_it_stopped() {
+/// The fake checkpoint, served as Hugging Face serves one, and Ollama's registry for it.
+struct Fake {
+    hub: u16,
+    cdn: u16,
+    seen: Seen,
+    /// The tensor files as Ollama's registry has them.
+    expected: [(&'static str, Vec<u8>); 4],
+    config: &'static str,
+}
+
+/// A checkpoint of a large plain tensor (its bytes sent at `rate` bytes a second, so that the
+/// download can be watched and stopped half way), an NVFP4 expert bank and an MXFP8 one with
+/// their scales, and the draft network's file; a hub, a "CDN" and a registry for it.
+fn fake_hub(rate: usize) -> Fake {
     // The checkpoint: a large plain tensor (sent slowly, so that the download can be watched
     // and stopped half way), an NVFP4 expert bank and an MXFP8 one with their scales, and the
     // draft network's file.
@@ -1275,7 +1299,7 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
     // The "CDN" (on another origin: localhost, not 127.0.0.1) has the bytes, slowly.
     let seen: Seen = Default::default();
     let cdn_files = files.clone();
-    let cdn = http_server(seen.clone(), 2 << 20, move |path, headers| {
+    let cdn = http_server(seen.clone(), rate, move |path, headers| {
         let file = path.trim_start_matches("/xet/").split('?').next().unwrap_or("");
         match cdn_files.get(file) {
             Some(data) => ranged(data, headers.get("range")),
@@ -1287,6 +1311,10 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
     let hub_files = files.clone();
     const REPO: &str = "/thinkingmachines/Inkling-2-Mini/resolve/c9d028302cd0f035fdf8e7e91f089a4ce94d2195/";
     let hub = http_server(seen.clone(), 0, move |path, headers| {
+        // A token Hugging Face does not take.
+        if path.starts_with(REPO) && headers.get("authorization").map(String::as_str) == Some("Bearer hf_refused") {
+            return (401, vec![], b"invalid token".to_vec());
+        }
         if path == "/v2/library/inkling-2-mini/manifests/26b-a5b-nvfp4" {
             return (200, vec![("Content-Type".into(), "application/json".into())], registry.clone().into_bytes());
         }
@@ -1303,12 +1331,20 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
         }
     });
 
+    Fake { hub, cdn, seen, expected, config }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up_where_it_stopped() {
+    let Fake { hub, cdn, seen, expected, config } = fake_hub(2 << 20);
     let base = std::env::temp_dir().join(format!("cwbcode-it-download-models-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let models = base.join("models");
     let env = |k: &str, v: &str| format!("env:{k}={v}");
     let args = [
         "no-script".to_string(),
+        // (Asked for below: the download waits for the call, as when started so.)
+        "--no-download-model".to_string(),
         env("CWBCODE_MODELS", &models.display().to_string()),
         env("OLLAMA_MODELS", &base.join("no-ollama").display().to_string()),
         env("HF_HOME", &base.join("no-hf").display().to_string()),
@@ -1341,9 +1377,10 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
     loop {
         let s = status().await;
         assert_eq!(s.model_state, "downloading", "{s:?}");
-        assert_eq!(s.download_source, "Hugging Face, with the token from $HF_TOKEN");
-        // Clients are told a token is used and where it was found, never the token itself.
-        assert_eq!(s.download_token, "$HF_TOKEN");
+        assert_eq!(s.download_source, "Hugging Face, with your token (env HF_TOKEN): faster downloads");
+        assert!(s.download_token_used && s.download_token_from == "env HF_TOKEN" && !s.download_token_refused && s.download_source_kind == "huggingface", "{s:?}");
+        // As 0.1.2's clients read it: where it was found, never the token itself.
+        assert_eq!(s.download_token, "env HF_TOKEN");
         assert!(!format!("{s:?}").contains("hf_test_token"), "the token itself reached a client");
         assert!(s.download_done <= s.download_total);
         if s.download_total > 0 && s.download_done > 0 {
@@ -1353,6 +1390,7 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
         if finished == 3 && s.download_done > first.unwrap_or(u64::MAX) && s.download_speed > 0.0 && s.download_done < s.download_total / 4 * 3 {
             assert_eq!(s.download_total, (6 << 20) + 128 + 16 + 16 + 2 + 8);
             assert!(s.download_note.ends_with("of 4 files"), "{}", s.download_note);
+            assert_eq!((s.download_files_done, s.download_files_total), (3, 4));
             break;
         }
         assert!(start.elapsed() < Duration::from_secs(20), "no progress to see: {s:?}");
@@ -1374,7 +1412,7 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
     let mut seen_progress = Vec::new();
     let last = loop {
         let s = status().await;
-        if s.model_state == "downloading" {
+        if s.model_state == "downloading" || s.model_state == "verifying" {
             // (Until the checkpoint's headers are read the total is not known: 0.)
             if s.download_total > 0 {
                 seen_progress.push(s.download_done);
@@ -1394,6 +1432,7 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
     assert_eq!(last.download_error, "", "{last:?}");
     assert_eq!(last.download_note, "verified: all 4 tensor files match Ollama's registry (SHA-256)");
     assert_eq!(last.download_done, last.download_total);
+    assert!(last.download_verified);
     let start = Instant::now();
     let mut state = last.model_state.clone();
     while state == "loading" {
@@ -1430,5 +1469,200 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
         }
     }
     drop(seen);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The states a list of messages went through, each once, in order.
+fn stages(messages: &[(Instant, cwbcode_proto::Progress)]) -> Vec<String> {
+    let mut out: Vec<String> = messages.iter().map(|(_, p)| p.state.clone()).collect();
+    out.dedup();
+    out
+}
+
+/// Read an events stream to its end (the model ready), with the time each message came.
+async fn follow(mut events: Events) -> Vec<(Instant, cwbcode_proto::Progress)> {
+    let mut got = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(30), events.next_progress()).await.expect("no message for 30 seconds").unwrap() {
+            Some(p) => got.push((Instant::now(), p)),
+            None => return got,
+        }
+    }
+}
+
+/// The first message of a stream.
+async fn follow_first(client: &Client) -> cwbcode_proto::Progress {
+    let mut events = client.progress().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), events.next_progress()).await.unwrap().unwrap().unwrap()
+}
+
+/// Messages until the model failed to load (a stream for a failed model does not end).
+async fn follow_until_stopped(client: &Client) -> Vec<(Instant, cwbcode_proto::Progress)> {
+    let mut events = client.progress().await.unwrap();
+    let mut got = Vec::new();
+    loop {
+        let p = tokio::time::timeout(Duration::from_secs(30), events.next_progress()).await.expect("no message for 30 seconds").unwrap().expect("the stream ended");
+        let failed = p.state == "failed";
+        got.push((Instant::now(), p));
+        if failed {
+            return got;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_client_is_told_how_far_the_download_is_from_one_stream_to_the_end() {
+    let Fake { hub, cdn, seen, .. } = fake_hub(2 << 20);
+    let base = std::env::temp_dir().join(format!("cwbcode-it-fanout-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let env = |k: &str, v: &str| format!("env:{k}={v}");
+    let http_port = free_port();
+    let args = [
+        // The script stands in for the model once it is downloaded: the stream goes to "ready".
+        "--script-after-download".to_string(),
+        "--no-download-model".to_string(),
+        "--http-port".to_string(),
+        http_port.to_string(),
+        // The token `hf auth login` saves, in the (scratch) home folder.
+        "file:.cache/huggingface/token=hf_file_token\n".to_string(),
+        env("CWBCODE_MODELS", &base.join("models").display().to_string()),
+        env("OLLAMA_MODELS", &base.join("no-ollama").display().to_string()),
+        env("CWBCODE_HF_ENDPOINT", &format!("http://127.0.0.1:{hub}")),
+        env("CWBCODE_OLLAMA_REGISTRY", &format!("http://127.0.0.1:{hub}")),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let server = Server::start("fanout", HELLO, &args);
+    let (one, two) = (server.client(true).await, server.client(false).await);
+    assert_eq!((one.protocol(), two.protocol()), ("h3", "h2"));
+    let start = Instant::now();
+    while one.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().model_state != "missing" {
+        assert!(start.elapsed() < Duration::from_secs(20), "the backend did not find the model missing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The stream is asked for as any call is: not without the token, nor from another site.
+    for h3 in [false, true] {
+        let stranger = Client::connect(&server.url, "not-the-token", server.trust.clone(), h3).await.unwrap();
+        let refused = stranger.progress().await.err().expect("a stream without the token").to_string();
+        assert!(refused.contains("refused the token"), "h3={h3}: {refused}");
+    }
+    let http = reqwest::Client::new();
+    let plain = format!("http://127.0.0.1:{http_port}{}", cwbcode_proto::EVENTS_PATH);
+    assert_eq!(http.post(&plain).send().await.unwrap().status(), 401);
+    assert_eq!(http.post(&plain).bearer_auth(&server.token).header("origin", "http://evil.example").send().await.unwrap().status(), 401);
+
+    // Three listeners at once: over HTTP/3, HTTP/2, and the desktop app's plain HTTP.
+    let (a, b) = (one.progress().await.unwrap(), two.progress().await.unwrap());
+    let third = http.post(&plain).bearer_auth(&server.token).send().await.unwrap();
+    assert_eq!(third.status(), 200);
+    let third = tokio::spawn(async move {
+        use futures::StreamExt;
+        let mut body = third.bytes_stream();
+        let mut frames = cwbcode_proto::Frames::new();
+        let mut got = Vec::new();
+        while let Some(chunk) = body.next().await {
+            frames.push(&chunk.unwrap());
+            while let Some(p) = frames.next_progress().unwrap() {
+                got.push(p);
+            }
+        }
+        got
+    });
+    let (a, b) = (tokio::spawn(follow(a)), tokio::spawn(follow(b)));
+    // (Each has had its first message before the download starts.)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    one.call(&Request::new(Method::DownloadModel)).await.unwrap();
+    let (a, b, c) = (a.await.unwrap(), b.await.unwrap(), third.await.unwrap());
+
+    // Every one was told the same, message for message, from "missing" to "ready" (then the
+    // stream ended), through every stage.
+    let same = |got: &[cwbcode_proto::Progress]| got.iter().map(|p| (p.seq, p.state.clone(), p.done, p.files_done)).collect::<Vec<_>>();
+    let (pa, pb): (Vec<_>, Vec<_>) = (a.iter().map(|(_, p)| p.clone()).collect(), b.iter().map(|(_, p)| p.clone()).collect());
+    assert_eq!(same(&pa), same(&pb));
+    assert_eq!(same(&pa), same(&c));
+    assert_eq!(stages(&a), ["missing", "downloading", "verifying", "loading", "ready"]);
+    assert!(pa.windows(2).all(|w| w[0].seq < w[1].seq && w[0].done <= w[1].done), "{pa:?}");
+    // While it downloads, a message at least every half second (and some to spare).
+    let downloading: Vec<&(Instant, cwbcode_proto::Progress)> = a.iter().filter(|(_, p)| p.state == "downloading" && p.total > 0).collect();
+    assert!(downloading.len() >= 4, "{} messages while downloading", downloading.len());
+    let gap = downloading.windows(2).map(|w| w[1].0 - w[0].0).max().unwrap();
+    assert!(gap < Duration::from_millis(900), "{gap:?} without a message while downloading");
+    assert!(downloading.iter().any(|(_, p)| p.speed > 0.0 && p.done < p.total));
+    // With the token `hf auth login` saved, and where it is: said, never the token itself.
+    let d = &downloading.last().unwrap().1;
+    assert!(d.token && d.token_from == "~/.cache/huggingface/token" && !d.token_refused && d.source_kind == "huggingface" && d.files_total == 4, "{d:?}");
+    assert!(!format!("{pa:?}").contains("hf_file_token"), "the token itself went to a client");
+    let end = pa.last().unwrap();
+    assert!(end.verified && end.done == end.total && end.state == "ready", "{end:?}");
+    // The token went to the hub, never to the CDN.
+    let seen = seen.lock().unwrap().clone();
+    let cdn_host = format!("localhost:{cdn}");
+    assert!(seen.iter().any(|(_, path, auth)| path.contains("/resolve/") && auth.as_deref() == Some("Bearer hf_file_token")));
+    assert!(seen.iter().filter(|(host, ..)| *host == cdn_host).all(|(_, _, auth)| auth.is_none()));
+    // Ready: the model answers, and a stream asked for now ends at once.
+    let mut events = one.chat(&chat(&server, 0, "hi", "auto")).await.unwrap();
+    assert!(text_of(&read_all(&mut events).await).contains("Hello from the script"));
+    let after = follow(two.progress().await.unwrap()).await;
+    assert_eq!(stages(&after), ["ready"]);
+    let log = std::fs::read_to_string(server.home.join("server.log")).unwrap();
+    assert!(log.contains("with your Hugging Face token, from ~/.cache/huggingface/token"), "{log}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_model_is_downloaded_by_default_a_refused_token_is_dropped_and_the_opt_out_waits() {
+    let Fake { hub, seen, .. } = fake_hub(8 << 20);
+    let base = std::env::temp_dir().join(format!("cwbcode-it-default-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let env = |k: &str, v: &str| format!("env:{k}={v}");
+    let common = |models: &str| {
+        vec![
+            "no-script".to_string(),
+            env("CWBCODE_MODELS", &base.join(models).display().to_string()),
+            env("OLLAMA_MODELS", &base.join("no-ollama").display().to_string()),
+            env("CWBCODE_HF_ENDPOINT", &format!("http://127.0.0.1:{hub}")),
+            env("CWBCODE_OLLAMA_REGISTRY", &format!("http://127.0.0.1:{hub}")),
+        ]
+    };
+
+    // --no-download-model (or CWBCODE_DOWNLOAD_MODEL=0): missing, and nothing is fetched.
+    for opt_out in ["--no-download-model".to_string(), env("CWBCODE_DOWNLOAD_MODEL", "0")] {
+        let mut args = common("opt-out");
+        args.push(opt_out.clone());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let server = Server::start("optout", "[]", &args);
+        let client = server.client(false).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let s = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
+        assert_eq!((s.model_state.as_str(), s.download_source_kind.as_str()), ("missing", ""), "{opt_out}");
+        assert!(seen.lock().unwrap().is_empty(), "{opt_out}: something was fetched");
+        let first = follow_first(&client).await;
+        assert_eq!((first.state.as_str(), first.error.as_str()), ("missing", ""));
+    }
+
+    // No flag at all: it downloads at once. With a token Hugging Face refuses, it goes on
+    // without it, and says so; then the loader refuses this fake model, as far as a test
+    // without 20 GB goes.
+    let mut args = common("default");
+    args.push(env("HF_TOKEN", "hf_refused"));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let server = Server::start("default-download", "[]", &args);
+    let client = server.client(true).await;
+    let got = follow_until_stopped(&client).await;
+    let states = stages(&got);
+    assert!(states.ends_with(&["verifying".to_string(), "loading".to_string(), "failed".to_string()]), "{states:?}");
+    assert!(states.iter().any(|s| s == "downloading"), "{states:?}");
+    assert!(got.last().unwrap().1.error.contains("FakeForTest"), "{:?}", got.last());
+    let refused = got.iter().map(|(_, p)| p).find(|p| p.token_refused).expect("the refusal was not told");
+    assert!(!refused.token && refused.source_kind == "huggingface");
+    let s = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
+    assert!(s.download_token_refused && !s.download_token && s.download_source.contains("your token was refused"), "{s:?}");
+    let log = std::fs::read_to_string(server.home.join("server.log")).unwrap();
+    assert!(log.contains("your token was refused") && log.contains("downloading without it"), "{log}");
+    // The refused token was tried on the hub, and once refused never sent again.
+    let seen = seen.lock().unwrap().clone();
+    let first_without = seen.iter().position(|(_, path, auth)| path.contains("/resolve/") && auth.is_none()).unwrap();
+    assert!(seen[first_without..].iter().all(|(_, _, auth)| auth.is_none()));
+    assert!(seen[..first_without].iter().any(|(_, _, auth)| auth.as_deref() == Some("Bearer hf_refused")));
     let _ = std::fs::remove_dir_all(&base);
 }

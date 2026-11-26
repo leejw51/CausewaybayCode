@@ -133,16 +133,32 @@ SHA-256 in Ollama's registry. The backend looks in Ollama's store first, then in
 **The backend downloads it too**, without Python or Ollama (`rust/server/src/download.rs`,
 the same Hugging Face recipe in Rust, into the same store and with the same resume file):
 
-- `cwbcode serve --download-model` (or `CWBCODE_DOWNLOAD_MODEL=1`): a model that is in
-  neither store is downloaded at start and then loaded, without a restart. The Mac app starts
-  its backend this way.
-- Without it a missing model is `missing` (in Status, the bar's pill and the dashboard), and
-  the web client's chat view and model card offer **Download the model (about 20 GB)**: the
-  call (`downloadModel`) needs the sign-in or token, as every call does.
-- While it runs the model is `downloading`, and Status carries the bytes done and in all,
-  the speed over the last five seconds and the source (`Hugging Face, without a token`, or
-  with the token from where it was found); the page shows a bar that fills, the percent, the
-  gigabytes, the speed and the time left, asking every second meanwhile. A download that
+- By default a model that is in neither store is downloaded at start and then loaded, without
+  a restart: no flag is needed (`make start` still runs `scripts/model.py ensure` first, and
+  `--download-model` is still taken, and changes nothing).
+- `cwbcode serve --no-download-model` (or `CWBCODE_DOWNLOAD_MODEL=0`) turns that off: a
+  missing model is `missing` (in Status, the bar's pill and the dashboard), and the web
+  client's chat view and model card offer **Download the model (about 20 GB)**: the call
+  (`downloadModel`) needs the sign-in or token, as every call does.
+- A Hugging Face token is used when there is one: `$HF_TOKEN`, `$HUGGING_FACE_HUB_TOKEN`, the
+  file `$HF_TOKEN_PATH` names, or the one `hf auth login` saved (`$HF_HOME/token`,
+  `~/.cache/huggingface/token` by default; the Mac app, started from the Finder without the
+  shell's environment, finds that file). It goes to huggingface.co only, never to the CDN it
+  redirects to, and downloads are faster with it. Every client says whether one is used and
+  where it was found (`env HF_TOKEN`, `~/.cache/huggingface/token`; never the token); without
+  one they say so, with a one-line tip (`hf auth login`, then restart). A token Hugging Face
+  refuses (401, 403) is dropped, and the download goes on without it, saying so.
+- While it runs the model is `downloading`, then `verifying` (the check against Ollama's
+  registry), then `loading`. Every client follows it on **`POST /api/events`**: one stream,
+  the same messages pushed to all of them from one broadcast (nobody polls), a message on
+  every change of state and at least every 500 ms while it downloads, ending once the model is
+  ready; asked as any call is (the token or a session, the backend's own page). A
+  `Progress` message carries the state, the bytes done and in all, the speed over the last
+  five seconds, the tensor files done and in all, and where it comes from (as fields, which
+  each client words in its own language); Status carries the same. The web client shows the
+  Forge (below) and falls back to asking for Status every second when the stream cannot be
+  had; the terminal client draws a one-line bar until the model is ready, and
+  `cwbcodeclient status` shows the download too. A download that
   stops (a network error, the app quit) keeps what it finished: starting it again, or
   starting the backend again, goes on from there, and the page offers to try again with
   the reason. The backend's log (`server.log`, or `app-backend.log` for the app) says where
@@ -342,7 +358,7 @@ and one copy of the model. Then the window opens the backend's page with its tok
 `open` link does.
 
 The model is not inside the app, and need not be downloaded first: on a Mac that has never
-had it, the backend the app starts downloads it by itself (`--download-model`; about 20 GB
+had it, the backend the app starts downloads it by itself (as every backend does; about 20 GB
 from Hugging Face, no account, no Python, no Ollama), the window shows the download's
 progress where a new user lands, and the model loads when it is done. Quitting the app part
 way keeps what is done; opening it again goes on from there. A model already in Ollama's
@@ -450,7 +466,8 @@ answered at once, also while the model works.
 
 **Protocol** (`rust/proto`, `rust/proto/schema/cwbcode.capnp`). `POST /api/call` takes a `Request` and
 answers a `Response`; `POST /api/chat` answers a stream of `Event`s, each framed by its
-length, with an empty frame as heartbeat. The same messages are used by the terminal client
+length, with an empty frame as heartbeat; `POST /api/events` answers a stream of `Progress`
+messages (the model's state and its download), framed the same way. The same messages are used by the terminal client
 and, compiled to WebAssembly, by the web client.
 
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for

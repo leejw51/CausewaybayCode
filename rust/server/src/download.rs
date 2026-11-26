@@ -16,7 +16,8 @@
 //! - What is finished is kept in a state file: a download that stopped goes on from there.
 //!
 //! It runs on a thread (and a runtime) of its own; the server answers meanwhile, and Status
-//! says how far it is. When it is done, the model thread loads the model.
+//! says how far it is, as does the events stream (every change of state at once, the bytes
+//! every half second: see `Shared::publish`). When it is done, the model thread loads it.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
@@ -88,8 +89,18 @@ pub struct Info {
     /// What it is doing: "12 of 1250 files", "checking against Ollama's registry", or, when
     /// it is done, what the check found.
     pub note: String,
-    /// The Hugging Face token: "" none found, "refused", else where it came from.
-    pub token: String,
+    /// The same, as fields a client words itself: tensor files written and in all,
+    pub files_done: u32,
+    pub files_total: u32,
+    /// where from ("huggingface"),
+    pub source_kind: String,
+    /// whether a Hugging Face token is used and where it was found ("env HF_TOKEN",
+    /// "~/.cache/huggingface/token"; never the token), whether one was found and refused,
+    pub token: bool,
+    pub token_from: String,
+    pub token_refused: bool,
+    /// and whether every tensor file matched Ollama's registry.
+    pub verified: bool,
 }
 
 impl Download {
@@ -103,7 +114,7 @@ impl Download {
         self.running.load(Ordering::Relaxed)
     }
 
-    fn update(&self, f: impl FnOnce(&mut Info)) {
+    pub(crate) fn update(&self, f: impl FnOnce(&mut Info)) {
         f(&mut self.info.lock().unwrap());
     }
 }
@@ -119,8 +130,9 @@ pub fn start(shared: &Arc<Shared>) -> Result<()> {
     if shared.download.running.swap(true, Ordering::SeqCst) {
         bail!("the model is already being downloaded");
     }
-    *shared.model_state.lock().unwrap() = "downloading".into();
-    shared.download.update(|info| *info = Info { note: "starting".into(), source: source(&token_here()), token: token_here().map(|(_, from)| from).unwrap_or_default(), ..Info::default() });
+    let found = token_here();
+    shared.download.update(|info| *info = Info { note: "starting".into(), ..Info::with_token(&found) });
+    shared.set_model_state("downloading");
     let starter = shared;
     let shared = shared.clone();
     let spawned = std::thread::Builder::new().name("download".into()).spawn(move || {
@@ -132,14 +144,15 @@ pub fn start(shared: &Arc<Shared>) -> Result<()> {
             Ok(said) => {
                 eprintln!("cwbcode: download: done; {said}");
                 shared.download.update(|info| {
+                    info.verified = said.starts_with("verified");
                     info.note = said;
                     info.speed = 0.0;
                 });
                 // Loaded by the model thread (MLX is per thread), without a restart.
-                *shared.model_state.lock().unwrap() = "loading".into();
                 shared.download.running.store(false, Ordering::SeqCst);
+                shared.set_model_state("loading");
                 if let Err(e) = shared.submit(Job::Load) {
-                    *shared.model_state.lock().unwrap() = format!("failed: {e:#}");
+                    shared.set_model_state(&format!("failed: {e:#}"));
                 }
             }
             Err(e) => {
@@ -148,14 +161,14 @@ pub fn start(shared: &Arc<Shared>) -> Result<()> {
                     info.error = format!("{e:#}");
                     info.speed = 0.0;
                 });
-                *shared.model_state.lock().unwrap() = "missing".into();
                 shared.download.running.store(false, Ordering::SeqCst);
+                shared.set_model_state("missing");
             }
         }
     });
     if let Err(e) = spawned {
-        *starter.model_state.lock().unwrap() = "missing".into();
         starter.download.running.store(false, Ordering::SeqCst);
+        starter.set_model_state("missing");
         bail!("cannot start the download: {e}");
     }
     Ok(())
@@ -163,18 +176,59 @@ pub fn start(shared: &Arc<Shared>) -> Result<()> {
 
 // ---------- the token ----------
 
-/// The token this backend would use (see `hf_token`).
-fn token_here() -> Option<(String, String)> {
-    hf_token(|var| std::env::var(var).ok(), &PathBuf::from(std::env::var("HOME").unwrap_or_default()))
+/// The home folder: $HOME, or (when it is not set) the account's own from the system. The Mac
+/// app, started from the Finder, has no shell's environment: the token file saved by `hf auth
+/// login` under the home folder is what it finds.
+fn home_folder() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        return PathBuf::from(home);
+    }
+    // SAFETY: getpwuid returns a pointer into static storage (or null); it is read at once.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if !pw.is_null() && !(*pw).pw_dir.is_null() {
+            return PathBuf::from(std::ffi::CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned());
+        }
+    }
+    PathBuf::new()
 }
 
-/// Where the download comes from, as Status says it.
-fn source(token: &Option<(String, String)>) -> String {
-    match token {
-        Some((_, from)) => format!("Hugging Face, with the token from {from}"),
-        None => "Hugging Face, without a token".to_string(),
+/// The token this backend would use (see `hf_token`), and where it was found as it is shown.
+fn token_here() -> Option<(String, String)> {
+    let home = home_folder();
+    hf_token(|var| std::env::var(var).ok(), &home).map(|(token, from)| (token, shown_from(&from, &home)))
+}
+
+/// Where a token was found, as it is shown: "env HF_TOKEN", or the file, under the home
+/// folder as ~/... (never the token, nor the name of the account).
+pub fn shown_from(from: &str, home: &Path) -> String {
+    if let Some(var) = from.strip_prefix('$') {
+        return format!("env {var}");
+    }
+    let home = home.to_string_lossy();
+    match from.strip_prefix(home.as_ref()) {
+        Some(rest) if !home.is_empty() && rest.starts_with('/') => format!("~{rest}"),
+        _ => from.to_string(),
     }
 }
+
+/// Where the download comes from, in the backend's own words (Status.downloadSource, the log).
+fn source(token: &Option<(String, String)>) -> String {
+    match token {
+        Some((_, from)) => format!("Hugging Face, with your token ({from}): faster downloads"),
+        None => "Hugging Face, without a token (none found, none needed)".to_string(),
+    }
+}
+
+/// What a download says about the token before it starts.
+impl Info {
+    fn with_token(found: &Option<(String, String)>) -> Self {
+        Info { source: source(found), source_kind: "huggingface".into(), token: found.is_some(), token_from: found.as_ref().map(|(_, from)| from.clone()).unwrap_or_default(), ..Info::default() }
+    }
+}
+
+/// The hint given (once, in the log and by the clients) when no token is found.
+pub const TOKEN_TIP: &str = "Tip: a free Hugging Face token makes this faster: run `hf auth login` (or set HF_TOKEN), then restart";
 
 /// The Hugging Face token and where it came from, if there is one: $HF_TOKEN, then
 /// $HUGGING_FACE_HUB_TOKEN, then the file $HF_TOKEN_PATH names, then $HF_HOME/token
@@ -693,20 +747,25 @@ async fn run(shared: &Shared) -> Result<String> {
     let found = token_here();
     let base = hub_endpoint();
     let progress = &shared.download;
-    progress.update(|info| {
-        info.source = source(&found);
-        info.note = "reading the checkpoint's index".into();
-    });
-    eprintln!("cwbcode: download: {model} from {base}/{repo} (revision {}), {}, into {}", &revision[..12], source(&found).trim_start_matches("Hugging Face, "), store.display());
+    shared.download_update(|info| *info = Info { note: "reading the checkpoint's index".into(), ..Info::with_token(&found) });
+    eprintln!("cwbcode: download: {model} from {base}/{repo} (revision {}), into {}", &revision[..12], store.display());
+    match &found {
+        Some((_, from)) => eprintln!("cwbcode: download: with your Hugging Face token, from {from} (sent to {base} only): faster downloads"),
+        None => {
+            eprintln!("cwbcode: download: without a Hugging Face token (none found in $HF_TOKEN, $HUGGING_FACE_HUB_TOKEN, $HF_TOKEN_PATH or $HF_HOME/token; none needed)");
+            eprintln!("cwbcode: download: {TOKEN_TIP}");
+        }
+    }
 
     let mut hub = Hub::new(&base, repo, revision, found.as_ref().map(|(t, _)| t.clone()))?;
     let groups = match plan(&hub).await {
         Ok(groups) => groups,
         Err(e) if found.is_some() && e.downcast_ref::<HttpStatus>().is_some_and(|s| s.0 == 401 || s.0 == 403) => {
-            eprintln!("cwbcode: download: the token was refused ({e}); trying without it");
-            progress.update(|info| {
-                info.source = "Hugging Face, without a token (the token was refused)".into();
-                info.token = "refused".into();
+            eprintln!("cwbcode: download: your token was refused ({e}); downloading without it");
+            shared.download_update(|info| {
+                info.source = "Hugging Face, without a token (your token was refused)".into();
+                info.token = false;
+                info.token_refused = true;
             });
             hub = Hub::new(&base, repo, revision, None)?;
             plan(&hub).await?
@@ -745,8 +804,10 @@ async fn run(shared: &Shared) -> Result<String> {
     }
     progress.done.store(already, Ordering::Relaxed);
     let count = groups.len();
-    progress.update(|info| {
+    shared.download_update(|info| {
         info.total = total;
+        info.files_done = done.len() as u32;
+        info.files_total = count as u32;
         info.note = format!("{} of {count} files", done.len());
     });
 
@@ -780,7 +841,7 @@ async fn run(shared: &Shared) -> Result<String> {
                 }
                 let (t0, d0) = samples[0];
                 let speed = if now > t0 { (bytes - d0) as f64 / now.duration_since(t0).as_secs_f64() } else { 0.0 };
-                progress.update(|info| info.speed = speed);
+                shared.download_update(|info| info.speed = speed);
                 if said.elapsed() >= Duration::from_secs(30) {
                     said = now;
                     let average = (bytes - started_with) as f64 / started.elapsed().as_secs_f64();
@@ -801,7 +862,10 @@ async fn run(shared: &Shared) -> Result<String> {
             done.insert(name, result);
             save(&done)?;
             let n = done.len();
-            progress.update(|info| info.note = format!("{n} of {count} files"));
+            shared.download_update(|info| {
+                info.files_done = n as u32;
+                info.note = format!("{n} of {count} files");
+            });
         }
         anyhow::Ok(())
     };
@@ -815,7 +879,7 @@ async fn run(shared: &Shared) -> Result<String> {
 
     // The config and tokenizer files as they are, and the draft network's config (its part
     // of config.json).
-    progress.update(|info| {
+    shared.download_update(|info| {
         info.note = "config and tokenizer files".into();
         info.speed = 0.0;
     });
@@ -844,6 +908,7 @@ async fn run(shared: &Shared) -> Result<String> {
 
     // Every tensor file should be the one in Ollama's registry, byte for byte.
     progress.update(|info| info.note = "checking against Ollama's registry".into());
+    shared.set_model_state("verifying");
     let said = match registry_digests(&model).await {
         Ok(theirs) => {
             let ours = groups.len();
@@ -1035,6 +1100,10 @@ mod tests {
         // The environment comes first; an empty variable is no token.
         assert_eq!(hf_token(env(&[("HF_TOKEN", " hf_env "), ("HUGGING_FACE_HUB_TOKEN", "hf_other")]), &base).unwrap(), ("hf_env".to_string(), "$HF_TOKEN".to_string()));
         assert_eq!(hf_token(env(&[("HF_TOKEN", ""), ("HUGGING_FACE_HUB_TOKEN", "hf_other")]), &base).unwrap().0, "hf_other");
+        // Shown without the token, and without the account's name.
+        assert_eq!(shown_from("$HF_TOKEN", &base), "env HF_TOKEN");
+        assert_eq!(shown_from(&format!("{}/.cache/huggingface/token", base.display()), &base), "~/.cache/huggingface/token");
+        assert_eq!(shown_from("/elsewhere/token", &base), "/elsewhere/token");
         let _ = std::fs::remove_dir_all(&base);
     }
 

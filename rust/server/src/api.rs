@@ -1,5 +1,6 @@
-//! The API: two POST routes whose bodies are Cap'n Proto messages (see cwbcode_proto), and
-//! the web client's files. Who may use the API is decided in auth.rs.
+//! The API: POST routes whose bodies are Cap'n Proto messages (see cwbcode_proto): a call,
+//! a chat (a stream of events), and the events stream of the model's state; and the web
+//! client's files. Who may use the API is decided in auth.rs.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -12,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Version, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::{get, post};
-use cwbcode_proto::{CALL_PATH, CHAT_PATH, Method, PROTOCOL_HEADER, Project, Request, Response, Session, Status, Tool, What};
+use cwbcode_proto::{CALL_PATH, CHAT_PATH, EVENTS_PATH, Method, PROTOCOL_HEADER, Project, Request, Response, Session, Status, Tool, What};
 
 use crate::agent;
 use crate::kb;
@@ -44,6 +45,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route(CALL_PATH, post(call))
         .route(CHAT_PATH, post(chat))
+        .route(EVENTS_PATH, post(events).get(events))
         .route(CA_PATH, get(ca))
         .fallback(get(web))
         .layer(DefaultBodyLimit::max(cwbcode_proto::MAX_MESSAGE_BYTES))
@@ -303,6 +305,59 @@ async fn chat(State(app): State<App>, request: HttpRequest) -> HttpResponse {
     ([(header::CONTENT_TYPE, "application/x-capnp-stream"), (header::CACHE_CONTROL, "no-store")], Body::from_stream(frames)).into_response()
 }
 
+/// The model's state and its download, as it changes, to every client that asks (the same
+/// messages for all of them, from one broadcast: nobody polls). First where it is now, then
+/// each message the backend sends: one on every change of state, and every half second while
+/// it downloads; a heartbeat when nothing is sent for a second. It ends once the model is
+/// ready (or there is none to wait for). Asked as any call is: the token or a session, from
+/// the backend's own page or a client.
+async fn events(State(app): State<App>, request: HttpRequest) -> HttpResponse {
+    if !app.allowed(request.headers(), request.uri(), peer(&request)) {
+        return refused();
+    }
+    // Subscribed before the first message is made: nothing sent in between is missed.
+    let receiver = app.shared.events.subscribe();
+    let first = app.shared.progress();
+    struct Feed {
+        receiver: tokio::sync::broadcast::Receiver<cwbcode_proto::Progress>,
+        shared: Arc<Shared>,
+        first: Option<cwbcode_proto::Progress>,
+        /// The number of the last message sent: older or repeated ones are skipped.
+        last: u64,
+        beat: tokio::time::Interval,
+        ended: bool,
+    }
+    let mut beat = tokio::time::interval(std::time::Duration::from_secs(1));
+    beat.reset();
+    let feed = Feed { receiver, shared: app.shared.clone(), first: Some(first), last: 0, beat, ended: false };
+    let frames = futures::stream::unfold(feed, |mut feed| async move {
+        if feed.ended {
+            return None;
+        }
+        loop {
+            let progress = match feed.first.take() {
+                Some(first) => first,
+                None => tokio::select! {
+                    biased;
+                    got = feed.receiver.recv() => match got {
+                        Ok(progress) if progress.seq <= feed.last => continue,
+                        Ok(progress) => progress,
+                        // Fell behind (a slow client): where it is now is what matters.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => feed.shared.progress(),
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    },
+                    _ = feed.beat.tick() => return Some((Ok::<_, std::convert::Infallible>(Bytes::from_static(&cwbcode_proto::HEARTBEAT)), feed)),
+                },
+            };
+            feed.last = feed.last.max(progress.seq);
+            feed.ended = progress.settled();
+            feed.beat.reset();
+            return Some((Ok(Bytes::from(progress.frame())), feed));
+        }
+    });
+    ([(header::CONTENT_TYPE, "application/x-capnp-stream"), (header::CACHE_CONTROL, "no-store")], Body::from_stream(frames)).into_response()
+}
+
 /// The project's store for a call that only reads: None if the project has none yet.
 fn existing_store(shared: &Shared, request: &Request) -> Result<Option<Store>> {
     Store::open_project_existing(&shared.roots.resolve(&request.project)?)
@@ -366,7 +421,15 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 download_source: download.source,
                 download_error: download.error,
                 download_note: download.note,
-                download_token: download.token,
+                download_files_done: download.files_done,
+                download_files_total: download.files_total,
+                download_source_kind: download.source_kind,
+                // (As 0.1.2 said it: "" none, "refused", else where it was found.)
+                download_token: if download.token_refused { "refused".to_string() } else if download.token { download.token_from.clone() } else { String::new() },
+                download_token_used: download.token,
+                download_token_from: download.token_from,
+                download_token_refused: download.token_refused,
+                download_verified: download.verified,
             });
         }
         Method::Projects => {

@@ -25,7 +25,7 @@
 //! starting page and says why; a backend the app did not start is waited for to come back.
 //!
 //! The backend the app starts downloads the model by itself when it is not there yet
-//! (`--download-model`); the window shows the download's progress, and the model loads when
+//! (as every backend does, no flag needed); the window shows the download's progress, and the model loads when
 //! it is done.
 //!
 //!   CWBCODE_HOME       the backend's folder [~/.cwbcode]

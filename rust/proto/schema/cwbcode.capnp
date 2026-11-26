@@ -5,6 +5,10 @@
 #   POST /api/call   -> one Response
 #   POST /api/chat   -> a stream of Events, each framed as a 4-byte little-endian length
 #                       followed by that many bytes of message
+#   POST /api/events -> a stream of Progress messages, framed the same way: the model's
+#                       state and its download, pushed to every client that listens (a
+#                       message on each change of state, and at least every 500 ms while
+#                       it downloads); it ends once the model is ready
 #
 # Every request but hello, challenge, login and redeem carries a session token (or the
 # server's own token, which local mode, Status.auth = open, also asks for) in the
@@ -70,7 +74,8 @@ struct Status {
   version @0 :Text;
   model @1 :Text;
   modelState @2 :Text;     # loading | ready | none | scripted | missing (not downloaded) |
-                           # downloading | failed: ...
+                           # downloading | verifying (checking it against Ollama's registry) |
+                           # failed: ...
   protocol @3 :Text;       # how this request arrived: h3 | h2 | http/1.1
   busy @4 :Bool;
   busyProject @5 :Text;
@@ -98,7 +103,7 @@ struct Status {
   modelInfo @24 :Text;     # what it is: architecture, layers, experts, quantization, ...
   genTps @25 :Float64;     # tokens per second while writing, in the last turn (0: none yet)
   promptTps @26 :Float64;  # tokens per second while reading the prompt, in the last turn
-  # The model's download (Method.downloadModel, or `cwbcode serve --download-model`):
+  # The model's download (at start unless `cwbcode serve --no-download-model`, or Method.downloadModel):
   downloadDone @27 :UInt64;    # bytes of it here
   downloadTotal @28 :UInt64;   # bytes in all (0: not known yet)
   downloadSpeed @29 :Float64;  # bytes per second, over the last few seconds
@@ -107,7 +112,36 @@ struct Status {
   downloadNote @32 :Text;      # what it is doing ("412 of 1250 files"), or what the check found
   downloadToken @33 :Text;     # the Hugging Face token: "" none found (none used), "refused"
                                # (tried, refused, going on without it), else where it came from
-                               # ("$HF_TOKEN", a file's path); never the token itself
+                               # ("env HF_TOKEN", "~/.cache/huggingface/token"); never the token
+  # The same, as fields a client words in its own language:
+  downloadFilesDone @34 :UInt32;   # tensor files written
+  downloadFilesTotal @35 :UInt32;  # tensor files in all (0: not known yet)
+  downloadSourceKind @36 :Text;    # "huggingface" ("" before a download)
+  downloadTokenUsed @37 :Bool;     # a Hugging Face token is used
+  downloadTokenFrom @38 :Text;     # where it was found: "env HF_TOKEN", "~/.cache/huggingface/token"
+                                   # (never the token itself)
+  downloadTokenRefused @39 :Bool;  # one was found, Hugging Face refused it: without it
+  downloadVerified @40 :Bool;      # every tensor file matched Ollama's registry
+}
+
+struct Progress {
+  # One message of POST /api/events: where the model is. The same for every client.
+  seq @0 :UInt64;              # counts up with every message the backend sends
+  state @1 :Text;              # missing | downloading | verifying | loading | ready | failed |
+                               # none (started without a model) | scripted (tests)
+  error @2 :Text;              # failed: why; missing: why the last download stopped ("" if none)
+  done @3 :UInt64;             # bytes of the model here
+  total @4 :UInt64;            # bytes in all (0: not known yet)
+  speed @5 :Float64;           # bytes per second, over the last few seconds
+  filesDone @6 :UInt32;
+  filesTotal @7 :UInt32;
+  sourceKind @8 :Text;         # "huggingface" ("" before a download)
+  token @9 :Bool;              # a Hugging Face token is used
+  tokenFrom @10 :Text;         # where it was found (never the token)
+  tokenRefused @11 :Bool;      # it was refused: downloading without it
+  verified @12 :Bool;          # every tensor file matched Ollama's registry
+  note @13 :Text;              # the backend's own words on what it is doing (English)
+  model @14 :Text;
 }
 
 struct Project {
