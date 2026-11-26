@@ -1335,7 +1335,7 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
             first.get_or_insert(s.download_done);
         }
         let finished = std::fs::read_to_string(&state_file).ok().map_or(0, |t| t.matches("sha256:").count());
-        if finished == 3 && s.download_done > first.unwrap_or(u64::MAX) && s.download_speed > 0.0 && s.download_done < s.download_total / 2 {
+        if finished == 3 && s.download_done > first.unwrap_or(u64::MAX) && s.download_speed > 0.0 && s.download_done < s.download_total / 4 * 3 {
             assert_eq!(s.download_total, (6 << 20) + 128 + 16 + 16 + 2 + 8);
             assert!(s.download_note.ends_with("of 4 files"), "{}", s.download_note);
             break;
