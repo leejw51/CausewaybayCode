@@ -113,13 +113,17 @@
   /* Code and tool calls: the same face as the rest (the page sets it with the typeface). */
   --mono: var(--body);
   --r: .7rem; --gap: 8px;
+  /* The edge of a field one types into (cards keep --line). */
+  --field: var(--line);
   --expo: cubic-bezier(.87, 0, .13, 1);
   color-scheme: dark;
 }
 :root[data-theme="light"] {
   --bg: #e4e9f6; --panel: #fbfcff; --well: #ffffff; --line: rgba(28, 36, 92, .14); --line2: rgba(28, 36, 92, .22);
   --btn1: #ffffff; --btn2: #e9eefb; --drop: #b9c4e2; --text: #141c48; --dim: #56608c;
-  --accent: #0860a0; --gold: #b8860b; --ok: #187018; --warn: #8c5000; --bad: #c02000; --orange: #c84c0c;
+  /* (Gold darkened to read at 4.5:1 or more on the panel and the background.) */
+  --accent: #0860a0; --gold: #8a6100; --ok: #187018; --warn: #8c5000; --bad: #c02000; --orange: #c84c0c;
+  --field: rgba(28, 36, 92, .55);
   color-scheme: light;
 }
 html { font-size: 14px; }
@@ -150,9 +154,20 @@ button.ghost:hover { color: var(--text); background: var(--btn2); }
 button.round { width: 2.3rem; padding: 0; display: grid; place-items: center; flex: 0 0 auto; }
 button.fit { flex: 0 0 auto !important; }
 button:disabled { opacity: .4; cursor: default; }
-input, textarea, select { background: var(--well); border: 1px solid var(--line); border-radius: var(--r); padding: .35rem .6rem; outline: none; }
+input, textarea, select { background: var(--well); border: 1px solid var(--field); border-radius: var(--r); padding: .35rem .6rem; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
-input::placeholder, textarea::placeholder { color: var(--dim); opacity: .75; }
+input::placeholder, textarea::placeholder { color: var(--dim); opacity: .85; }
+:root[data-theme="light"] input::placeholder, :root[data-theme="light"] textarea::placeholder { opacity: 1; }
+/* Where the keyboard is: a ring on whatever has the focus from Tab (not from a click). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offset: 0; }
+/* The mode in which edits and commands run without asking is marked, in orange. */
+select#mode.auto { border-color: var(--orange); color: var(--orange); }
+/* How many answers the agent waits for, on the Chat button when another view is open. */
+.badge { display: inline-grid; place-items: center; min-width: 1.25rem; height: 1.25rem; padding: 0 .3rem; border-radius: 99px; background: var(--orange); color: #1a0d04; font-size: .8em; font-weight: bold; }
+.seg button.on .badge { display: none; }
+.dot.ask { background: var(--orange); animation: blink 1s steps(1) infinite; }
+.pill .asking { color: var(--orange); }
 input.masked, textarea.masked { -webkit-text-security: disc; }
 input[type="checkbox"] { accent-color: #e9c94b; width: 1.1rem; height: 1.1rem; }
 select { min-height: 2.3rem; }
@@ -166,7 +181,7 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
   height: 100vh; height: 100dvh; gap: var(--gap); padding: var(--gap); padding-bottom: max(var(--gap), env(safe-area-inset-bottom)); }
 .app.noside { grid-template-columns: minmax(0, 1fr); } .app.noside .side { display: none; }
 .appbar { grid-column: 1 / -1; display: flex; align-items: center; gap: .5rem; min-height: 3.2rem; padding: .3rem .5rem; min-width: 0; }
-.brand { font-family: var(--px); font-size: .62rem; line-height: 1.5; color: var(--gold); display: flex; align-items: center; gap: .55rem; white-space: nowrap; }
+.brand { font-family: var(--px); font-size: .8rem; line-height: 1.5; color: var(--gold); display: flex; align-items: center; gap: .55rem; white-space: nowrap; }
 .brand .logo { width: 2.4rem; height: 2.4rem; flex: 0 0 auto; background: url("/art/mascot.png") center / contain no-repeat; image-rendering: pixelated; font-size: 0; color: transparent; }
 .brand small { display: block; color: var(--dim); font-family: var(--body); font-size: .95rem; }
 /* The views: the selection slides behind the chosen one. */
@@ -261,6 +276,8 @@ button.lit { border-color: var(--accent); color: var(--accent); }
 .approval { background: var(--panel); border: 1px solid var(--gold); border-radius: var(--r); padding: .6rem .8rem; }
 .approval pre { white-space: pre-wrap; margin: 0 0 .5rem; overflow-wrap: anywhere; }
 .approval .acts { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; } .approval .acts input { flex: 1; min-width: 160px; min-height: 2.3rem; }
+/* Allow and No the same size: neither is the small one to miss. */
+.approval .acts button { min-width: 6rem; }
 .approval.done { opacity: .6; border-color: var(--line); }
 .todos { padding: .4rem .8rem; }
 .todos div.done { color: var(--dim); text-decoration: line-through; } .todos div.doing { color: var(--accent); }
@@ -317,8 +334,35 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
   .app.noside { grid-template-rows: auto minmax(0, 1fr); }
   .side { max-height: 32vh; overflow-y: auto; } .side > * { flex-shrink: 0; } .list.sessions { flex: 0 0 auto; max-height: 20vh; }
-  .outline { display: none; } .meter > span:first-child { display: none; } .meter .bar2 { width: 4rem; }
+  .outline, .outline.scaled { display: none; } .meter > span:first-child { display: none; } .meter .bar2 { width: 4rem; }
   .top { flex-wrap: wrap; }
   .toast { margin-left: 0; left: 12px; width: auto; right: 12px; }
+}
+/* A phone: the sidebar is a drawer over the view (the button at the top left opens it; a
+   choice in it closes it), so the conversation has the whole height. */
+@media (max-width: 640px) {
+  .app, .app.noside, .app.vertical, .app.vertical.noside { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .app .side, .app.vertical .side { position: absolute; z-index: 25; top: calc(3.2rem + var(--gap) * 2); left: var(--gap); bottom: var(--gap);
+    width: min(21rem, calc(100vw - var(--gap) * 2)); max-height: none; flex-direction: column; flex-wrap: nowrap; align-items: stretch;
+    overflow-y: auto; box-shadow: 0 18px 50px rgba(0, 0, 0, .5); }
+  .app.vertical .group, .app.vertical .group.grow { flex-direction: column; align-items: stretch; }
+  .app.vertical .list, .app.vertical .list.projects, .app.vertical .list.sessions { display: block; overflow-y: auto; overflow-x: hidden; }
+  .app.vertical .row { max-width: none; border: 0; border-left: 3px solid transparent; } .app.vertical .row small { display: block; }
+  .app.vertical .open input { flex: 1; width: auto; }
+  .list.projects, .list.sessions { max-height: none; }
+  .appbar { gap: .25rem; } .pill { padding: 0 .55rem; flex: 1 1 auto; }
+  /* The bar keeps what fits on a phone: signing out moves into the settings sheet. */
+  .appbar .brand, .appbar #signout, .appbar .grow { display: none; }
+}
+.sheet-signout { display: flex; justify-content: flex-end; margin-top: .5rem; padding-top: .5rem; border-top: 1px solid var(--line); }
+@media (min-width: 641px) { .sheet-signout { display: none; } }
+/* Touch: every control at least 44 points, and fields set large enough that iOS does not zoom
+   in on them. */
+@media (pointer: coarse) {
+  button, .chip, select, a.button, input:not([type="checkbox"]), .seg button { min-height: 44px; }
+  button.round, .row .remove { width: 44px; min-height: 44px; }
+  .row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; } .row.project { flex-direction: row; align-items: center; }
+  input:not([type="checkbox"]), textarea, select { font-size: max(16px, 1em); }
+  input[type="checkbox"] { width: 1.4rem; height: 1.4rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

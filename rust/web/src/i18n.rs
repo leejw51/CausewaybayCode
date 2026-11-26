@@ -67,6 +67,8 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("open_ph", ["folder to open or create", "열거나 만들 폴더", "složka k otevření nebo vytvoření", "開く・作成するフォルダ", "要開或者新建嘅資料夾", "要打开或新建的文件夹", "carpeta para abrir o crear", "açılacak veya oluşturulacak klasör"]),
     ("created", ["Created {}", "{} 폴더를 만들었습니다", "Vytvořeno: {}", "{} を作成しました", "已經建立 {}", "已创建 {}", "Se creó {}", "{} oluşturuldu"]),
     ("offline", ["backend not reachable", "백엔드에 연결할 수 없음", "backend není dostupný", "バックエンドに接続できません", "連唔到後端", "无法连接后端", "no se alcanza el backend", "arka uca ulaşılamıyor"]),
+    ("waiting_you", ["waiting for you", "답을 기다리는 중", "čeká na vás", "あなたの返答待ち", "等緊你", "等待你的回复", "esperando tu respuesta", "sizi bekliyor"]),
+    ("mode_label", ["Mode: auto runs edits and commands without asking", "모드: 자동은 편집과 명령을 묻지 않고 실행합니다", "Režim: automaticky provádí úpravy a příkazy bez ptaní", "モード: 自動は編集とコマンドを確認なしで実行します", "模式：自動會唔問就改檔同行指令", "模式：自动会不经询问执行编辑和命令", "Modo: automático aplica cambios y ejecuta órdenes sin preguntar", "Mod: otomatik, düzenlemeleri ve komutları sormadan çalıştırır"]),
     ("working", ["working", "작업 중", "pracuje", "作業中", "做緊嘢", "工作中", "trabajando", "çalışıyor"]),
     ("local_short", ["local mode · token", "로컬 모드 · 토큰", "místní režim · token", "ローカルモード · トークン", "本機模式 · token", "本地模式 · 令牌", "modo local · token", "yerel mod · belirteç"]),
     ("sign_out", ["Sign out", "로그아웃", "Odhlásit se", "サインアウト", "登出", "退出登录", "Cerrar sesión", "Çıkış yap"]),

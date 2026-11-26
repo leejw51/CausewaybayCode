@@ -373,6 +373,23 @@ impl App {
         }
     }
 
+    /// Edits and commands waiting for the user's answer in this conversation.
+    fn waiting(&self) -> usize {
+        self.items.with(|items| items.iter().filter(|i| i.kind == Kind::Approval && !i.past && i.answered.with(String::is_empty)).count())
+    }
+
+    /// Below this width the sidebar is a drawer over the view, closed after a choice in it.
+    fn narrow() -> bool {
+        web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|w| w.as_f64()).is_some_and(|w| w < 640.0)
+    }
+
+    /// On a phone, close the drawer once something in it is chosen.
+    fn chosen(&self) {
+        if Self::narrow() {
+            self.side.set(false);
+        }
+    }
+
     fn push(&self, kind: Kind, text: &str, approval: Option<(i64, bool)>, past: bool) -> usize {
         let id = self.next.get_untracked();
         self.next.set(id + 1);
@@ -643,6 +660,11 @@ fn main() {
 }
 
 /// Run something once the page has drawn what was just changed.
+/// Does this key press open what has the focus, as a click would (Enter, or Space)?
+fn activates(ev: &web_sys::KeyboardEvent) -> bool {
+    ev.key() == "Enter" || ev.key() == " "
+}
+
 fn after_draw(f: impl FnOnce() + 'static) {
     set_timeout(f, std::time::Duration::from_millis(30));
 }
@@ -665,6 +687,38 @@ fn Root() -> impl IntoView {
                 app.refresh_status().await;
                 app.refresh_projects().await;
             });
+        }
+    });
+    // An edit or command waiting for an answer is in the tab's title, seen from another tab
+    // or another view.
+    Effect::new(move |_| {
+        let waiting = app.waiting();
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.set_title(&if waiting > 0 { format!("({waiting}) Causewaybay Code") } else { "Causewaybay Code".to_string() });
+        }
+    });
+    // On a phone the sidebar is a drawer: it starts closed, and closes when the window becomes
+    // that narrow. Settings close with Escape, or a click outside them.
+    if App::narrow() {
+        app.side.set(false);
+    }
+    let _ = window_event_listener(leptos::ev::resize, move |_| {
+        if App::narrow() && app.side.get_untracked() {
+            app.side.set(false);
+        }
+    });
+    let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        if ev.key() == "Escape" && app.settings.get_untracked() {
+            app.settings.set(false);
+        }
+    });
+    let _ = window_event_listener(leptos::ev::click, move |ev| {
+        if !app.settings.get_untracked() {
+            return;
+        }
+        let inside = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).is_some_and(|el| el.closest("#settings-sheet, #settings").ok().flatten().is_some());
+        if !inside {
+            app.settings.set(false);
         }
     });
     // The theme and language are the page's; every change of a preference, or of where the
@@ -704,8 +758,12 @@ fn Root() -> impl IntoView {
                 <Sidebar/>
                 <div class="main"><ViewHost/></div>
                 <div class="sheet glass" id="settings-sheet" class:open=move || app.settings.get()>
-                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" on:click=move |_| app.settings.set(false)>"×"</button></div>
+                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" title=app.t("close") aria-label=app.t("close") on:click=move |_| app.settings.set(false)>"×"</button></div>
                     <Prefs/>
+                    // (On a phone the bar has no room for it: signing out is here.)
+                    <Show when=move || app.auth.get() != "open">
+                        <div class="sheet-signout"><button class="ghost" id="signout-sheet" on:click=move |_| { app.settings.set(false); spawn_local(async move { app.sign_out().await }) }>{app.t("sign_out")}</button></div>
+                    </Show>
                 </div>
             </div>
         </Show>
@@ -885,8 +943,18 @@ fn step_size(app: App, by: i32) {
 fn AppBar() -> impl IntoView {
     let app = expect_context::<App>();
     let t = move |key: &'static str| app.t(key);
+    // (Named for screen readers and in a tip, also when the words are hidden on a narrow
+    // screen. Chat carries a badge while an edit or command waits for an answer.)
     let nav = move |view: View, id: &'static str, key: &'static str, shape: &'static str| {
-        view! { <button id=id class:on=move || app.view.get() == view on:click=move |_| app.view.set(view)>{icon(shape)}<span>{t(key)}</span></button> }
+        let badge = move || view == View::Chat && app.waiting() != 0 && app.view.get() != View::Chat;
+        view! {
+            <button id=id class:on=move || app.view.get() == view title=t(key) aria-label=t(key) on:click=move |_| app.view.set(view)>
+                {icon(shape)}<span>{t(key)}</span>
+                <Show when=badge>
+                    <b class="badge" id="waiting-badge">{move || app.waiting()}</b>
+                </Show>
+            </button>
+        }
     };
     // The selection slides to the chosen view, also when the words change size.
     Effect::new(move |_| {
@@ -914,10 +982,13 @@ fn AppBar() -> impl IntoView {
                     {move || match app.status.get() {
                         None => view! { <span><span class="dot bad"></span>{t("offline")}</span> }.into_any(),
                         Some(s) => {
-                            let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
+                            // An answer the agent waits for comes before everything else.
+                            let waiting = app.waiting() > 0;
+                            let dot = if waiting { "dot ask" } else if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
                             let lang = app.lang.get();
+                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() };
                             view! {
-                                <span><span class=dot></span>{if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
+                                <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>
                                 <div id="login-state">{match s.auth.as_str() {
                                     "open" => tr(lang, "local_short").to_string(),
                                     "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
@@ -1083,11 +1154,18 @@ fn Sidebar() -> impl IntoView {
                 </div>
                 <div class="list projects">
                     <For each=move || app.projects.get() key=|p| p.path.clone() children=move |p: Project| {
-                        let (path, gone) = (p.path.clone(), p.path.clone());
+                        let gone = p.path.clone();
                         let (selected, shown) = (p.path.clone(), p.path.clone());
+                        let target = StoredValue::new(p.path.clone());
+                        let pick = move || {
+                            let path = target.get_value();
+                            app.chosen();
+                            spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); })
+                        };
                         view! {
-                            <div class="row project" class:on=move || app.project.get() == selected
-                                on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
+                            // (Reached with Tab, and opened with Enter or Space too.)
+                            <div class="row project" class:on=move || app.project.get() == selected tabindex="0" role="button"
+                                on:click=move |_| pick() on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); pick() }>
                                 <span class="what">{p.name.clone()}<small>{move || app.tilde(&shown)}</small></span>
                                 <button class="ghost round remove" title=t("remove_project") aria-label=t("remove_project")
                                     on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }>"×"</button>
@@ -1097,13 +1175,15 @@ fn Sidebar() -> impl IntoView {
                 </div>
             </div>
             <div class="group grow">
-                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); }>{t("new")}</button></h4>
+                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); app.chosen(); }>{t("new")}</button></h4>
                 <div class="list sessions">
                     <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
                         let id = s.id;
                         let label = if s.name.is_empty() { s.first.clone() } else { s.name.clone() };
                         view! {
-                            <div class="row session" class:on=move || app.session.get() == id on:click=move |_| spawn_local(async move { app.select_session(id).await })>
+                            <div class="row session" class:on=move || app.session.get() == id tabindex="0" role="button"
+                                on:click=move |_| { app.chosen(); spawn_local(async move { app.select_session(id).await }) }
+                                on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); app.chosen(); spawn_local(async move { app.select_session(id).await }) }>
                                 {if label.is_empty() { format!("#{id}") } else { label }}
                                 <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small>
                             </div>
@@ -1171,9 +1251,10 @@ fn Dashboard() -> impl IntoView {
                             <thead><tr><th>{t("th_project")}</th><th>{t("th_folder")}</th><th>{t("conversations")}</th><th>{t("th_opened")}</th></tr></thead>
                             <tbody>
                                 <For each=move || app.projects.get() key=|p| (p.path.clone(), p.sessions) children=move |p: Project| {
-                                    let path = p.path.clone();
+                                    let target = StoredValue::new(p.path.clone());
+                                    let pick = move || { let path = target.get_value(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) };
                                     view! {
-                                        <tr class="click" on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
+                                        <tr class="click" tabindex="0" role="button" on:click=move |_| pick() on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); pick() }>
                                             <td>{p.name.clone()}</td><td class="dim">{let shown = p.path.clone(); move || app.tilde(&shown)}</td><td>{p.sessions}</td><td class="dim">{p.updated.clone()}</td>
                                         </tr>
                                     }
@@ -1329,8 +1410,17 @@ fn ItemView(item: Item) -> impl IntoView {
                     app.call(Request::new(Method::Approve).id(id).text(&text)).await;
                 });
             };
+            // A new question is scrolled into sight, Allow and No included, on a phone too.
+            let card = NodeRef::<leptos::html::Div>::new();
+            Effect::new(move |_| {
+                if let Some(el) = card.get() {
+                    if !past {
+                        after_draw(move || el.scroll_into_view_with_bool(false));
+                    }
+                }
+            });
             view! {
-                <div class="approval" class:done=move || !answered.get().is_empty() || past>
+                <div class="approval" node_ref=card class:done=move || !answered.get().is_empty() || past>
                     <pre>{move || text.get()}</pre>
                     <Show when=move || answered.get().is_empty() && !past fallback=move || view! { <div class="note">{move || tr_with(app.lang.get(), "answered", &if answered.get().is_empty() { "—".to_string() } else { answered.get() })}</div> }>
                         <div class="acts">
@@ -1480,7 +1570,9 @@ fn Chat() -> impl IntoView {
                     <label class="chip">{t("image")}<input type="file" accept="image/*" multiple style="display:none" on:change=pick/></label>
                     <For each=move || attached.get() key=|u| (u.name.clone(), u.data.len()) children=move |u: Upload| view! { <span class="chip">{u.name.clone()}</span> }/>
                     <span class="sp"></span>
-                    <select id="mode" on:change=move |ev| app.mode.set(event_target_value(&ev)) prop:value=move || app.mode.get()>
+                    // (Auto, where nothing is asked first, is marked: it is the one to notice.)
+                    <select id="mode" class:auto=move || app.mode.get() == "auto" title=t("mode_label") aria-label=t("mode_label")
+                        on:change=move |ev| app.mode.set(event_target_value(&ev)) prop:value=move || app.mode.get()>
                         <option value="ask" selected=move || app.mode.get() == "ask">{t("mode_ask")}</option>
                         <option value="auto" selected=move || app.mode.get() == "auto">{t("mode_auto")}</option>
                         <option value="read-only" selected=move || app.mode.get() == "read-only">{t("mode_ro")}</option>
@@ -1661,7 +1753,7 @@ fn Knowledge() -> impl IntoView {
                     <table id="kb-list"><tbody>
                         <For each=move || docs.get() key=|d| d.id children=move |d: Doc| {
                             let id = d.id;
-                            view! { <tr class="click" on:click=move |_| open(id)><td class="dim">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td class="dim">{d.text.chars().take(80).collect::<String>()}</td></tr> }
+                            view! { <tr class="click" tabindex="0" role="button" on:click=move |_| open(id) on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); open(id) }><td class="dim">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td class="dim">{d.text.chars().take(80).collect::<String>()}</td></tr> }
                         }/>
                     </tbody></table>
                 </div>

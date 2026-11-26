@@ -256,14 +256,65 @@ def main():
         page.click("#nav-chat")
         page.wait("!!document.querySelector('#draft')", "the chat view")
 
-        print("3. a message streams, an edit waits for approval, and Allow lets it through")
+        # The settings sheet closes with Escape, and with a click outside it.
+        page.click("#settings")
+        page.wait("document.querySelector('#settings-sheet').classList.contains('open')", "the settings sheet")
+        page.js("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+        page.wait("!document.querySelector('#settings-sheet').classList.contains('open')", "the sheet closed by Escape")
+        page.click("#settings")
+        page.wait("document.querySelector('#settings-sheet').classList.contains('open')", "the settings sheet again")
+        page.js("document.querySelector('#settings-sheet select').click()")
+        assert page.js("document.querySelector('#settings-sheet').classList.contains('open')"), "a click inside closed the sheet"
+        page.js("document.querySelector('.main').click()")
+        page.wait("!document.querySelector('#settings-sheet').classList.contains('open')", "the sheet closed by a click outside")
+        # Every view's button is named, also where its word is hidden.
+        assert page.js("[...document.querySelectorAll('#nav button')].every(b => b.getAttribute('aria-label'))"), "a view's button has no name"
+
+        print("3. a message streams, an edit waits for approval, and Allow lets it through (on a phone)")
+        # A phone: 390 by 844, touch. The sidebar becomes a drawer, closed.
+        page.send("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=3, mobile=True)
+        page.send("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
+        page.send("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}, {"name": "pointer", "value": "coarse"}, {"name": "hover", "value": "none"}])
+        page.wait("innerWidth === 390 && getComputedStyle(document.querySelector('.side')).display === 'none'", "the drawer closed on a phone")
+        # Nothing is wider than the screen (the page would be zoomed out to fit it).
+        wide = page.js("JSON.stringify([...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || e.className).slice(0, 5))")
+        assert wide == "[]", f"wider than the phone: {wide}"
+        # The drawer opens over the view, and a choice in it closes it.
+        page.click("#side-toggle")
+        page.wait("getComputedStyle(document.querySelector('.side')).position === 'absolute' && getComputedStyle(document.querySelector('.side')).display !== 'none'", "the drawer open")
+        page.click(".row.project.on")
+        page.wait("getComputedStyle(document.querySelector('.side')).display === 'none'", "the drawer closed after a choice")
+        assert page.js("matchMedia('(pointer: coarse)').matches"), "touch was not emulated"
         page.type("#draft", "please write hello.txt"); page.click("#send")
         page.wait("!!document.querySelector('.approval .approve-yes')", "the approval card")
         assert "Create hello.txt" in page.text(".approval"), page.text(".approval")
         assert not os.path.exists(f"{home}/proj/hello.txt"), "the file was written before approval"
         assert "write hello.txt" in page.text("#todos"), "the task list is not shown"
+        # Allow and No are on screen, as large as each other, and big enough to touch.
+        page.wait("(() => { const r = document.querySelector('.approve-no').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()", "Allow and No on screen")
+        time.sleep(1)  # (the card's entrance movement scales it up to full size)
+        boxes = json.loads(page.js("JSON.stringify(['.approve-yes', '.approve-no'].map(s => { const r = document.querySelector(s).getBoundingClientRect(); return [r.top, r.bottom, r.width, r.height]; }))"))
+        assert all(0 <= top and bottom <= 844 and height >= 44 for top, bottom, _, height in boxes), f"Allow and No: {boxes}"
+        assert abs(boxes[0][2] - boxes[1][2]) < 1 or min(b[2] for b in boxes) >= 84, f"No is smaller than Allow: {boxes}"
+        page.shot(f"{shots}/2-approval-phone.png")
+        # Seen from another view: a badge on Chat, the tab's title, and the status pill.
+        page.click("#nav-dashboard")
+        page.wait("!!document.querySelector('#waiting-badge')", "the badge on Chat")
+        assert page.text("#waiting-badge") == "1", page.text("#waiting-badge")
+        assert page.js("document.title").startswith("(1) "), page.js("document.title")
+        assert "waiting for you" in page.text("#status-pill"), page.text("#status-pill")
+        page.click("#nav-chat")
+        page.wait("!document.querySelector('#waiting-badge')", "no badge in the chat itself")
+        # Back to the desktop, with the sidebar open again.
+        page.send("Emulation.clearDeviceMetricsOverride")
+        page.send("Emulation.setTouchEmulationEnabled", enabled=False)
+        page.send("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
+        page.wait("innerWidth > 640", "the desktop width again")
+        page.click("#side-toggle")
+        page.wait("getComputedStyle(document.querySelector('.side')).display !== 'none'", "the sidebar again")
         page.shot(f"{shots}/2-approval.png")
         page.click(".approval .approve-yes")
+        page.wait("document.title === 'Causewaybay Code'", "the title once answered")
         page.wait("document.querySelector('#transcript').innerText.includes('Anything else?')", "the answer")
         assert open(f"{home}/proj/hello.txt").read() == "hello from the web\n"
         assert page.js("document.querySelectorAll('.msg.text pre').length") == 1, "the code block is not shown as code"
@@ -278,7 +329,9 @@ def main():
         assert not os.path.exists(f"{home}/proj/hello.txt"), "undo left the file"
         page.click("#new-chat")
         page.wait("document.querySelector('#transcript').innerText.includes('What shall we work on?')", "an empty conversation")
-        page.click(".row.session")
+        # A conversation is reached with the keyboard too: Tab stops on it, Enter opens it.
+        assert page.js("document.querySelector('.row.session').tabIndex") == 0
+        page.js("(() => { const r = document.querySelector('.row.session'); r.focus(); r.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); })()")
         page.wait("document.querySelector('#transcript').innerText.includes('Anything else?')", "the conversation loaded from the log")
         # A refresh comes back to this conversation.
         page.send("Page.navigate", url=url)
