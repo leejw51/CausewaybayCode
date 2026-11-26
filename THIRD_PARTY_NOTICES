@@ -43,11 +43,18 @@ rust/web/assets/fonts/ holds the typefaces the web client offers, brought from t
 of Causewaybay Hacker and FruitNation Messenger. CREDITS.txt and
 CREDITS-FruitNationMessenger.txt in that folder name each file, its authors, where it
 is from, whether it was subset or converted, and its licence; the licence texts stand beside
-the files in that folder. Most are under the SIL Open Font License 1.1. The others: the IBM
-VGA face (CC BY-SA 4.0), Comic Mono (MIT), Topaz Unicode (ISC), PR Number 3 (Kreative
-Software Relay Fonts Free Use License, shipped unmodified as it requires; Pet Me 64 too),
-GNU Unifont (SIL OFL 1.1, or GNU GPL 2+ with the font embedding exception), Hack (MIT, with
-the Bitstream Vera licence), and Ubuntu Mono (Ubuntu Font Licence 1.0).
+the files in that folder. Most are under the SIL Open Font License 1.1. The others: the
+faces from VileR's Ultimate Oldschool PC Font Pack (IBM VGA 8x16, IBM EGA 8x14, IBM CGA,
+IBM MDA, IBM 3270pc, Tandy 1000 and Amstrad PC; CC BY-SA 4.0), Comic Mono (MIT), Topaz
+Unicode (ISC), PR Number 3 (Kreative Software Relay Fonts Free Use License, shipped
+unmodified as it requires; Pet Me 64 too), GNU Unifont (SIL OFL 1.1, or GNU GPL 2+ with the
+font embedding exception), Hack (MIT, with the Bitstream Vera licence), and Ubuntu Mono
+(Ubuntu Font Licence 1.0).
+
+One file is not in those lists: rust/web/assets/fonts/noto-sans-cjk/NotoSansCJK-Regular.woff2
+is Noto Sans CJK SC, version 2.004, (c) 2014-2021 Adobe (https://www.adobe.com/), from
+Google's Noto CJK project (https://github.com/notofonts/noto-cjk), under the SIL Open Font
+License 1.1; the licence text is NotoSansCJK-OFL.txt beside it.
 
 rust/web/assets/art/, rust/web/assets/pwa/ (the icon) and design/images/ hold pictures made for this project with an image
 model (xAI's Grok); design/ is the layout they were drawn for.

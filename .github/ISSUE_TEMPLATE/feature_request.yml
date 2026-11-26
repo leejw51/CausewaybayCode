@@ -1,0 +1,39 @@
+name: Feature request
+description: Something the agent, the clients or the backend could do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Causewaybay Code runs entirely on the Mac with one local model, and its tools have no network by design (see Limits in the README). A request that keeps to that is easier to take up.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: How it could work, from the user's side.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - agent and its tools
+        - terminal client (cwbcodeclient)
+        - web client
+        - backend (cwbcode)
+        - model and speed
+        - build and setup
+  - type: textarea
+    id: safety
+    attributes:
+      label: Effect on safety
+      description: Does it touch the sandbox, the network, files outside the project, or sign-in? How should the limits in the README's Safety section hold?

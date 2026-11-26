@@ -115,6 +115,7 @@ test:
 	cargo build --release
 	cargo test --release -p cwbcode -p cwbcode-proto
 	cargo test --release -p cwbcodeclient --lib --bins
+	cd web && cargo test
 	@# Each of these starts a backend of its own; one at a time, so that timing (the 1.5 s
 	@# given to HTTP/3 before falling back) does not depend on how busy the machine is.
 	cargo test --release -p cwbcodeclient --test backend -- --test-threads=1

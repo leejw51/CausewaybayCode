@@ -1,0 +1,56 @@
+# Builds everything and runs `make test`: the unit tests, and real backends driven by a
+# scripted model (`--script`). The model (20 GB) is not needed and not downloaded here, so
+# `make test-model`, `make e2e` and `make test-playwright` are not run; neither is
+# `make test-web`, which drives Google Chrome.
+#
+# MLX is compiled from source (cmake, and Xcode's `metal` for its shaders). The integration
+# tests do not touch MLX (the scripted model never loads it), but a few unit tests in
+# rust/server/src/inkling run its Metal kernels, so this needs an Apple Silicon runner whose
+# virtual machine offers Metal. That has not been tried on GitHub's runners yet: it runs only
+# when started by hand (Actions, CI, Run workflow). Once it has passed, add
+#   push: { branches: [main] }
+#   pull_request:
+# under `on:` to run it on every push and pull request.
+name: CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust, with the WebAssembly target
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          rustc --version
+
+      - name: Tools (capnp, trunk, cmake)
+        run: brew install capnp trunk cmake
+
+      - name: Xcode's Metal compiler
+        run: xcrun -sdk macosx metal --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            rust/web -> target
+
+      - name: Build (web client, cwbcode, cwbcodeclient)
+        run: make build
+
+      - name: Test
+        run: make test

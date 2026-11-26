@@ -1419,7 +1419,7 @@ fn Chat() -> impl IntoView {
                 <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
                 <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
             </div>
-            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| spawn_local(async move { app.run_code().await })>{move || if app.running.get() { t("running")() } else { t("run")() }}</button>
+            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| spawn_local(async move { app.run_code().await })>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</button>
             <button id="console-toggle" class:lit=move || app.console.get() on:click=move |_| app.console.update(|shown| *shown = !*shown)>{t("console")}</button>
             <button id="clear" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{t("clear")}</button>
             <button id="copy-all" disabled=move || app.items.get().is_empty() on:click=move |_| {

@@ -158,7 +158,7 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("layout", ["Side by side / stacked", "가로 / 세로 배치", "Vedle sebe / pod sebou", "横並び / 縦並び", "橫排 / 直排", "横向 / 纵向", "En paralelo / apilado", "Yan yana / alt alta"]),
     ("language", ["Language", "언어", "Jazyk", "言語", "語言", "语言", "Idioma", "Dil"]),
     ("run", ["Run", "실행", "Spustit", "実行", "執行", "运行", "Ejecutar", "Çalıştır"]),
-    ("running", ["Running ...", "실행 중 ...", "Běží ...", "実行中 ...", "執行緊 ...", "运行中 ...", "Ejecutando ...", "Çalışıyor ..."]),
+    ("run_running", ["Running ...", "실행 중 ...", "Běží ...", "実行中 ...", "執行緊 ...", "运行中 ...", "Ejecutando ...", "Çalışıyor ..."]),
     ("console", ["Console", "콘솔", "Konzole", "コンソール", "主控台", "控制台", "Consola", "Konsol"]),
     ("clear", ["Clear", "지우기", "Vymazat", "クリア", "清除", "清除", "Limpiar", "Temizle"]),
     ("console_ph", ["command to run (empty: guessed from the folder)", "실행할 명령 (비우면 폴더에서 추측)", "příkaz ke spuštění (prázdné: odhadne se ze složky)", "実行するコマンド（空: フォルダから推測）", "要執行嘅指令（留空：由資料夾估）", "要运行的命令（留空：根据文件夹推测）", "comando a ejecutar (vacío: se deduce de la carpeta)", "çalıştırılacak komut (boş: klasörden tahmin edilir)"]),

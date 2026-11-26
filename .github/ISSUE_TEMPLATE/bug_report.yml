@@ -1,0 +1,66 @@
+name: Bug report
+description: Something does not work as the README says it does.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem? Please do not report it here: see SECURITY.md and use private vulnerability reporting.
+        Before pasting logs, remove tokens, recovery phrases and anything else private.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. make start
+        2. cwbcodeclient -p "..."
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - backend (cwbcode)
+        - terminal client (cwbcodeclient)
+        - web client
+        - model download (make download / model.py)
+        - build or make targets
+        - tests
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - local mode (no wallet)
+        - remote mode (wallet sign-in)
+        - not relevant
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD`"
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac, memory and macOS version
+      placeholder: M5 Max, 36 GB, macOS 26.1
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The end of ~/.cwbcode/server.log (make logs), the client's output, or the browser console.
+      render: text

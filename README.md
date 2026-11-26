@@ -1,9 +1,63 @@
+<p align="center">
+  <img src="rust/web/assets/pwa/icon-512.png" width="128" alt="The Causewaybay Code icon: a Causeway Bay tram under billboard screens, in pixel art">
+</p>
+
 # Causewaybay Code (CC)
 
 Causewaybay Code, CC for short, is an AI coding agent and general assistant that runs
 entirely on your Mac. The model is
 Inkling 2 Mini, run natively on Apple MLX in Rust with its draft network for speculative
-decoding; nothing is sent to any service.
+decoding; nothing is sent to any service. A backend holds the model and runs the agent; you
+work with it from a terminal client in any project folder, or from a web client the backend
+serves, which can also be installed as an app.
+
+What the agent does:
+
+- **Codes**: reads, searches, writes and edits files, runs commands, checks its own work,
+  keeps a task list for longer work.
+- **Is a general agent too**: answers questions, reads images, works on any files.
+- **Makes its own tools at runtime**: when a task needs a capability it lacks, it writes a
+  tool in Rust, which is compiled, saved and callable from then on, in every project.
+- **Remembers**: each project has a knowledge base of notes, files and images, searched by
+  BM25 and by meaning together.
+- **Keeps everything**: every conversation, every event in it, and every version of every
+  file it read or changed are in SQLite, so a turn's changes can be undone.
+- **Is confined**: no tool reaches the network, commands run in the macOS sandbox, files
+  change only inside the project, and by default every edit and command is shown to you
+  first. What that does and does not cover is under [Safety](#how-it-works).
+
+## Quick start
+
+You need:
+
+- An Apple Silicon Mac with enough memory: the model takes 20 GB and a session peaks around
+  27 GB (developed and tested on a 36 GB M5 Max)
+- Xcode (MLX is compiled from source, and its Metal shaders with Xcode's `metal` tool)
+- Rust with the `wasm32-unknown-unknown` target, `cmake`, `capnp` and `trunk`
+  (`brew install cmake capnp trunk`; `rustup target add wasm32-unknown-unknown`)
+- Python 3 for `make start` and the model download; [Ollama](https://ollama.com) is optional
+  (the model can come from Ollama or from Hugging Face, no account or key needed for either)
+
+```sh
+git clone https://github.com/leejw51/CausewaybayCode.git
+cd CausewaybayCode
+make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
+make build      # the first build compiles MLX from source and takes a few minutes
+make start      # starts the backend and prints its web address and certificate
+```
+
+Open the `web` address `make start` printed (`https://127.0.0.1:7443` in local mode), accept
+the self-signed certificate (its fingerprint is on the `cert` line), and pick a folder under
+your home folder to work in. Or, in a project folder, run the terminal client:
+
+```sh
+cd ~/code/myapp
+~/path/to/CausewaybayCode/rust/bin/cwbcodeclient
+```
+
+`make install` puts both programs in `~/bin` instead. `make stop` stops the backend.
+
+## The programs
 
 The programs keep the names `cwbcode` and `cwbcodeclient`: a program called `cc` would take
 the place of the C compiler on your PATH.
@@ -31,47 +85,24 @@ Fixed the typo in greet.py: `"helo "` → `"hello "`.
 [3.8k tokens in context · wrote 206 · 108 tok/s · 2 tool calls · 4.3s]
 ```
 
-What the agent does:
-
-- **Codes**: reads, searches, writes and edits files, runs commands, checks its own work,
-  keeps a task list for longer work.
-- **Is a general agent too**: answers questions, reads images, works on any files.
-- **Makes its own tools at runtime**: when a task needs a capability it lacks, it writes a
-  tool in Rust, which is compiled, saved and callable from then on, in every project.
-- **Remembers**: each project has a knowledge base of notes, files and images, searched by
-  BM25 and by meaning together.
-- **Keeps everything**: every conversation, every event in it, and every version of every
-  file it read or changed are in SQLite, so a turn's changes can be undone.
-- **Is confined**: no tool reaches the network, commands run in the macOS sandbox, files
-  change only inside the project, and by default every edit and command is shown to you
-  first. What that does and does not cover is under [Safety](#how-it-works).
-
-## Requirements
-
-- Apple Silicon Mac with enough memory: the model takes 20 GB and a session peaks around
-  27 GB (developed and tested on a 36 GB M5 Max)
-- Rust with the `wasm32-unknown-unknown` target, `cmake`, `capnp` and `trunk`
-  (`brew install cmake capnp trunk`; `rustup target add wasm32-unknown-unknown`)
-- Python 3 for `make start` and the model download; [Ollama](https://ollama.com) is optional
-  (the model can come from Ollama or from Hugging Face, no account or key needed for either)
-
 ## Build and run
 
 ```sh
 make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
 make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
-make start      # start the backend under supervisor (0.0.0.0 with CWBCODE_WALLET in .env, else 127.0.0.1)
+make start      # start the backend under supervisor (0.0.0.0 when a wallet is set, else 127.0.0.1)
 make stop       # stop it
 ```
 
 The implementation is in `rust/`; other languages will get folders of their own beside it.
 The `make` targets work from the repository root (which passes them on) or from `rust/`.
 
-`make start` prints the web address and the token; `make url` prints them again, `make
-status` and `make logs` show how it is doing. The first build compiles MLX from source and
-takes a few minutes. The weights are read straight from Ollama's store; Ollama does not need
-to be running (and if it has the model loaded, stop it first: two copies do not fit).
+`make start` prints the mode, the web address, the token where one is needed and the
+certificate's fingerprint; `make url` prints them again, `make status` and `make logs` show
+how it is doing. The first build compiles MLX from source and takes a few minutes. The
+weights are read where they are, in Ollama's store or in `~/.cwbcode/models`; Ollama does not
+need to be running (and if it has the model loaded, stop it first: two copies do not fit).
 
 **The model** (`rust/scripts/model.py`). `make start` checks for it first and, when it is
 missing, downloads it: with Ollama when Ollama is installed, from Hugging Face otherwise.
@@ -176,11 +207,12 @@ With `-p`, nobody is there to approve anything: edits and commands are refused u
 `--auto` is given. In the conversation, `/help` lists the commands: `/image`, `/file`,
 `/remember`, `/add`, `/kb`, `/search`, `/load`, `/export`, `/forget`, `/save`, `/sessions`,
 `/resume`, `/undo`, `/changes`, `/todos`, `/compact`, `/tools`, `/mode`, `/think`, `/status`,
-`!command`. Ctrl-C stops the model or a running command; Ctrl-D leaves.
+`/run`, `/clear`, `!command`. Ctrl-C stops the model or a running command; Ctrl-D leaves.
 
 ### The web client
 
-Open the address `make start` printed (`https://localhost:7443`) and accept the self-signed
+Open the address `make start` printed (`https://127.0.0.1:7443` in local mode,
+`https://localhost:7443` and the machine's other addresses in remote mode) and accept the self-signed
 certificate. In local mode the app opens at once; with a wallet, sign in with its recovery
 phrase.
 
@@ -408,6 +440,11 @@ make test-model   # semantic search with the model: paraphrases, Korean against 
 make e2e          # real tasks with the real model through the backend and the client
 ```
 
+`make test` needs no model: the backend is started with `--script`, a JSON file of the
+model's turns. `make test-web` needs Google Chrome in `/Applications` and the Python package
+`websockets`; `make test-playwright` needs Node and Google Chrome, and like `make test-model`
+and `make e2e` the model, with the backend stopped (two copies do not fit).
+
 ## Limits
 
 - One model: Inkling 2 Mini, from Ollama's store or downloaded from Hugging Face. macOS on Apple Silicon only.
@@ -428,5 +465,10 @@ make e2e          # real tasks with the real model through the backend and the c
 
 ## License
 
-MIT. `rust/server/src/inkling` is derived from Ollama's MLX runner, and the web client
-ships Motion; see `THIRD_PARTY_NOTICES`.
+MIT, see [`LICENSE`](LICENSE). `rust/server/src/inkling` is derived from Ollama's MLX
+runner, and the web client ships Motion and typefaces under their own licences (mostly the
+SIL Open Font License); see [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). The pictures were
+made for this project with an image model.
+
+Contributions are welcome: see [`CONTRIBUTING.md`](CONTRIBUTING.md). To report a security
+problem, see [`SECURITY.md`](SECURITY.md).
