@@ -1656,7 +1656,7 @@ async fn a_missing_model_is_downloaded_by_default_a_refused_token_is_dropped_and
     let refused = got.iter().map(|(_, p)| p).find(|p| p.token_refused).expect("the refusal was not told");
     assert!(!refused.token && refused.source_kind == "huggingface");
     let s = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
-    assert!(s.download_token_refused && !s.download_token && s.download_source.contains("your token was refused"), "{s:?}");
+    assert!(s.download_token_refused && !s.download_token_used && s.download_token == "refused" && s.download_source.contains("your token was refused"), "{s:?}");
     let log = std::fs::read_to_string(server.home.join("server.log")).unwrap();
     assert!(log.contains("your token was refused") && log.contains("downloading without it"), "{log}");
     // The refused token was tried on the hub, and once refused never sent again.

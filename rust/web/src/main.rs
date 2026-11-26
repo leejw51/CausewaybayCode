@@ -566,7 +566,8 @@ impl App {
         status.download_files_done = p.files_done;
         status.download_files_total = p.files_total;
         status.download_source_kind = p.source_kind;
-        status.download_token = p.token;
+        status.download_token_used = p.token;
+        status.download_token = if p.token_refused { "refused".into() } else if p.token { p.token_from.clone() } else { String::new() };
         status.download_token_from = p.token_from;
         status.download_token_refused = p.token_refused;
         status.download_verified = p.verified;
@@ -1144,7 +1145,7 @@ fn AppBar() -> impl IntoView {
                             let lang = app.lang.get();
                             let forging = matches!(s.model_state.as_str(), "downloading" | "verifying" | "loading");
                             let dot = if forging && !waiting { "dot forging" } else { dot };
-                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, "forge_pill", &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
+                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, if App::narrow() { "forge_pill_short" } else { "forge_pill" }, &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
                             view! {
                                 <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>
                                 <div id="login-state">{match s.auth.as_str() {
@@ -1405,7 +1406,7 @@ fn marked(text: String) -> impl IntoView {
 
 /// Where the download comes from, said with the token's place (never the token).
 fn source_line(lang: Lang, s: &Status) -> String {
-    if s.download_token {
+    if s.download_token_used {
         tr_with(lang, "dl_src_token", &s.download_token_from)
     } else if s.download_token_refused {
         tr(lang, "dl_src_refused").to_string()
@@ -1456,7 +1457,7 @@ fn ModelDownload(card: bool) -> impl IntoView {
     };
     let speed = move || if s().download_speed > 0.0 { format!("{:.1} MB/s", s().download_speed / 1e6) } else { "— MB/s".to_string() };
     let tip_hidden = RwSignal::new(stored(TIP_KEY).is_some());
-    let show_tip = move || !tip_hidden.get() && matches!(stage.get(), "heat" | "hammer") && !s().download_token && !s().download_source_kind.is_empty();
+    let show_tip = move || !tip_hidden.get() && matches!(stage.get(), "heat" | "hammer") && !s().download_token_used && !s().download_source_kind.is_empty();
     let numbered = move || matches!(stage.get(), "heat" | "hammer" | "temper" | "wake" | "ready");
     let index = move || STAGES.iter().position(|(k, ..)| *k == stage.get()).unwrap_or(0);
     let title = move || match stage.get() {

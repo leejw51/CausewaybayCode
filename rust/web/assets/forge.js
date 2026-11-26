@@ -198,6 +198,8 @@ export function mount(el) {
     camera.aspect = w / h;
     // Narrow screens step back, so that the robot and the anvil stay in the picture.
     camera.position.set(0, 2.3, w / h < 1 ? 9.5 : 7.2);
+    // On a wide window the numbers' panel covers the lower part: the robot is framed higher.
+    target.y = w / h < 1 ? 1.45 : 0.75;
     camera.updateProjectionMatrix();
     wake();
   };

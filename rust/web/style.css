@@ -191,6 +191,7 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .seg button.on { color: #281810; }
 .pill { display: flex; align-items: center; gap: .9rem; min-height: 2.1rem; padding: 0 .8rem; border: 1px solid var(--line); border-radius: 99px; background: var(--well); font-size: .92em; color: var(--dim); white-space: nowrap; min-width: 0; overflow: hidden; }
 .pill #login-state { color: var(--accent); }
+.pill { min-width: 0; } .pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--dim); margin-right: .45rem; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
 .dot.busy { background: var(--accent); animation: blink 1s steps(1) infinite; }
@@ -395,10 +396,6 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 .download.card .dl-stats .dl-percent { font-size: 1.15em; min-width: 3.4rem; }
 .dl-stats span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .dl-from { overflow-wrap: anywhere; }
-/* The Hugging Face token: green when used, amber when none (with the tip), red when refused. */
-.dl-token { margin-top: .35rem; padding: .3rem .6rem; border-radius: var(--r); border: 1px solid var(--warn); color: var(--warn); font-size: .92em; overflow-wrap: anywhere; }
-.dl-token.used { border-color: var(--ok); color: var(--ok); }
-.dl-token.refused { border-color: var(--bad); color: var(--bad); }
 .dl-acts { display: flex; flex-wrap: wrap; gap: .5rem; }
 .dl-acts button { white-space: normal; min-height: 2.6rem; }
 @container app (max-width: 40em) { .download .dl-head img { width: 4.2rem; height: 4.2rem; } .download { padding: .9rem; } }

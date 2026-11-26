@@ -172,7 +172,7 @@ pub fn download_lines(s: &cwbcode_proto::Status) -> String {
         files_done: s.download_files_done,
         files_total: s.download_files_total,
         source_kind: s.download_source_kind.clone(),
-        token: s.download_token,
+        token: s.download_token_used,
         token_from: s.download_token_from.clone(),
         token_refused: s.download_token_refused,
         ..Default::default()
