@@ -79,5 +79,6 @@ the repository, and an entry in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES) (fo
 `rust/web/assets/fonts/CREDITS.txt`). Rust crates are listed in `Cargo.lock` and need no entry.
 
 By contributing you agree that your contribution is licensed under the
-[MIT License](LICENSE) of this project, and that you will follow the
+[Apache License 2.0](LICENSE) of this project (as section 5 of that licence says), and that
+you will follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).

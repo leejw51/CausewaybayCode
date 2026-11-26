@@ -3,7 +3,7 @@ name = "cwbcode-web"
 version = "0.1.1"
 edition = "2024"
 description = "Causewaybay Code in the browser: a dashboard and a client of the cwbcode backend (Leptos, WebAssembly)"
-license = "MIT"
+license = "Apache-2.0"
 
 # Built on its own with trunk (make build), for wasm32: not part of the Cargo workspace.
 [workspace]

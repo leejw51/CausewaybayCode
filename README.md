@@ -510,9 +510,10 @@ and `make e2e` the model, with the backend stopped (two copies do not fit).
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). `rust/server/src/inkling` is derived from Ollama's MLX
-runner, and the web client ships Motion and typefaces under their own licences (mostly the
-SIL Open Font License); see [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). The pictures were
+Apache License 2.0, see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). `rust/server/src/inkling`
+is derived from Ollama's MLX runner (MIT License, kept with its notice), and the web client
+ships Motion and typefaces under their own licences (mostly the SIL Open Font License); see
+[`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). The pictures were
 made for this project with an image model.
 
 Contributions are welcome: see [`CONTRIBUTING.md`](CONTRIBUTING.md). To report a security
