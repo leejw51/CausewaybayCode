@@ -88,6 +88,8 @@ pub struct Info {
     /// What it is doing: "12 of 1250 files", "checking against Ollama's registry", or, when
     /// it is done, what the check found.
     pub note: String,
+    /// The Hugging Face token: "" none found, "refused", else where it came from.
+    pub token: String,
 }
 
 impl Download {
@@ -118,7 +120,7 @@ pub fn start(shared: &Arc<Shared>) -> Result<()> {
         bail!("the model is already being downloaded");
     }
     *shared.model_state.lock().unwrap() = "downloading".into();
-    shared.download.update(|info| *info = Info { note: "starting".into(), source: source(&token_here()), ..Info::default() });
+    shared.download.update(|info| *info = Info { note: "starting".into(), source: source(&token_here()), token: token_here().map(|(_, from)| from).unwrap_or_default(), ..Info::default() });
     let starter = shared;
     let shared = shared.clone();
     let spawned = std::thread::Builder::new().name("download".into()).spawn(move || {
@@ -702,7 +704,10 @@ async fn run(shared: &Shared) -> Result<String> {
         Ok(groups) => groups,
         Err(e) if found.is_some() && e.downcast_ref::<HttpStatus>().is_some_and(|s| s.0 == 401 || s.0 == 403) => {
             eprintln!("cwbcode: download: the token was refused ({e}); trying without it");
-            progress.update(|info| info.source = "Hugging Face, without a token (the token was refused)".into());
+            progress.update(|info| {
+                info.source = "Hugging Face, without a token (the token was refused)".into();
+                info.token = "refused".into();
+            });
             hub = Hub::new(&base, repo, revision, None)?;
             plan(&hub).await?
         }

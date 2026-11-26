@@ -469,6 +469,8 @@ async fn run(cli: Cli) -> Result<()> {
     for path in &cli.image {
         state.images.push(read_upload(path)?);
     }
+    // A model on its way (downloading, loading): its progress until it is ready.
+    repl::wait_for_model(&session).await?;
     if cli.print || piped {
         if prompt.trim().is_empty() {
             bail!("nothing to answer: give a prompt (cwbcodeclient -p \"...\") or pipe one in");

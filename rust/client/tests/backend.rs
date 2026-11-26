@@ -1342,6 +1342,9 @@ async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up
         let s = status().await;
         assert_eq!(s.model_state, "downloading", "{s:?}");
         assert_eq!(s.download_source, "Hugging Face, with the token from $HF_TOKEN");
+        // Clients are told a token is used and where it was found, never the token itself.
+        assert_eq!(s.download_token, "$HF_TOKEN");
+        assert!(!format!("{s:?}").contains("hf_test_token"), "the token itself reached a client");
         assert!(s.download_done <= s.download_total);
         if s.download_total > 0 && s.download_done > 0 {
             first.get_or_insert(s.download_done);

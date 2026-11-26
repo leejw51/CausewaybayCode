@@ -197,6 +197,8 @@ pub struct Status {
     pub download_source: String,
     pub download_error: String,
     pub download_note: String,
+    /// The Hugging Face token: "" none found, "refused", else where it came from.
+    pub download_token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -467,6 +469,7 @@ impl Response {
             t.set_download_source(&s.download_source[..]);
             t.set_download_error(&s.download_error[..]);
             t.set_download_note(&s.download_note[..]);
+            t.set_download_token(&s.download_token[..]);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -575,6 +578,7 @@ impl Response {
                 download_source: text(s.get_download_source())?,
                 download_error: text(s.get_download_error())?,
                 download_note: text(s.get_download_note())?,
+                download_token: text(s.get_download_token())?,
             })
         } else {
             None
@@ -709,7 +713,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25, download_done: 7 << 30, download_total: 19 << 30, download_speed: 24.5e6, download_source: "Hugging Face, without a token".into(), download_error: "e".into(), download_note: "412 of 1250 files".into() }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25, download_done: 7 << 30, download_total: 19 << 30, download_speed: 24.5e6, download_source: "Hugging Face, without a token".into(), download_error: "e".into(), download_note: "412 of 1250 files".into(), download_token: "$HF_TOKEN".into() }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),

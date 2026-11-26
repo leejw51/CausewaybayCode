@@ -394,6 +394,10 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 .download.card .dl-stats .dl-percent { font-size: 1.15em; min-width: 3.4rem; }
 .dl-stats span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .dl-from { overflow-wrap: anywhere; }
+/* The Hugging Face token: green when used, amber when none (with the tip), red when refused. */
+.dl-token { margin-top: .35rem; padding: .3rem .6rem; border-radius: var(--r); border: 1px solid var(--warn); color: var(--warn); font-size: .92em; overflow-wrap: anywhere; }
+.dl-token.used { border-color: var(--ok); color: var(--ok); }
+.dl-token.refused { border-color: var(--bad); color: var(--bad); }
 .dl-acts { display: flex; flex-wrap: wrap; gap: .5rem; }
 .dl-acts button { white-space: normal; min-height: 2.6rem; }
 @container app (max-width: 40em) { .download .dl-head img { width: 4.2rem; height: 4.2rem; } .download { padding: .9rem; } }

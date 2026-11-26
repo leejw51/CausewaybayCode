@@ -105,6 +105,9 @@ struct Status {
   downloadSource @30 :Text;    # where it comes from: "Hugging Face, without a token", ...
   downloadError @31 :Text;     # why the last download stopped ("" if it did not)
   downloadNote @32 :Text;      # what it is doing ("412 of 1250 files"), or what the check found
+  downloadToken @33 :Text;     # the Hugging Face token: "" none found (none used), "refused"
+                               # (tried, refused, going on without it), else where it came from
+                               # ("$HF_TOKEN", a file's path); never the token itself
 }
 
 struct Project {

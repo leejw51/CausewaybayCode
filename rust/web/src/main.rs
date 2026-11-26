@@ -1338,6 +1338,20 @@ fn ModelDownload(card: bool) -> impl IntoView {
                             <span id="dl-left">{left}</span>
                         </div>
                         <div class="dl-from sub" id="dl-source">{move || tr_with(app.lang.get(), "dl_from", &s().download_source)}{move || if s().download_note.is_empty() { String::new() } else { format!(" · {}", s().download_note) }}</div>
+                        // Whether a Hugging Face token is used, and where it was found (never the
+                        // token): with one the download is faster; without one, how to add one.
+                        <div class="dl-token" id="dl-token"
+                            class:used=move || { let t = s().download_token; !t.is_empty() && t != "refused" }
+                            class:refused=move || s().download_token == "refused">
+                            {move || {
+                                let (lang, token) = (app.lang.get(), s().download_token);
+                                match token.as_str() {
+                                    "" => tr(lang, "dl_token_none").to_string(),
+                                    "refused" => tr(lang, "dl_token_refused").to_string(),
+                                    from => tr_with(lang, "dl_token_used", from),
+                                }
+                            }}
+                        </div>
                     }.into_any()
                 } else if st.model_state == "loading" {
                     view! {

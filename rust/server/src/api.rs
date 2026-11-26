@@ -366,6 +366,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 download_source: download.source,
                 download_error: download.error,
                 download_note: download.note,
+                download_token: download.token,
             });
         }
         Method::Projects => {

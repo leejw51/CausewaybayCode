@@ -118,6 +118,90 @@ pub fn remote_lines(s: &cwbcode_proto::Status) -> String {
     }
 }
 
+/// Whether the backend downloads the model with a Hugging Face token, and where it found it
+/// (never the token): with one it is faster; without one, how to add one.
+pub fn token_line(token: &str) -> String {
+    match token {
+        "" => "Hugging Face token: not used (none found; none needed). A free token makes it faster: hf auth login, then restart the backend.".to_string(),
+        "refused" => "Hugging Face token: refused by Hugging Face, so downloading without it (check it with hf auth whoami).".to_string(),
+        from => format!("Hugging Face token: used (from {from}): faster downloads"),
+    }
+}
+
+/// The model's download, in a line: percent, bytes, speed, time left.
+fn download_numbers(s: &cwbcode_proto::Status) -> String {
+    let gb = |bytes: u64| bytes as f64 / 1e9;
+    let percent = if s.download_total == 0 { 0.0 } else { s.download_done as f64 / s.download_total as f64 * 100.0 };
+    let left = if s.download_speed > 1.0 && s.download_total > s.download_done {
+        let secs = ((s.download_total - s.download_done) as f64 / s.download_speed) as u64;
+        format!("{}:{:02} left", secs / 60, secs % 60)
+    } else {
+        "working out the time left".to_string()
+    };
+    format!("{percent:5.1}%  {:.1} of {:.1} GB  {:.1} MB/s  {left}", gb(s.download_done), gb(s.download_total), s.download_speed / 1e6)
+}
+
+/// While the backend downloads or loads the model, show its progress (a bar redrawn in
+/// place on a terminal, a plain line now and then otherwise) until it is ready. Ctrl-C stops
+/// waiting (chat needs the model, the rest does not).
+pub async fn wait_for_model(session: &Session) -> Result<()> {
+    let status = || async { session.client.call(&Request::new(Method::Status)).await.ok().and_then(|r| r.status) };
+    let Some(first) = status().await else { return Ok(()) };
+    if first.model_state != "downloading" && first.model_state != "loading" {
+        return Ok(());
+    }
+    let tty = std::io::stderr().is_terminal();
+    eprintln!("The model is not ready yet: the backend is {} it.", if first.model_state == "loading" { "loading" } else { "downloading" });
+    if first.model_state == "downloading" {
+        eprintln!("{}", token_line(&first.download_token));
+    }
+    eprintln!("(Ctrl-C stops waiting; chat works once it is ready.)");
+    const SPIN: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let (mut frame, mut last_plain) = (0usize, std::time::Instant::now());
+    loop {
+        let Some(s) = status().await else { break };
+        let line = match s.model_state.as_str() {
+            "downloading" => {
+                let fraction = if s.download_total == 0 { 0.0 } else { (s.download_done as f64 / s.download_total as f64).min(1.0) };
+                let width = 24;
+                let full = (fraction * width as f64) as usize;
+                format!("{} downloading the model ▕{}{}▏ {}", SPIN[frame % SPIN.len()], "█".repeat(full), " ".repeat(width - full), download_numbers(&s))
+            }
+            "loading" => format!("{} loading the model into memory …", SPIN[frame % SPIN.len()]),
+            _ => {
+                if tty {
+                    eprint!("\r\x1b[2K");
+                }
+                if s.model_state == "ready" {
+                    eprintln!("✔ the model is ready");
+                } else {
+                    eprintln!("the model is {}", s.model_state);
+                }
+                break;
+            }
+        };
+        frame += 1;
+        if tty {
+            eprint!("\r\x1b[2K{line}");
+        } else if last_plain.elapsed() >= std::time::Duration::from_secs(10) {
+            eprintln!("{line}");
+            last_plain = std::time::Instant::now();
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+            _ = interrupt.recv() => {
+                if tty {
+                    eprint!("\r\x1b[2K");
+                }
+                eprintln!("(stopped waiting; the model is still on its way)");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn status(session: &Session) -> Result<String> {
     let s = session.client.call(&Request::new(Method::Status)).await?.status.context("the server sent no status")?;
     let gb = |bytes: u64| bytes as f64 / 1e9;
@@ -139,7 +223,14 @@ pub async fn status(session: &Session) -> Result<String> {
         s.model_state,
         if s.busy { format!(" · busy with {}{}", s.busy_project, if s.queued > 0 { format!(", {} waiting", s.queued) } else { String::new() }) } else { String::new() },
         // What it is, and where its files are and how large, once it is loaded.
-        if s.model_path.is_empty() { String::new() } else { format!("\n          {}\n          {} · {:.1} GB", s.model_info, s.model_path, gb(s.model_bytes)) },
+        // What it is and where its files are once loaded; while downloading, how far, and the token.
+        if s.model_state == "downloading" {
+            format!("\n          {}\n          {}", download_numbers(&s), token_line(&s.download_token))
+        } else if s.model_path.is_empty() {
+            String::new()
+        } else {
+            format!("\n          {}\n          {} · {:.1} GB", s.model_info, s.model_path, gb(s.model_bytes))
+        },
         match (s.gen_tps, s.prompt_tps) {
             (w, _) if w == 0.0 => "after the first answer".to_string(),
             (w, r) if r == 0.0 => format!("{w:.1} tok/s writing, in the last turn"),
