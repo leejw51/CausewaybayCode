@@ -157,7 +157,7 @@ export function mount(el) {
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(C.night, 7, 16);
   const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
-  const target = new THREE.Vector3(-0.2, 1.35, 0);
+  const target = new THREE.Vector3(-0.3, 1.45, 0);
 
   scene.add(new THREE.HemisphereLight(0x2a3a80, 0x0a0610, 0.55));
   const rim = new THREE.DirectionalLight(C.eye, 1.4); rim.position.set(3, 4, -3); scene.add(rim);
@@ -197,7 +197,7 @@ export function mount(el) {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     // Narrow screens step back, so that the robot and the anvil stay in the picture.
-    camera.position.set(0, 2.1, w / h < 1 ? 8.2 : 5.6);
+    camera.position.set(0, 2.3, w / h < 1 ? 9.5 : 7.2);
     camera.updateProjectionMatrix();
     wake();
   };
@@ -316,7 +316,7 @@ export function mount(el) {
 
     // The camera: a slow 20 s orbit, ±12°, that stops for Ready.
     const orbit = moving && stage !== 'ready' ? Math.sin(clock / 20 * Math.PI * 2) * (12 * Math.PI / 180) : 0;
-    const dist = Math.hypot(camera.position.x, camera.position.z) || 5.6;
+    const dist = Math.hypot(camera.position.x, camera.position.z) || 7.2;
     camera.position.x = Math.sin(orbit) * dist; camera.position.z = Math.cos(orbit) * dist;
     camera.lookAt(target);
   }

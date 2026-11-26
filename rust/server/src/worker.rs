@@ -284,7 +284,7 @@ impl Worker {
         self.set_state("loading");
         if let (Some(script), true) = (&config.script, config.script_after_download) {
             // (Tests: a moment in "loading", as a real model takes, then the script.)
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(3000));
             match std::fs::read_to_string(script).map_err(anyhow::Error::from).and_then(|json| Brain::script(&json)) {
                 Ok(brain) => {
                     self.brain = Some(brain);

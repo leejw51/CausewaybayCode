@@ -3,7 +3,8 @@
 scratch home folder, drives headless Chrome over its DevTools protocol through the page
 (sign in with a wallet's recovery phrase, open a project, chat, approve an edit, dashboard,
 knowledge base, tools, sign out; then a backend in local mode, opened with the one-time link, and
-turning its remote mode on and off from the dashboard), and
+turning its remote mode on and off from the dashboard; a backend without the model; and one
+that downloads it from a fake Hugging Face, watched as the Forge to Ready on two pages), and
 checks what the page shows and what happened on disk. Screenshots go to the folder given
 as the first argument (default: a temporary one).
 
@@ -25,6 +26,64 @@ SCRIPT = [
 PHRASE = "test test test test test test test test test test test junk"
 WALLET = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 OTHER_PHRASE = "legal winner thank year wave sausage worth useful legal winner thank yellow"
+
+REPO_PATH = "/thinkingmachines/Inkling-2-Mini/resolve/c9d028302cd0f035fdf8e7e91f089a4ce94d2195/"
+
+def safetensors(tensors):
+    """A safetensors file: a JSON header, then the tensors' bytes."""
+    head, data = {"__metadata__": {"format": "pt"}}, b""
+    for name, dtype, shape, raw in tensors:
+        head[name] = {"dtype": dtype, "shape": shape, "data_offsets": [len(data), len(data) + len(raw)]}
+        data += raw
+    text = json.dumps(head).encode()
+    return len(text).to_bytes(8, "little") + text + data
+
+class FakeHub:
+    """A Hugging Face of the test's own (as rust/client/tests/backend.rs has one): a small
+    checkpoint whose large tensor is sent at `rate` bytes a second, with ranges; Ollama's
+    registry answers 404 after `registry_delay` seconds (the check is then skipped), which
+    holds the backend in "verifying" long enough to see."""
+    def __init__(self, rate, registry_delay):
+        import http.server, threading
+        big = bytes((i * 2654435761 >> 13) & 0xff for i in range(6 << 20))
+        files = {
+            "model.safetensors.index.json": json.dumps({"metadata": {"total_size": 1}, "weight_map": {"model.llm.big.weight": "model-00001-of-00001.safetensors"}}).encode(),
+            "model-00001-of-00001.safetensors": safetensors([("model.llm.big.weight", "BF16", [1536, 2048], big), ("model.llm.norm.weight", "BF16", [8], bytes(16))]),
+            "mtp.safetensors": safetensors([("fc.weight", "BF16", [4], bytes(range(8)))]),
+            "config.json": json.dumps({"architectures": ["FakeForTest"], "mtp_config": {"hidden_size": 4}}).encode(),
+        }
+        for name in ["generation_config.json", "hf_quant_config.json", "processor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]:
+            files[name] = json.dumps({"file": name}).encode()
+        outer = self
+        self.seen_resolve = 0
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                if self.path.startswith("/v2/"):
+                    time.sleep(registry_delay)
+                    self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+                name = self.path[len(REPO_PATH):] if self.path.startswith(REPO_PATH) else None
+                if name not in files:
+                    self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+                outer.seen_resolve += 1
+                data, status = files[name], 200
+                wanted = self.headers.get("Range", "")
+                if wanted.startswith("bytes="):
+                    a, b = wanted[6:].split("-")
+                    a, b = int(a), min(int(b), len(data) - 1)
+                    data, status = data[a:b + 1], 206
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                try:
+                    for i in range(0, len(data), 64 << 10):
+                        self.wfile.write(data[i:i + (64 << 10)])
+                        if len(data) > 1 << 20: time.sleep((64 << 10) / rate)
+                except OSError: pass
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close(); return port
@@ -66,8 +125,8 @@ class Page:
         self.js(f"[...document.querySelectorAll({json.dumps(selector)})].find(e => e.textContent.trim() === {json.dumps(text)}).click()")
     def text(self, selector):
         return self.js(f"(document.querySelector({json.dumps(selector)}) || {{}}).innerText || ''")
-    def shot(self, path):
-        time.sleep(0.8)  # let the entrance movement finish
+    def shot(self, path, settle=0.8):
+        time.sleep(settle)  # let the entrance movement finish
         with open(path, "wb") as f: f.write(base64.b64decode(self.send("Page.captureScreenshot", format="png")["data"]))
 
 def main():
@@ -584,8 +643,9 @@ def main():
         closed = free_port()  # nothing listens there: the "Hugging Face" this download asks
         bare = dict(env, CWBCODE_HOME=f"{home}/.cwbcode-bare", CWBCODE_MODELS=f"{home}/models", OLLAMA_MODELS=f"{home}/no-ollama",
                     HF_HOME=f"{home}/no-hf", CWBCODE_HF_ENDPOINT=f"http://127.0.0.1:{closed}", CWBCODE_OLLAMA_REGISTRY=f"http://127.0.0.1:{closed}")
-        for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "CWBCODE_DOWNLOAD_MODEL"): bare.pop(k, None)
-        local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port3), "--no-h3", "--env-file", "/dev/null"], env=bare, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "CWBCODE_DOWNLOAD_MODEL"): bare.pop(k, None)
+        # (--no-download-model: the model is "missing", and the page offers the download.)
+        local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port3), "--no-h3", "--env-file", "/dev/null", "--no-download-model"], env=bare, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             if os.path.exists(f"{home}/.cwbcode-bare/token"): break
             time.sleep(0.1)
@@ -605,6 +665,82 @@ def main():
         page.wait("!!document.querySelector('#model-download-card #dl-retry')", "the retry on the model's card")
         assert page.text("#model-state") == "missing", page.text("#model-state")
         assert not [e for e in page.errors if "ERR_" not in e], f"the page reported errors: {page.errors}"
+        print("12. a backend downloading the model from a fake Hugging Face: the Forge, on two pages at once, to Ready")
+        local.terminate(); local.wait(5)
+        hub = FakeHub(rate=1_200_000, registry_delay=4.0)
+        port4 = free_port()
+        forge_env = dict(bare, CWBCODE_HOME=f"{home}/.cwbcode-forge", CWBCODE_MODELS=f"{home}/forge-models",
+                         CWBCODE_HF_ENDPOINT=f"http://127.0.0.1:{hub.port}", CWBCODE_OLLAMA_REGISTRY=f"http://127.0.0.1:{hub.port}")
+        # The script stands in for the model once it is downloaded: the download runs to Ready.
+        local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port4), "--no-h3", "--env-file", "/dev/null",
+                                  "--script", f"{home}/script.json", "--script-after-download"], env=forge_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if os.path.exists(f"{home}/.cwbcode-forge/token"): break
+            time.sleep(0.1)
+        forge_token = open(f"{home}/.cwbcode-forge/token").read().strip()
+        forge_url = f"https://127.0.0.1:{port4}/#token={forge_token}"
+        page.send("Page.navigate", url=forge_url)
+        page.wait("!!document.querySelector('.side')", "the app of the backend that downloads")
+        page.js("(() => { const s = document.querySelector('#lang'); s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        page.click("#nav-chat")
+        # A second page, phone-sized, on the same backend: both are told the same, at once.
+        target = json.load(urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{debug}/json/new?about:blank", method="PUT")))
+        phone = Page(connect(target["webSocketDebuggerUrl"], max_size=50_000_000))
+        for domain in ("Runtime", "Log", "Page"): phone.send(f"{domain}.enable")
+        phone.send("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
+        phone.send("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
+        phone.send("Page.navigate", url=forge_url)
+        phone.wait("!!document.querySelector('#model-download')", "the Forge on the phone")
+        phone.js("(() => { const s = document.querySelector('#lang'); if (s) { s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); } })()")
+        # (A page drawn in a tab behind another is not drawn: each is brought to the front.)
+        page.send("Page.bringToFront")
+        page.wait("document.querySelector('#model-download')?.dataset.stage === 'hammer'", "the hammering stage", seconds=30)
+        # The scene is drawn with WebGL, frame after frame; the robot gets its parts.
+        page.wait("document.querySelector('#forge-scene')?.dataset.webgl === 'yes' && !!document.querySelector('#forge-scene canvas')", "the 3D scene")
+        frames = page.js("+document.querySelector('#forge-scene').dataset.frames")
+        time.sleep(0.5)
+        assert page.js("+document.querySelector('#forge-scene').dataset.frames") > frames, "the scene is not being drawn"
+        first = page.js("parseFloat(document.querySelector('#model-download').dataset.percent)")
+        page.wait(f"parseFloat(document.querySelector('#model-download').dataset.percent) > {first + 10}", "the percent rising", seconds=20)
+        assert "Hammering the weights" in page.text("#forge-stage") and "STAGE 2 OF 5" in page.text("#forge-step"), page.text("#model-download")
+        assert "pieces" in page.text("#dl-files") and "MB/s" in page.text("#dl-speed") and "GB" in page.text("#dl-bytes"), page.text("#model-download")
+        assert "without a token" in page.text("#dl-source"), page.text("#dl-source")
+        assert "hf auth login" in page.text("#dl-tip"), "no tip without a token"
+        assert "forging the model" in page.text("#status-pill"), page.text("#status-pill")
+        page.wait("+document.querySelector('#forge-scene').dataset.parts >= 2", "the robot's first parts")
+        assert page.js("document.documentElement.scrollWidth <= innerWidth"), "the Forge is wider than the window"
+        page.shot(f"{shots}/12-forge-hammer.png")
+        phone.send("Page.bringToFront")
+        phone.wait("document.querySelector('#model-download')?.dataset.stage === 'hammer'", "the phone told the same")
+        wide = phone.js("JSON.stringify([...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || e.className || e.tagName + ':' + e.textContent.slice(0, 40)).slice(0, 5))")
+        assert wide == "[]", f"wider than the phone: {wide}"
+        assert phone.js("Math.round(document.querySelector('#forge-scene').getBoundingClientRect().height)") == 360
+        phone.shot(f"{shots}/12-forge-hammer-phone.png")
+        # The tip can be put away, and stays away.
+        page.send("Page.bringToFront")
+        page.click("#dl-tip-hide")
+        page.wait("!document.querySelector('#dl-tip')", "the tip hidden")
+        for stage, name in [("temper", "Tempering"), ("wake", "Waking it up")]:
+            page.send("Page.bringToFront")
+            page.wait(f"document.querySelector('#model-download')?.dataset.stage === '{stage}'", f"the {stage} stage", seconds=30)
+            assert name in page.text("#forge-stage"), page.text("#forge-stage")
+            page.shot(f"{shots}/12-forge-{stage}.png", settle=0.3)
+            phone.send("Page.bringToFront")
+            phone.wait(f"document.querySelector('#model-download')?.dataset.stage === '{stage}'", f"the {stage} stage on the phone")
+            phone.shot(f"{shots}/12-forge-{stage}-phone.png", settle=0.3)
+        page.send("Page.bringToFront")
+        page.wait("document.querySelector('#model-download')?.dataset.stage === 'ready'", "Ready", seconds=20)
+        page.shot(f"{shots}/12-forge-ready.png", settle=0.4)
+        phone.send("Page.bringToFront")
+        phone.wait("document.querySelector('#model-download')?.dataset.stage === 'ready' || !document.querySelector('#model-download')", "Ready on the phone")
+        phone.shot(f"{shots}/12-forge-ready-phone.png", settle=0.1)
+        # Then the scene fades, and the chat is there, its composer in focus.
+        page.send("Page.bringToFront")
+        page.wait("!document.querySelector('#model-download') && document.activeElement?.id === 'draft'", "the chat after Ready", seconds=10)
+        assert page.text("#status-pill").startswith("ready"), page.text("#status-pill")
+        page.shot(f"{shots}/12-chat-after-ready.png")
+        assert not [e for e in page.errors + phone.errors if "ERR_" not in e], f"the page reported errors: {page.errors + phone.errors}"
+        assert hub.seen_resolve > 0, "the fake Hugging Face was not asked"
         print(f"All passed (the browser used {protocol}). Screenshots: {shots}")
     finally:
         chrome.terminate(); server.terminate()

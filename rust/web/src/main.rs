@@ -1140,7 +1140,7 @@ fn AppBar() -> impl IntoView {
                             let dot = if waiting { "dot ask" } else if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
                             let lang = app.lang.get();
                             let forging = matches!(s.model_state.as_str(), "downloading" | "verifying" | "loading");
-                            let dot = if forging && !waiting { "dot forge" } else { dot };
+                            let dot = if forging && !waiting { "dot forging" } else { dot };
                             let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, "forge_pill", &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
                             view! {
                                 <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>

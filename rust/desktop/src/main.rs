@@ -381,7 +381,19 @@ fn refused(port: u16, why: &str) -> String {
 
 /// Find the backend (or start it), open its page, and keep watching it.
 fn connect(window: Window, handle: AppHandle) {
-    let port = port();
+    let mut port = port();
+    // The usual port is held by something that cannot show it holds this backend's token (a
+    // backend whose folder was deleted while it ran, another program): the app does not give
+    // it the token, and runs its own backend on the next port that is free (or that one of
+    // its own already answers on). A port fixed with CWBCODE_APP_PORT is kept as it is.
+    if let Found::Other(why) = found(port) {
+        if std::env::var_os("CWBCODE_APP_PORT").is_none() {
+            if let Some(next) = (port + 1..port + 20).find(|p| !matches!(found(*p), Found::Other(_))) {
+                note(&format!("127.0.0.1:{port} is held by something else ({why}): using 127.0.0.1:{next}"));
+                port = next;
+            }
+        }
+    }
     // One backend at a time: two copies of the model do not fit in memory.
     match found(port) {
         Found::Ours => {}
