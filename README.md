@@ -354,9 +354,9 @@ motion".
 /Applications. It is a window on the web client with the backend inside it, run as
 Causewaybay Hacker's app runs its server: the app shows a starting page, always starts the
 backend it carries, and stops it again on quit. That backend listens on this machine only
-(127.0.0.1: 7481 for the window, 7453 for HTTPS, 7454 for HTTP/3; the next free ports when
-those are taken), never on other interfaces: remote mode is for `make start`, which is for
-development and runs beside the app on its own ports. (Both use `~/.cwbcode`; a `make
+(127.0.0.1), never on other interfaces, on ports the system gives as free each time the app
+starts (one for the window, one for HTTPS, the next for HTTP/3): remote mode is for `make
+start`, which is for development and runs beside the app on its own ports (7443, 7480). (Both use `~/.cwbcode`; a `make
 start` backend with the model loaded beside the app's would be two copies of it in memory.)
 Then the window opens the backend's page with its token, as the `open` link does.
 
@@ -367,7 +367,7 @@ progress where a new user lands, and the model loads when it is done. Quitting t
 way keeps what is done; opening it again goes on from there. A model already in Ollama's
 store or `~/.cwbcode/models` (`make download`) is used as it is.
 
-- The window reaches the backend over plain HTTP on `127.0.0.1:7481` (`cwbcode serve
+- The window reaches the backend over plain HTTP on `127.0.0.1:<that port>` (`cwbcode serve
   --http-port`), because a web view will not take the backend's certificate. That port
   answers this machine only, only for requests addressed to `127.0.0.1` or `localhost` at
   that port (so a site that points its name at 127.0.0.1 cannot reach it), and asks for the
