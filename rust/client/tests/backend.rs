@@ -603,6 +603,117 @@ async fn the_desktop_apps_plain_http_is_on_this_machine_only_and_asks_for_the_to
     if let Some(ip) = lan_address() {
         assert!(std::net::TcpStream::connect_timeout(&std::net::SocketAddr::new(ip, port.parse().unwrap()), Duration::from_secs(1)).is_err(), "plain HTTP answered on {ip}");
     }
+    // Requests addressed to another name are refused, page and API alike: a site whose name
+    // a rebinding DNS server points at 127.0.0.1 is its own origin, and would pass the
+    // same-origin check. localhost at the port is taken.
+    for host in ["evil.example", &format!("evil.example:{port}"), "127.0.0.1", "127.0.0.1:1"] {
+        assert_eq!(http.get(&base).header("host", host).send().await.unwrap().status(), 421, "host {host}");
+        let rebound = http.post(format!("{base}/api/call")).bearer_auth(&server.token).header("host", host).body(Request::new(Method::Status).encode()).send().await.unwrap();
+        assert_eq!(rebound.status(), 421, "host {host}");
+    }
+    assert_eq!(http.get(&base).header("host", format!("localhost:{port}")).send().await.unwrap().status(), 200);
+}
+
+/// HMAC-SHA256 (RFC 2104), by hand, in hex.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.iter().map(|b| b ^ byte).collect::<Vec<u8>>();
+    let inner = Sha256::new().chain_update(pad(0x36)).chain_update(message).finalize();
+    Sha256::new().chain_update(pad(0x5c)).chain_update(inner).finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_backend_shows_the_desktop_app_it_holds_the_token_and_nothing_more() {
+    // Before it gives a page on its port the token, the app asks whoever answers there for
+    // an HMAC of a nonce, keyed with the token and bound to that port.
+    let port = free_port().to_string();
+    let server = Server::start("proof", HELLO, &["--http-port", &port]);
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let nonce = "00112233445566778899aabbccddeeff0123456789abcdef";
+    let answer = http.get(format!("{base}/app-proof?nonce={nonce}")).send().await.unwrap();
+    assert_eq!(answer.status(), 200);
+    assert_eq!(answer.headers()["cache-control"], "no-store");
+    let proof = answer.text().await.unwrap();
+    assert_eq!(proof, hmac_sha256(server.token.as_bytes(), format!("cwbcode app proof\n{port}\n{nonce}").as_bytes()));
+    // Only that: not the token, not a proof for another port or with another key.
+    assert!(!proof.contains(&server.token));
+    assert_ne!(proof, hmac_sha256(server.token.as_bytes(), format!("cwbcode app proof\n{}\n{nonce}", server.port).as_bytes()));
+    assert_ne!(proof, hmac_sha256(b"", format!("cwbcode app proof\n{port}\n{nonce}").as_bytes()));
+    // A different nonce, a different answer; a nonce that is not 32 to 128 hex digits, none.
+    let other = http.get(format!("{base}/app-proof?nonce={}", "ab".repeat(16))).send().await.unwrap().text().await.unwrap();
+    assert_eq!(other, hmac_sha256(server.token.as_bytes(), format!("cwbcode app proof\n{port}\n{}", "ab".repeat(16)).as_bytes()));
+    for bad in ["", "?nonce=", "?nonce=abc", "?nonce=zz112233445566778899aabbccddeeff", &format!("?nonce={}", "a".repeat(130))] {
+        assert_eq!(http.get(format!("{base}/app-proof{bad}")).send().await.unwrap().status(), 400, "{bad}");
+    }
+    // Addressed to another name, no proof either.
+    assert_eq!(http.get(format!("{base}/app-proof?nonce={nonce}")).header("host", "evil.example").send().await.unwrap().status(), 421);
+    // And not on the HTTPS port at all: whatever held the app's port could pass the question
+    // on to it.
+    let https = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let elsewhere = https.get(format!("{}/app-proof?nonce={nonce}", server.url)).send().await.unwrap().text().await.unwrap();
+    assert!(!elsewhere.contains(&proof) && elsewhere.len() != 64, "the HTTPS port gave a proof");
+}
+
+#[test]
+fn with_exit_with_stdin_the_backend_goes_when_its_starter_does() {
+    // The desktop app holds the other end of the backend's standard input: when the app ends
+    // (quit, crash, kill -9), the pipe closes and the backend stops.
+    let home = std::env::temp_dir().join(format!("cwbcode-it-stdin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("script.json"), HELLO).unwrap();
+    let port = free_port();
+    let mut child = Command::new(backend_binary())
+        .args(["serve", "--env-file", "/dev/null", "--no-h3", "--exit-with-stdin", "--bind", &format!("127.0.0.1:{port}"), "--script"])
+        .arg(home.join("script.json"))
+        .env_remove("CWBCODE_WALLET")
+        .env("HOME", &home)
+        .env("CWBCODE_HOME", home.join(".cwbcode"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(child.try_wait().unwrap().is_none(), "the backend exited at once");
+        assert!(start.elapsed() < Duration::from_secs(20), "the backend did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Still there while the pipe is open.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(child.try_wait().unwrap().is_none());
+    drop(child.stdin.take());
+    let closed = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if closed.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("the backend did not stop when its standard input ended");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desktop_port_held_by_something_else_is_a_warning_not_the_end() {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port().to_string();
+    let server = Server::start("httpheld", HELLO, &["--http-port", &port]);
+    assert_eq!(server.client(false).await.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().auth, "open");
+    let log = std::fs::read_to_string(server.home.join("server.log")).unwrap();
+    assert!(log.contains("warning: cannot listen on 127.0.0.1:") && log.contains("(--http-port)"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

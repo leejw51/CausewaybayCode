@@ -51,6 +51,57 @@ pub fn router(app: App) -> Router {
         .with_state(app)
 }
 
+/// Where the desktop app asks the backend on its port to show that it holds the token, before
+/// the app gives that page the token (whatever else listens there must not get it).
+pub const APP_PROOF_PATH: &str = "/app-proof";
+
+/// The answer to `GET /app-proof?nonce=N` on the plain-HTTP port `port`: HMAC-SHA256 keyed
+/// with the token, of a fixed label, that port and the nonce, in hex. Bound to the port the
+/// backend itself listens on (never one a request names), so that whatever holds another
+/// port cannot pass a question on to a real backend and hand its answer back as its own.
+pub fn app_proof(token: &str, port: u16, nonce: &str) -> String {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(format!("cwbcode app proof\n{port}\n{nonce}").as_bytes());
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The router for the desktop app's plain-HTTP port (127.0.0.1 only): the backend's, plus
+/// the app's proof, and only for requests addressed to 127.0.0.1 or localhost at that port.
+/// (A site whose name a rebinding DNS server points at 127.0.0.1 would otherwise be the
+/// same origin as itself here, and its pages could read and call the backend.)
+pub fn local_router(app: App, token: String, port: u16) -> Router {
+    Router::new()
+        .route(APP_PROOF_PATH, get(proof))
+        .with_state((Arc::new(token), port))
+        .merge(router(app))
+        .layer(axum::middleware::from_fn_with_state(port, local_host))
+}
+
+async fn proof(State((token, port)): State<(Arc<String>, u16)>, request: HttpRequest) -> HttpResponse {
+    let nonce = request.uri().query().unwrap_or("").split('&').find_map(|pair| pair.strip_prefix("nonce=")).unwrap_or("");
+    if !(32..=128).contains(&nonce.len()) || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "nonce: 32 to 128 hex digits").into_response();
+    }
+    // No token (there always is one), no proof: an HMAC with an empty key anyone can make.
+    if token.is_empty() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no token").into_response();
+    }
+    ([(header::CONTENT_TYPE, "text/plain"), (header::CACHE_CONTROL, "no-store")], app_proof(&token, port, nonce)).into_response()
+}
+
+async fn local_host(State(port): State<u16>, request: HttpRequest, next: Next) -> HttpResponse {
+    let named = request.uri().authority().map(|a| a.as_str().to_string()).or_else(|| request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).map(String::from));
+    let ok = named.is_some_and(|host| {
+        let host = host.to_ascii_lowercase();
+        host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    });
+    if !ok {
+        return (StatusCode::MISDIRECTED_REQUEST, format!("this port answers for 127.0.0.1:{port} and localhost:{port} only")).into_response();
+    }
+    next.run(request).await
+}
+
 fn protocol(version: Version) -> &'static str {
     match version {
         Version::HTTP_3 => "h3",
