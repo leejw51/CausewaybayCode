@@ -162,6 +162,7 @@ fn login_path() -> Option<String> {
     // A session of its own: no terminal to stop it for reading or writing, and one group to kill.
     unsafe {
         command.pre_exec(|| {
+            unblock_signals();
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -248,6 +249,13 @@ fn start_backend(port: u16) -> Result<Child, String> {
         .stdin(Stdio::piped())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log);
+    // It must take the signals the app blocks for itself (a terminate signal stops it).
+    unsafe {
+        command.pre_exec(|| {
+            unblock_signals();
+            Ok(())
+        });
+    }
     let child = command.spawn().map_err(|e| format!("cannot start {}: {e}", program.display()))?;
     note(&format!("started the backend (pid {}; log {})", child.id(), log_path.display()));
     Ok(child)
@@ -321,7 +329,7 @@ impl Window {
         note(text);
         let mut url = self.splash.clone();
         url.set_fragment(Some(&format!("{kind}={}", escape(text))));
-        let _ = self.window.navigate(url);
+        self.go(url);
     }
 
     fn open(&self, port: u16) {
@@ -330,11 +338,32 @@ impl Window {
         match address.parse() {
             Ok(url) => {
                 note(&format!("the backend on 127.0.0.1:{port} showed it holds the token: opening its page"));
-                let _ = self.window.navigate(url);
+                self.go(url);
             }
             Err(e) => self.show("bad", &format!("Bad address: {e}")),
         }
     }
+
+    /// Go there, and say on the terminal where the window is a moment later (without the
+    /// address's fragment, which may carry the token).
+    fn go(&self, url: Url) {
+        if let Err(e) = self.window.navigate(url) {
+            note(&format!("cannot change the window's page: {e}"));
+        }
+        let window = self.window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            if let Ok(url) = window.url() {
+                note(&format!("the window shows {}", without_fragment(&url)));
+            }
+        });
+    }
+}
+
+fn without_fragment(url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn refused(port: u16, why: &str) -> String {
@@ -403,23 +432,22 @@ fn connect(window: Window, handle: AppHandle) {
                     connected = false;
                     strikes = 0;
                     began = Instant::now();
-                    let what = match &lost {
-                        Found::Other(why) => refused(port, why),
-                        _ => format!("The backend on 127.0.0.1:{port} stopped answering."),
-                    };
-                    if handle.state::<Started>().0.lock().unwrap().is_some() {
-                        // Ours, still running and not answering: of no use either.
-                        stop_started(&handle);
-                        return window.show("bad", &format!("{what}\n\n{}", log_tail()));
+                    if let Found::Other(why) = &lost {
+                        return window.show("bad", &refused(port, why));
                     }
-                    if matches!(lost, Found::Other(_)) {
-                        return window.show("bad", &what);
-                    }
-                    // One the app did not start (make start): waited for, the page opened again
-                    // when it is back.
-                    window.show("wait", &format!("{what} Waiting for it to come back (make start)"));
+                    // Waited for: one started with make start may come back, and one this app
+                    // started (still running) may answer again; it is stopped only on quit.
+                    let ours = handle.state::<Started>().0.lock().unwrap().is_some();
+                    window.show("wait", &if ours {
+                        format!("The backend on 127.0.0.1:{port} stopped answering, though it is still running (log: {}). Waiting for it", home().join("app-backend.log").display())
+                    } else {
+                        format!("The backend on 127.0.0.1:{port} stopped answering. Waiting for it to come back (make start)")
+                    });
                     loop {
                         std::thread::sleep(Duration::from_secs(1));
+                        if let Some(status) = ended(&handle) {
+                            return window.show("bad", &format!("The backend stopped ({status}). Quit the app and open it again to start it again.\n\n{}", log_tail()));
+                        }
                         match found(port) {
                             Found::Ours => break,
                             Found::Other(why) => return window.show("bad", &refused(port, &why)),
@@ -436,7 +464,8 @@ fn connect(window: Window, handle: AppHandle) {
 
 /// The signals that end the app cleanly (stopping the backend it started): they are taken
 /// from every thread's mask before any thread starts, and waited for by one thread.
-/// (Programs the app starts begin with an empty mask: Rust's process spawning resets it.)
+/// Programs the app starts would inherit that mask (and ignore a terminate signal), so they
+/// clear it before they begin (`unblock_signals`, between fork and exec).
 fn signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -445,6 +474,15 @@ fn signals() -> libc::sigset_t {
             libc::sigaddset(&mut set, signal);
         }
         set
+    }
+}
+
+/// In a child, between fork and exec: no signal blocked (async-signal-safe calls only).
+fn unblock_signals() {
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
     }
 }
 
@@ -481,6 +519,7 @@ fn main() {
         .setup(move |app| {
             let window = app.get_webview_window("main").expect("the main window");
             let splash = window.url().expect("the starting page's address");
+            note(&format!("starting page: {}", without_fragment(&splash)));
             let handle = app.handle().clone();
             let signalled = handle.clone();
             std::thread::spawn(move || {
