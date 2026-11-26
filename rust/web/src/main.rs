@@ -21,6 +21,8 @@ const PREFS_KEY: &str = "cwbcode-prefs";
 /// Where earlier versions kept the wallet's recovery phrase. It is never stored now (it
 /// controls the whole wallet), and a phrase left there is deleted when the page loads.
 const PHRASE_KEY: &str = "cwbcode-phrase";
+/// The page's title, as index.html gives it.
+const TITLE: &str = "CC · Causewaybay Code";
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -83,9 +85,11 @@ struct App {
     /// How the backend wants clients to sign in: "" (not known yet), "open" (local mode: no
     /// login), "wallet" or "token".
     auth: RwSignal<String>,
-    /// The wallet the backend belongs to, and its certificate's fingerprint.
+    /// The wallet the backend belongs to, its certificate's fingerprint, and its certificate
+    /// authority's.
     wallet: RwSignal<String>,
     fingerprint: RwSignal<String>,
+    ca_fingerprint: RwSignal<String>,
     token: RwSignal<String>,
     /// Preferences: "dark" or "light"; "horizontal" (side by side) or "vertical" (stacked);
     /// the interface language.
@@ -162,20 +166,27 @@ fn system_prefers_light() -> bool {
     web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten()).is_some_and(|m| m.matches())
 }
 
-/// The token: from the address (`#token=...`, then removed from it) or from an earlier visit.
-fn initial_token() -> String {
-    let Some(window) = web_sys::window() else { return String::new() };
+/// What a link to the page may carry after its #: the one-time code `cwbcode url` prints, to
+/// exchange for the backend's token, or the token itself, typed by hand.
+enum Link {
+    Code(String),
+    Token(String),
+}
+
+/// The code or token in the address, if there is one. It is taken out of the address at once,
+/// before anything is asked of the backend: the address is kept in the browser's history.
+fn take_link() -> Option<Link> {
+    let window = web_sys::window()?;
     let hash = window.location().hash().unwrap_or_default();
-    if let Some(token) = hash.strip_prefix("#token=") {
-        if let Some(storage) = storage() {
-            let _ = storage.set_item(TOKEN_KEY, token);
-        }
-        if let Ok(history) = window.history() {
-            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
-        }
-        return token.to_string();
+    let link = if let Some(code) = hash.strip_prefix("#code=") {
+        Link::Code(code.to_string())
+    } else {
+        Link::Token(hash.strip_prefix("#token=")?.to_string())
+    };
+    if let Ok(history) = window.history() {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
     }
-    storage().and_then(|s| s.get_item(TOKEN_KEY).ok().flatten()).unwrap_or_default()
+    Some(link)
 }
 
 impl App {
@@ -189,7 +200,9 @@ impl App {
             auth: RwSignal::new(String::new()),
             wallet: RwSignal::new(String::new()),
             fingerprint: RwSignal::new(String::new()),
-            token: RwSignal::new(initial_token()),
+            ca_fingerprint: RwSignal::new(String::new()),
+            // (From an earlier visit; one in the address is taken once it has been checked.)
+            token: RwSignal::new(stored(TOKEN_KEY).unwrap_or_default()),
             theme: RwSignal::new(text("theme", if system_prefers_light() { "light" } else { "dark" })),
             layout: RwSignal::new(text("layout", "horizontal")),
             font: RwSignal::new(Some(text("font", "pixel")).filter(|f| FONTS.iter().any(|(code, ..)| code == f)).unwrap_or_else(|| "pixel".into())),
@@ -274,9 +287,28 @@ impl App {
                 let status = response.status.unwrap_or_default();
                 self.wallet.set(status.wallet);
                 self.fingerprint.set(status.fingerprint);
+                self.ca_fingerprint.set(status.ca_fingerprint);
                 self.auth.set(status.auth);
             }
             Err(e) => self.fail(e),
+        }
+    }
+
+    /// Take the code or token a link carried. A code is exchanged for the backend's token; a
+    /// token is tried first. Only one that works is kept: a link that does not (used already,
+    /// expired, or another backend's) leaves the token this browser has alone.
+    async fn adopt(&self, link: Link) {
+        let token = match link {
+            Link::Code(code) => api::call("", &Request::new(Method::Redeem).text(&code)).await.map(|response| response.text),
+            Link::Token(token) if token == self.token.get_untracked() => return,
+            // (Not through `call`: a refusal there forgets the token kept.)
+            Link::Token(token) => api::call(&token, &Request::new(Method::Status)).await.map(|_| token),
+        };
+        match token {
+            Ok(token) => self.remember(&token, true),
+            Err(e) if e.starts_with("cannot reach") => self.fail(e),
+            // Refused by the backend.
+            Err(_) => self.fail(tr(self.lang.get_untracked(), "link_refused").to_string()),
         }
     }
 
@@ -329,6 +361,7 @@ impl App {
             self.status.set(None);
             self.wallet.set(status.wallet);
             self.fingerprint.set(status.fingerprint);
+            self.ca_fingerprint.set(status.ca_fingerprint);
             self.auth.set(status.auth);
         }
         Ok(response.text)
@@ -378,9 +411,10 @@ impl App {
         self.items.with(|items| items.iter().filter(|i| i.kind == Kind::Approval && !i.past && i.answered.with(String::is_empty)).count())
     }
 
-    /// Below this width the sidebar is a drawer over the view, closed after a choice in it.
+    /// At this width and below the sidebar is a drawer over the view, closed after a choice in
+    /// it: the same width as the stylesheet's `max-width: 640px`.
     fn narrow() -> bool {
-        web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|w| w.as_f64()).is_some_and(|w| w < 640.0)
+        web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|w| w.as_f64()).is_some_and(|w| w <= 640.0)
     }
 
     /// On a phone, close the drawer once something in it is chosen.
@@ -690,29 +724,36 @@ fn Root() -> impl IntoView {
         }
     });
     // An edit or command waiting for an answer is in the tab's title, seen from another tab
-    // or another view.
+    // or another view: the page's own title, as index.html has it, with the count in front.
     Effect::new(move |_| {
         let waiting = app.waiting();
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-            doc.set_title(&if waiting > 0 { format!("({waiting}) Causewaybay Code") } else { "Causewaybay Code".to_string() });
+            doc.set_title(&if waiting > 0 { format!("({waiting}) {TITLE}") } else { TITLE.to_string() });
         }
     });
     // On a phone the sidebar is a drawer: it starts closed, and closes when the window becomes
-    // that narrow. Settings close with Escape, or a click outside them.
+    // that narrow from wider. Other changes of size leave it as it is: on a phone the height
+    // changes whenever the keyboard or the browser's bars come and go. Settings close with
+    // Escape, or a click outside them.
     if App::narrow() {
         app.side.set(false);
     }
+    let was_narrow = StoredValue::new(App::narrow());
     let _ = window_event_listener(leptos::ev::resize, move |_| {
-        if App::narrow() && app.side.get_untracked() {
+        let narrow = App::narrow();
+        if narrow && !was_narrow.get_value() && app.side.get_untracked() {
             app.side.set(false);
         }
+        was_narrow.set_value(narrow);
     });
-    // The token link pasted into this same tab changes only what follows the #: read it then
-    // too, as a fresh load does.
+    // A link with a code (or a token) in the address; pasted into this same tab it changes only
+    // what follows the #, so it is read then too, as a fresh load does.
+    if let Some(link) = take_link() {
+        spawn_local(async move { app.adopt(link).await });
+    }
     let _ = window_event_listener(leptos::ev::hashchange, move |_| {
-        let token = initial_token();
-        if !token.is_empty() && token != app.token.get_untracked() {
-            app.token.set(token);
+        if let Some(link) = take_link() {
+            spawn_local(async move { app.adopt(link).await });
         }
     });
     let _ = window_event_listener(leptos::ev::keydown, move |ev| {
@@ -1105,6 +1146,10 @@ fn TrustDevice() -> impl IntoView {
         <div class="sub trust-steps">
             <p>{t("trust_why")}</p>
             <a class="button ghost" id="trust-download" href="/ca.crt">{t("trust_download")}</a>
+            // What it is, to compare before trusting it: this page could be another's, but the
+            // line `cwbcode url` prints on the backend's own machine is not.
+            <p>{t("trust_compare")}</p>
+            <code id="trust-fingerprint" style="word-break:break-all">{move || app.ca_fingerprint.get()}</code>
             <p>{t("trust_ios")}</p>
             <p>{t("trust_mac")}</p>
         </div>
@@ -1419,11 +1464,13 @@ fn ItemView(item: Item) -> impl IntoView {
                     app.call(Request::new(Method::Approve).id(id).text(&text)).await;
                 });
             };
-            // A new question is scrolled into sight, Allow and No included, on a phone too.
+            // A new question is scrolled into sight, Allow and No included, on a phone too; one
+            // answered already is not, when the conversation is shown again. (Read untracked:
+            // answering it is not a reason to scroll.)
             let card = NodeRef::<leptos::html::Div>::new();
             Effect::new(move |_| {
                 if let Some(el) = card.get() {
-                    if !past {
+                    if !past && answered.with_untracked(String::is_empty) {
                         after_draw(move || el.scroll_into_view_with_bool(false));
                     }
                 }

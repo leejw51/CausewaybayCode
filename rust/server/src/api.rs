@@ -32,6 +32,8 @@ pub struct App {
     pub h3_port: Option<u16>,
     /// This machine's certificate authority, as PEM: given to whoever asks, to install.
     pub ca_pem: Arc<String>,
+    /// Its SHA-256, in hex.
+    pub ca_fingerprint: Arc<String>,
 }
 
 /// Where a device downloads the certificate authority to trust (no sign-in needed: it is
@@ -114,7 +116,8 @@ fn capnp(bytes: Vec<u8>) -> HttpResponse {
 }
 
 async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
-    let allowed = app.allowed(request.headers(), request.uri(), peer(&request));
+    let from = peer(&request);
+    let allowed = app.allowed(request.headers(), request.uri(), from);
     let version = request.version();
     let headers = request.headers().clone();
     // The host the request names: over HTTP/2 and HTTP/3 it is in the address, not a header.
@@ -130,11 +133,11 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         Err(e) => return (StatusCode::BAD_REQUEST, format!("the request is not a cwbcode message: {e}")).into_response(),
     };
     // Signing in needs no credentials, but still comes from the backend's own page or a client.
-    if matches!(request.method, Method::Hello | Method::Challenge | Method::Login) {
+    if matches!(request.method, Method::Hello | Method::Challenge | Method::Login | Method::Redeem) {
         if !crate::auth::same_origin(&headers, authority.as_deref()) {
             return refused();
         }
-        return capnp(sign_in(&app, &request).unwrap_or_else(|e| Response::error(format!("{e:#}"))).encode());
+        return capnp(sign_in(&app, &request, from).unwrap_or_else(|e| Response::error(format!("{e:#}"))).encode());
     }
     if !allowed {
         return refused();
@@ -144,8 +147,8 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         return capnp(Response::default().encode());
     }
     if request.method == Method::Setup {
-        // Remote mode on or off: by whoever may use the backend now (in local mode, anyone
-        // on this machine; in remote mode, the wallet's owner).
+        // Remote mode on or off: by whoever may use the backend now (in local mode, a client
+        // on this machine with the backend's token; in remote mode, the wallet's owner).
         let response = match app.control.setup(&app.auth, &request.text) {
             Ok(said) => Response { text: said, status: Some(hello(&app)), ..Response::default() },
             Err(e) => Response::error(format!("{e:#}")),
@@ -178,17 +181,21 @@ fn hello(app: &App) -> Status {
         fingerprint: app.auth.fingerprint.clone(),
         bind: app.control.bind.lock().unwrap().to_string(),
         wallet_source: app.control.source.lock().unwrap().clone(),
+        // (Before signing in too: a device compares it before it trusts the authority.)
+        ca_fingerprint: app.ca_fingerprint.as_str().to_owned(),
         ..Status::default()
     }
 }
 
-/// Hello, challenge and login: what a client does before it has credentials.
-fn sign_in(app: &App, request: &Request) -> Result<Response> {
+/// Hello, challenge, login, and a link's code: what a client does before it has credentials.
+/// `from` is where the request came from.
+fn sign_in(app: &App, request: &Request, from: Option<std::net::IpAddr>) -> Result<Response> {
     let auth = &app.auth;
     Ok(match request.method {
         Method::Hello => Response { status: Some(hello(app)), ..Response::default() },
         Method::Challenge => Response::text(auth.challenge()?),
         Method::Login => Response::text(auth.login(&request.text, &request.name)?),
+        Method::Redeem => Response::text(auth.redeem(&request.text, from)?),
         _ => bail!("not a sign-in call"),
     })
 }
@@ -281,6 +288,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 bind: known.bind.clone(),
                 wallet_source: known.wallet_source.clone(),
                 user_home: shared.roots.home().display().to_string(),
+                ca_fingerprint: known.ca_fingerprint.clone(),
             });
         }
         Method::Projects => {
@@ -402,7 +410,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 out.changes = store.changes(request.session)?;
             }
         }
-        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup => bail!("{:?} is not answered here", request.method),
+        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem => bail!("{:?} is not answered here", request.method),
     }
     Ok(out)
 }

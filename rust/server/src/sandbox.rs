@@ -219,6 +219,12 @@ impl Policy {
         ["cwbcode.db", "cwbcode.db-wal", "cwbcode.db-shm", "token", "key.pem", "ca-key.pem", "sessions"].iter().map(|f| self.home.join(f)).collect()
     }
 
+    /// The folder of the one-time codes in `cwbcode url` links (see `auth::issue_code`): a code
+    /// written there by a command would get it the token.
+    fn codes(&self) -> PathBuf {
+        self.home.join("codes")
+    }
+
     /// The project's own `.cwbcode` folder: cwbcode's records, which tools neither read nor write.
     pub fn records(&self) -> PathBuf {
         self.workspace.join(crate::store::DIR)
@@ -234,7 +240,7 @@ impl Policy {
         let home = real(&home_dir());
         // cwbcode's records anywhere: this project's, a nested project's, the server's own.
         let records = path.components().any(|c| c.as_os_str() == crate::store::DIR) && !path.starts_with(self.home.join("tools"));
-        SECRET_DIRS.iter().any(|d| path.starts_with(home.join(d))) || SECRET_FILES.iter().any(|f| path == home.join(f)) || self.own_secrets().iter().any(|f| path == f) || records
+        SECRET_DIRS.iter().any(|d| path.starts_with(home.join(d))) || SECRET_FILES.iter().any(|f| path == home.join(f)) || self.own_secrets().iter().any(|f| path == f) || path.starts_with(self.codes()) || records
     }
 
     /// May a tool read this file or folder?
@@ -346,6 +352,8 @@ impl Policy {
         for file in self.own_secrets() {
             sb.push_str(&format!("  (literal {})\n", quote(&file)));
         }
+        // The one-time codes of `cwbcode url` links: one written there would get the token.
+        sb.push_str(&format!("  (subpath {})\n", quote(&self.codes())));
         sb.push_str(")\n");
         // cwbcode's records anywhere (this project's, a nested project's, the server's): their
         // contents cannot be read or written. That they exist can be seen, so that `ls -la`
@@ -542,10 +550,11 @@ mod tests {
         assert!(p.check_write(".cwbcode/x", "write").is_err());
         assert!(p.check_write("src/.cwbcode", "write").is_err());
         assert!(p.check_write("src/cwbcode.txt", "write").is_ok());
-        for secret in ["token", "key.pem", "ca-key.pem", "cwbcode.db"] {
+        for secret in ["token", "key.pem", "ca-key.pem", "cwbcode.db", "codes/0123abcd"] {
             assert!(p.check_read(&p.home.join(secret).to_string_lossy()).is_err(), "{secret}");
         }
         let profile = p.profile();
+        assert!(profile.contains(&format!("(subpath \"{}\")", p.home.join("codes").display())));
         assert!(profile.contains("(deny file-read-data file-write* (regex #\"/\\.cwbcode(/|$)\"))"));
         // A project nested in this one keeps its records to itself too.
         assert!(p.check_read("sub/.cwbcode/cwbcode.db").is_err());

@@ -678,6 +678,69 @@ async fn local_mode_takes_the_token_file_and_refuses_other_sites_pages() {
     assert_eq!(from_own_page.status(), 200);
 }
 
+/// The one-time code in the `open` link `cwbcode url` prints for this server's home (or None,
+/// when it prints no such link). `bind`: as `--bind`, or the server's port in its own mode.
+fn link_code(server: &Server, bind: Option<&str>) -> Option<String> {
+    let mut command = Command::new(backend_binary());
+    command.args(["url", "--env-file", "/dev/null"]);
+    match bind {
+        Some(bind) => command.args(["--bind", bind]),
+        None => command.args(["--port", &server.port.to_string()]),
+    };
+    let out = command.env_remove("CWBCODE_WALLET").env("HOME", &server.home).env("CWBCODE_HOME", server.home.join(".cwbcode")).output().unwrap();
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "cwbcode url failed: {}", String::from_utf8_lossy(&out.stderr));
+    // The token itself is never in the link (the browser's history would keep it).
+    assert!(!printed.contains(server.token.trim()), "the token was printed: {printed}");
+    let link = printed.lines().find_map(|line| line.strip_prefix("open"))?.split_whitespace().next()?.to_string();
+    Some(link.split_once("/#code=").unwrap_or_else(|| panic!("not a code link: {link}")).1.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_links_code_gives_the_token_once_from_this_machine_and_expires() {
+    let server = Server::start("code", HELLO, &["movable"]);
+    async fn redeem(client: &Client, code: &str) -> anyhow::Result<String> {
+        Ok(client.call(&Request::new(Method::Redeem).text(code)).await?.text)
+    }
+    for h3 in [true, false] {
+        let client = Client::connect(&server.url, "", server.trust.clone(), h3).await.unwrap();
+        let code = link_code(&server, None).expect("local mode prints the open link");
+        // The code gets the backend's token, once.
+        assert_eq!(redeem(&client, &code).await.unwrap(), server.token.trim(), "h3={h3}");
+        let again = redeem(&client, &code).await.unwrap_err().to_string();
+        assert!(again.contains("used already"), "h3={h3}: {again}");
+        assert!(redeem(&client, "0123456789abcdef0123456789abcdef").await.is_err());
+        // A code past its time does not work. (Its file holds when it ends.)
+        let code = link_code(&server, None).unwrap();
+        let codes = server.home.join(".cwbcode/codes");
+        for entry in std::fs::read_dir(&codes).unwrap().flatten() {
+            std::fs::write(entry.path(), "1").unwrap();
+        }
+        assert!(redeem(&client, &code).await.is_err(), "h3={h3}: a code that has ended worked");
+    }
+    // Another website's page cannot use a code either.
+    let code = link_code(&server, None).unwrap();
+    let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let foreign = http.post(format!("{}/api/call", server.url)).header("origin", "https://evil.example").body(Request::new(Method::Redeem).text(&code).encode()).send().await.unwrap();
+    assert_eq!(foreign.status(), 401);
+
+    // From another machine a code is refused, even where the backend listens for one (remote
+    // mode: every interface), and is not used up by the attempt.
+    let wallet_env = format!("env:CWBCODE_WALLET={TEST_WALLET}");
+    let remote = Server::start("code-remote", HELLO, &["movable", &wallet_env]);
+    // (A code for this home, as `cwbcode url` for local mode issues it.)
+    let code = link_code(&remote, Some(&format!("127.0.0.1:{}", remote.port))).unwrap();
+    if let Some(ip) = lan_address() {
+        for h3 in [true, false] {
+            let outside = Client::connect(&format!("https://{ip}:{}", remote.port), "", remote.trust.clone(), h3).await.unwrap();
+            let refused = redeem(&outside, &code).await.unwrap_err().to_string();
+            assert!(refused.contains("only on the machine"), "h3={h3}: {refused}");
+        }
+    }
+    let here = Client::connect(&remote.url, "", remote.trust.clone(), true).await.unwrap();
+    assert_eq!(redeem(&here, &code).await.unwrap(), remote.token.trim());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_a_wallet_one_signs_in_with_its_recovery_phrase() {
     use cwbcode_proto::wallet;

@@ -46,8 +46,9 @@ make build      # the first build compiles MLX from source and takes a few minut
 make start      # starts the backend and prints its web address and certificate
 ```
 
-Open the `open` link `make start` printed (`https://127.0.0.1:7443/#token=...` in local mode:
-it carries the backend's token, which the page keeps), accept the certificate (its
+Open the `open` link `make start` printed (`https://127.0.0.1:7443/#code=...` in local mode:
+a one-time code the page exchanges for the backend's token, which it keeps; the link works
+once, within five minutes, and `make url` prints a new one), accept the certificate (its
 fingerprint is on the `cert` line), and pick a folder under
 your home folder to work in. Or, in a project folder, run the terminal client:
 
@@ -129,7 +130,7 @@ owns it turns remote mode on:
 |---|---|---|
 | listens on | `127.0.0.1:7443`: this machine only | `0.0.0.0:7443`: your network and tailnet too |
 | login | the backend's token, from this machine only | required: sign in with that wallet |
-| web client | opens from the `open` link `make url` prints (it carries the token) | asks for the wallet's recovery phrase |
+| web client | opens from the `open` link `make url` prints (a one-time code for the token) | asks for the wallet's recovery phrase |
 | terminal client | just works | on this Mac just works; elsewhere `cwbcodeclient login` |
 
 Turn it on from the web client's **Dashboard → Remote access** (type the wallet's address,
@@ -217,9 +218,13 @@ With `-p`, nobody is there to approve anything: edits and commands are refused u
 
 Open the address `make start` printed (`https://127.0.0.1:7443` in local mode,
 `https://localhost:7443` and the machine's other addresses in remote mode) and accept the
-certificate, or trust its authority once (below). In local mode open the `open` link instead: it carries the backend's token,
-which the page keeps and takes out of the address (or type the token from
-`~/.cwbcode/token`); with a wallet, sign in with its recovery phrase.
+certificate, or trust its authority once (below). In local mode open the `open` link instead:
+its one-time code, taken out of the address at once, is exchanged for the backend's token,
+which the page keeps. The exchange works only from this machine, once, within five minutes,
+so the token itself never stands in an address the browser's history keeps. A link that no
+longer works leaves a token the page already has alone. (Or type the token from
+`~/.cwbcode/token`, or open `https://127.0.0.1:7443/#token=<token>`.) With a wallet, sign in
+with its recovery phrase.
 
 - **Dashboard**: model state, memory, context in use, protocol, projects, remote access.
 - **Chat**: open any folder under `~` (one that does not exist is created, with the folders
@@ -273,12 +278,21 @@ first start (`~/.cwbcode/ca.pem`, its key `ca-key.pem` readable only by you) and
 certificate with it. Install that authority once on a phone, tablet or another computer and
 every certificate the backend makes after is trusted there: no warning, and the page can be
 installed as an app. The dashboard (**Trust this backend on this device**) and the sign-in page link to
-it at `/ca.crt`, and `make url` prints where. On an iPhone or iPad: open the download in
+it at `/ca.crt`, and `make url` prints where. Beside the download the page shows the
+authority's SHA-256: before turning trust on, check that it is the one on the `ca` line
+`cwbcode url` prints on the backend's machine (the device shows it too, in the certificate's
+details); a page that is not your backend's could offer another. On an iPhone or iPad: open the download in
 Safari, then Settings → Profile Downloaded → Install, then Settings → General → About →
 Certificate Trust Settings → turn it on. On a Mac: open it in Keychain Access and set it to
-Always Trust. The authority is not limited to this machine's names, so whoever has
-`ca-key.pem` could make certificates those devices trust, for any site: it never leaves the
-machine, and the sandbox keeps commands from reading it. Install it only on your own devices.
+Always Trust. The authority is limited, with critical name constraints, to this machine's
+names and addresses: `localhost`, names under `.local` and `.ts.net`, the machine's host
+name, the loopback addresses, and the private (10/8, 172.16/12, 192.168/16) and Tailscale
+(100.64/10) ranges. A device that trusts it trusts it for nothing else, so even whoever had
+`ca-key.pem` could not use it to pass for another website; the key still never leaves the
+machine, and the sandbox keeps commands from reading it. (An address outside those ranges, a
+public one, is left out of the certificate.) An authority made by an earlier version, without
+these limits, is replaced once when the backend starts (it says so); trust the new one on each
+device then, and remove the old one. Install it only on your own devices.
 
 These, and where you are (view, project, conversation), are kept in the browser, so a
 refresh comes back to the same place. The typefaces and the pictures are in the program:
@@ -357,11 +371,16 @@ and, compiled to WebAssembly, by the web client.
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for
 HTTP/2 over TLS (7443) and on the next UDP port for HTTP/3 over QUIC (7444), with one
 certificate, signed by the machine's own certificate authority (good for ten years, allowed
-to sign server certificates only, and kept). The certificate is made on first start, good
-for 397 days, for serving only, and names every address of the machine (localhost, LAN,
-Tailscale); it is made again, with a new fingerprint but the same authority, when the machine
-has an address it does not name or 30 days before it ends. (A backend from before there was
-an authority makes a new certificate once, so its fingerprint changes once.)
+to sign server certificates only, for this machine's names and addresses only, and kept). The
+certificate is made on first start, good for 397 days, for serving only, and names every
+address of the machine the authority may sign for (localhost, LAN, Tailscale); it is made
+again, with a new fingerprint but the same authority, when the machine has an address it does
+not name or 30 days before it ends. Only the backend makes it, when it starts: `cwbcode url`
+reads the files and says when the next start will make a new one. (A backend from before there
+was an authority makes a new certificate once, so its fingerprint changes once.) An authority
+that is there but cannot be used (its key or `ca.json` missing, or not its own) stops the
+backend with a message rather than being replaced, since devices trust it; its files are
+written whole (to a temporary file, then moved into place).
 (Safari takes the first page from a certificate that breaks Apple's rules, a longer life,
 no serving purpose, an address not named, and then refuses everything after it.) HTTP/3 is deliberately not on the HTTPS port
 and not advertised: a browser that expects it there tries it, refuses a certificate it does
@@ -453,7 +472,7 @@ make test-web     # the web client in headless Chrome: sign-in with a recovery p
                   # wrong ones refused), that the phrase is never stored, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
-                  # dashboard, knowledge base, sign-out, and local mode with the token link,
+                  # dashboard, knowledge base, sign-out, and local mode with the one-time link,
                   # and remote mode turned on and off from the dashboard
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own

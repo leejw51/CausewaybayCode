@@ -175,7 +175,7 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
         format!("{:<9} {bind}  ({scope}, {why})", "bind"),
         match control::mode(wallet, bind, options.require_token) {
             auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (only a signature leaves the browser; the phrase is not stored)", "login"),
-            auth::Mode::Open => format!("{:<9} the backend's token, from this machine only: open the `open` link below (it carries it), or the terminal client reads it itself", "login"),
+            auth::Mode::Open => format!("{:<9} the backend's token, from this machine only: open the `open` link below (its one-time code gets the page the token), or the terminal client reads it itself", "login"),
             auth::Mode::Token => format!("{:<9} the backend's token", "login"),
         },
     ]
@@ -183,7 +183,9 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
 
 fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     let (wallet, bind) = exposure(serve, home)?;
-    let identity = net::identity(home)?;
+    // Only read: a backend may be running on these files, and only it changes its certificate,
+    // when it starts. (`make start` runs this before and after starting it.)
+    let shown = net::current(home)?;
     let token = net::token(home)?;
     for line in exposure_lines(serve, home, &wallet, bind) {
         println!("{line}");
@@ -195,19 +197,31 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     match control::mode(&wallet, bind, serve.require_token) {
         auth::Mode::Token => println!("{:<9} {token}", "token"),
         auth::Mode::Wallet(_) => println!("{:<9} {} (for clients on this machine; others sign in with the wallet)", "token", home.join("token").display()),
-        // Local mode: a link that carries the token. The page keeps it and takes it out of
-        // the address. (Printed here only, never into the log.)
+        // Local mode: a link with a one-time code, which the page exchanges for the token and
+        // then takes out of the address. The token itself is not put in the link: the
+        // browser's history would keep it. (Printed here only, never into the log.)
         auth::Mode::Open => {
             if let Some((_, web)) = addresses(bind).first() {
-                println!("{:<9} {web}/#token={token}", "open");
+                let code = auth::issue_code(home)?;
+                println!("{:<9} {web}/#code={code}  (works once, within {} minutes)", "open", auth::CODE_SECONDS / 60);
             }
         }
     }
-    println!("{:<9} {} (sha256 {})", "cert", home.join("cert.pem").display(), identity.fingerprint);
+    let cert = home.join("cert.pem");
+    match &shown.fingerprint {
+        Some(fingerprint) if shown.reissue => println!("{:<9} {} (sha256 {fingerprint}; made again when the backend next starts)", "cert", cert.display()),
+        Some(fingerprint) => println!("{:<9} {} (sha256 {fingerprint})", "cert", cert.display()),
+        None => println!("{:<9} {} (made when the backend first starts)", "cert", cert.display()),
+    }
     // Installed and trusted once on a phone, tablet or another computer, it makes every
     // certificate this backend makes trusted there: no warning, and the page installs as an app.
     let download = addresses(bind).into_iter().find(|(what, _)| *what == "lan" || *what == "tailscale").or_else(|| addresses(bind).into_iter().next()).map(|(_, web)| format!("{web}{}", api::CA_PATH)).unwrap_or_default();
-    println!("{:<9} {} (sha256 {}): trust it once on each device, from {download}", "ca", home.join("ca.pem").display(), identity.ca_fingerprint);
+    let ca = home.join("ca.pem");
+    match &shown.ca_fingerprint {
+        Some(fingerprint) if shown.replace_ca => println!("{:<9} {} (sha256 {fingerprint}): made before authorities were limited to this machine's names, so it is replaced when the backend next starts; trust the new one then, from {download}", "ca", ca.display()),
+        Some(fingerprint) => println!("{:<9} {} (sha256 {fingerprint}): trust it once on each device, from {download}", "ca", ca.display()),
+        None => println!("{:<9} {} (made when the backend first starts; then trust it once on each device, from {download})", "ca", ca.display()),
+    }
     Ok(())
 }
 
@@ -250,7 +264,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         source: std::sync::Mutex::new(wallet.as_ref().map_or(String::new(), |w| w.source.clone())),
         rebind,
     });
-    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()) };
+    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
     let router = api::router(app.clone());
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 

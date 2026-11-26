@@ -19,8 +19,10 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
 **Who can reach it.**
 
 - **Local mode** (no wallet set, the default): the backend listens on `127.0.0.1:7443` and
-  asks for its token (`~/.cwbcode/token`, readable only by you), from this machine only; the
-  `open` link `make url` prints carries it to the browser. It answers only its own page and
+  asks for its token (`~/.cwbcode/token`, readable only by you), from this machine only. The
+  `open` link `cwbcode url` (or `make url`) prints carries a one-time code, not the token: the
+  page exchanges it for the token, from this machine only, once, within five minutes, so the
+  token never stands in an address the browser's history keeps. It answers only its own page and
   clients that are not web pages: a page of another website open in your browser is refused.
 - **Remote mode** (a wallet set, with `CWBCODE_WALLET` in `.env` or the environment, from
   the dashboard, or with `cwbcodeclient remote on`): the backend listens on `0.0.0.0:7443`,
@@ -33,9 +35,13 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
   as `cwbcode serve --require-token` always does.
 - Traffic is HTTPS (HTTP/2 over TLS, or HTTP/3 over QUIC) with a certificate signed by the
   machine's own certificate authority (`~/.cwbcode/ca.pem`; its key `ca-key.pem` is
-  readable only by you and denied to commands). The terminal client pins the certificate; a
-  browser cannot, so compare the fingerprint it shows with the one `make url` prints, or
-  install the authority on the device once (compare its `ca` fingerprint) and trust it.
+  readable only by you and denied to commands). The authority may sign only for this
+  machine's names and addresses (`localhost`, names under `.local` and `.ts.net`, the host
+  name, loopback, private and Tailscale ranges): a device that trusts it does not trust it for
+  any other site, even if its key leaked. The terminal client pins the certificate; a browser
+  cannot, so compare the fingerprint it shows with the one `cwbcode url` prints, or install
+  the authority on the device once (compare its `ca` fingerprint, which the page shows beside
+  the download, with the `ca` line of `cwbcode url`) and trust it.
 
 **What the agent can do.**
 

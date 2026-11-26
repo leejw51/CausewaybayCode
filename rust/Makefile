@@ -32,7 +32,7 @@ help:
 	@echo "make start       - start the backend under supervisor: local mode (127.0.0.1, the token link)"
 	@echo "                   or, with a wallet set, remote mode (0.0.0.0, wallet sign-in)"
 	@echo "make stop        - stop the backend"
-	@echo "make status      - is it running;  make logs - follow its log;  make url - address and token"
+	@echo "make status      - is it running;  make logs - follow its log;  make url - address and a one-time link"
 	@echo "make test        - unit and integration tests (a scripted model, no 20 GB)"
 	@echo "make test-web    - the web client in headless Chrome"
 	@echo "make test-playwright - Playwright: the agent writes a Rust crate through the web client (real model)"
@@ -87,7 +87,7 @@ start: .venv/bin/supervisord
 	@if bin/cwbcode url $(SERVE_ARGS) | grep "^bind  *0\.0\.0\.0" >/dev/null; then \
 		echo "Reachable from other machines: whoever holds the wallet's recovery phrase can run commands here as you."; \
 	else \
-		echo "This machine only: open the 'open' link above (it carries the token). To use it from other machines turn remote mode on: the web dashboard, or bin/cwbcodeclient remote on <wallet address>."; \
+		echo "This machine only: open the 'open' link above (it works once, within 5 minutes; make url prints a new one). To use it from other machines turn remote mode on: the web dashboard, or bin/cwbcodeclient remote on <wallet address>."; \
 	fi
 
 stop:

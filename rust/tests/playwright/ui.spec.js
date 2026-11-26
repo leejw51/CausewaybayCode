@@ -29,7 +29,8 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 
   await test.step('the model is ready', async () => {
-    // Local mode: the link with the backend's token, as `make url` prints it.
+    // Local mode: a link with the backend's token, as one types it (`make url` prints a
+    // one-time code instead, which works once).
     await page.goto(`${url}/#token=${token}`);
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('#status-pill')).toContainText('ready', { timeout: 3 * 60 * 1000 });

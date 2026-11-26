@@ -6,8 +6,8 @@
 #   POST /api/chat   -> a stream of Events, each framed as a 4-byte little-endian length
 #                       followed by that many bytes of message
 #
-# Unless the server is in local mode (Status.auth = open), every request but hello,
-# challenge and login carries a session token (or the server's own token) in the
+# Every request but hello, challenge, login and redeem carries a session token (or the
+# server's own token, which local mode, Status.auth = open, also asks for) in the
 # Authorization header: `Bearer <token>`.
 
 enum Method {
@@ -40,6 +40,9 @@ enum Method {
   removeProject @25;   # project: taken off the list. The folder and what is in it stay.
   run @26;             # project, text (a command; "": guessed from the folder) -> text (the
                        # command and what it printed). Run in the project, in the sandbox.
+  redeem @27;          # text (the one-time code of a link `cwbcode url` printed) -> text (the
+                       # backend's token). Needs no credentials, but only from the backend's
+                       # own machine, and each code works once, for a few minutes.
 }
 
 struct Upload {
@@ -85,6 +88,8 @@ struct Status {
   walletSource @19 :Text;  # where the wallet is set: "" (nowhere), "settings" (set up while
                            # running; can be changed with Method.setup), or the .env file /
                            # "the environment" (fixed there)
+  caFingerprint @21 :Text; # SHA-256 of the server's certificate authority (what a device
+                           # compares with `cwbcode url` before trusting it)
 }
 
 struct Project {

@@ -37,7 +37,7 @@ test('the agent writes a Rust crate that builds, passes its own tests and passes
   page.on('pageerror', (e) => pageErrors.push(String(e)));
 
   await test.step('sign in and wait for the model', async () => {
-    // The test's backend is in local mode (no wallet, this machine only): the token link.
+    // The test's backend is in local mode (no wallet, this machine only): a link with its token, typed.
     await page.goto(`${url}/#token=${token}`);
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('#login-state')).toContainText('local mode');

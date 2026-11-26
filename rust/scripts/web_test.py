@@ -2,13 +2,13 @@
 """The web client, tested in a real browser: starts the backend with a scripted model in a
 scratch home folder, drives headless Chrome over its DevTools protocol through the page
 (sign in with a wallet's recovery phrase, open a project, chat, approve an edit, dashboard,
-knowledge base, tools, sign out; then a backend in local mode, opened with the token link, and
+knowledge base, tools, sign out; then a backend in local mode, opened with the one-time link, and
 turning its remote mode on and off from the dashboard), and
 checks what the page shows and what happened on disk. Screenshots go to the folder given
 as the first argument (default: a temporary one).
 
 Needs Google Chrome and the Python package `websockets`. Run `make build` first."""
-import base64, json, os, shutil, socket, ssl, subprocess, sys, tempfile, time, urllib.request
+import base64, hashlib, json, os, shutil, socket, ssl, subprocess, sys, tempfile, time, urllib.request
 from websockets.sync.client import connect
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -269,9 +269,15 @@ def main():
         page.wait("!document.querySelector('#settings-sheet').classList.contains('open')", "the sheet closed by a click outside")
         # Enter on a project's × is the ×'s (a button's own Enter clicks it), not the row's.
         before = page.js("JSON.stringify([document.querySelector('.row.project.on .what').innerText, document.querySelector('#nav .on').id])")
-        page.js("document.querySelector('.row.project:not(.on) .remove')?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))")
+        other = page.js("document.querySelector('.row.project:not(.on) .what')?.innerText || ''")
+        assert other and page.js("!!document.querySelector('.row.project:not(.on) .remove')"), "there is no other project with a × to try Enter on"
+        page.js("document.querySelector('.row.project:not(.on) .remove').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))")
         time.sleep(0.5)
         assert page.js("JSON.stringify([document.querySelector('.row.project.on .what').innerText, document.querySelector('#nav .on').id])") == before, "Enter on × opened the project"
+        # And a click on the × still takes that project off the list.
+        page.click(".row.project:not(.on) .remove")
+        page.wait(f"![...document.querySelectorAll('.row.project .what')].some(e => e.innerText === {json.dumps(other)})", "the project off the list after a click on its ×")
+        assert page.js("document.querySelector('.row.project.on .what').innerText") == json.loads(before)[0], "removing another project changed the one open"
         # Every view's button is named, also where its word is hidden.
         assert page.js("[...document.querySelectorAll('#nav button')].every(b => b.getAttribute('aria-label'))"), "a view's button has no name"
 
@@ -287,8 +293,19 @@ def main():
         # The drawer opens over the view, and a choice in it closes it.
         page.click("#side-toggle")
         page.wait("getComputedStyle(document.querySelector('.side')).position === 'absolute' && getComputedStyle(document.querySelector('.side')).display !== 'none'", "the drawer open")
+        # Only the height changes (the keyboard or the browser's bars come and go): it stays open.
+        page.send("Emulation.setDeviceMetricsOverride", width=390, height=600, deviceScaleFactor=3, mobile=True)
+        page.wait("innerHeight === 600", "the shorter phone window")
+        time.sleep(0.3)
+        assert page.js("getComputedStyle(document.querySelector('.side')).display !== 'none'"), "the drawer closed when only the height changed"
+        page.send("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=3, mobile=True)
+        page.wait("innerHeight === 844", "the phone window again")
         page.click(".row.project.on")
         page.wait("getComputedStyle(document.querySelector('.side')).display === 'none'", "the drawer closed after a choice")
+        # (Choosing the project starts a new conversation; a message sent before that is done
+        # would be cleared with it.)
+        page.wait("document.querySelector('#transcript')?.innerText.includes('What shall we work on?')", "the project's new conversation")
+        time.sleep(0.5)
         assert page.js("matchMedia('(pointer: coarse)').matches"), "touch was not emulated"
         page.type("#draft", "please write hello.txt"); page.click("#send")
         page.wait("!!document.querySelector('.approval .approve-yes')", "the approval card")
@@ -306,7 +323,7 @@ def main():
         page.click("#nav-dashboard")
         page.wait("!!document.querySelector('#waiting-badge')", "the badge on Chat")
         assert page.text("#waiting-badge") == "1", page.text("#waiting-badge")
-        assert page.js("document.title").startswith("(1) "), page.js("document.title")
+        assert page.js("document.title") == "(1) CC · Causewaybay Code", page.js("document.title")
         assert "waiting for you" in page.text("#status-pill"), page.text("#status-pill")
         page.click("#nav-chat")
         page.wait("!document.querySelector('#waiting-badge')", "no badge in the chat itself")
@@ -330,7 +347,7 @@ def main():
         page.wait("getComputedStyle(document.querySelector('.side')).display !== 'none'", "the sidebar again")
         page.shot(f"{shots}/2-approval.png")
         page.click(".approval .approve-yes")
-        page.wait("document.title === 'Causewaybay Code'", "the title once answered")
+        page.wait("document.title === 'CC · Causewaybay Code'", "the page's own title once answered")
         page.wait("document.querySelector('#transcript').innerText.includes('Anything else?')", "the answer")
         assert open(f"{home}/proj/hello.txt").read() == "hello from the web\n"
         assert page.js("document.querySelectorAll('.msg.text pre').length") == 1, "the code block is not shown as code"
@@ -425,6 +442,11 @@ def main():
         trusting = ssl.create_default_context(cafile=f"{home}/.cwbcode/ca.pem")
         ca = urllib.request.urlopen(f"https://localhost:{port}/ca.crt", context=trusting).read().decode()
         assert ca == open(f"{home}/.cwbcode/ca.pem").read(), "the downloaded authority is not the backend's"
+        # Beside it, its SHA-256, to compare with the `ca` line of `cwbcode url`.
+        ca_sha = hashlib.sha256(ssl.PEM_cert_to_DER_cert(ca)).hexdigest()
+        assert page.text("#trust-fingerprint") == ca_sha, page.text("#trust-fingerprint")
+        printed = subprocess.run([f"{ROOT}/target/release/cwbcode", "url", "--bind", f"127.0.0.1:{port}", "--env-file", "/dev/null"], env=dict(env, CWBCODE_WALLET=WALLET), capture_output=True, text=True).stdout
+        assert f"(sha256 {ca_sha})" in next(line for line in printed.splitlines() if line.startswith("ca ")), printed
         page.shot(f"{shots}/4-dashboard.png")
 
         print("6. the knowledge base saves and finds a note")
@@ -457,7 +479,7 @@ def main():
         assert not [e for e in page.errors if "401" not in e], f"the page reported errors: {page.errors}"
         page.errors.clear()
 
-        print("9. a backend without a wallet is in local mode: the token link, no wallet")
+        print("9. a backend without a wallet is in local mode: the one-time link, no wallet")
         port2 = free_port()
         # (No address is given: the backend chooses it by its mode, and moves when the mode changes.)
         local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port2), "--script", f"{home}/script.json", "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -469,16 +491,36 @@ def main():
         page.send("Page.navigate", url=f"https://127.0.0.1:{port2}")
         page.wait("!!document.querySelector('#token') && !document.querySelector('.side')", "the token page in local mode")
         local_token = open(f"{home}/.cwbcode-local/token").read().strip()
-        # The link `cwbcode url` prints carries it; the page keeps it and takes it out of the address.
-        printed = subprocess.run([f"{ROOT}/target/release/cwbcode", "url", "--port", str(port2), "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), capture_output=True, text=True).stdout
-        link = next(line.split()[1] for line in printed.splitlines() if line.startswith("open "))
-        assert link == f"https://127.0.0.1:{port2}/#token={local_token}", printed
+        # The link `cwbcode url` prints carries a one-time code, not the token (the browser's
+        # history keeps addresses); the page exchanges it for the token and takes it out of
+        # the address.
+        def open_link():
+            printed = subprocess.run([f"{ROOT}/target/release/cwbcode", "url", "--port", str(port2), "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), capture_output=True, text=True).stdout
+            link = next(line.split()[1] for line in printed.splitlines() if line.startswith("open "))
+            assert link.startswith(f"https://127.0.0.1:{port2}/#code=") and local_token not in printed, printed
+            return link
+        link = open_link()
         # Pasted into this same tab (only the part after # changes, the page does not reload).
         page.send("Page.navigate", url=link)
-        page.wait("!!document.querySelector('.side')", "the app from the token link pasted into the open tab")
-        assert page.js("location.hash") == "", "the token stayed in the address"
+        page.wait("!!document.querySelector('.side')", "the app from the link pasted into the open tab")
+        assert page.js("location.hash") == "", "the code stayed in the address"
+        assert page.js("localStorage.getItem('cwbcode-token')") == local_token, "the token the code was exchanged for was not kept"
         # (Another address is another site to the browser: its language starts from the system's.)
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        # The same link again: the code was used up. The page says so, and keeps the token it
+        # has; so does a token in a link that is not the backend's.
+        page.send("Page.navigate", url=link)
+        page.wait("(document.querySelector('#toast') || {}).innerText?.includes('did not work')", "the refusal of a used link")
+        page.send("Page.navigate", url=f"https://127.0.0.1:{port2}/#token=not-the-token")
+        time.sleep(1)
+        assert page.js("location.hash") == "" and page.js("!!document.querySelector('.side')"), "a bad link signed the page out"
+        assert page.js("localStorage.getItem('cwbcode-token')") == local_token, "a bad link replaced the token kept"
+        # A token typed into the address by hand still works.
+        page.js("localStorage.removeItem('cwbcode-token')")
+        page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
+        page.send("Page.navigate", url=f"https://127.0.0.1:{port2}/#token={local_token}")
+        page.wait("!!document.querySelector('.side') && localStorage.getItem('cwbcode-token') === " + json.dumps(local_token), "the app from a typed token link")
+        assert page.js("location.hash") == "", "the token stayed in the address"
         assert page.js("!document.querySelector('#phrase') && !document.querySelector('#token') && !document.querySelector('#signout')"), "local mode showed a login"
         page.wait("document.querySelector('#login-state') && document.querySelector('#login-state').innerText.includes('local mode')", "the local-mode label")
         page.type("#open-path", "~/proj"); page.click("#open-go")
@@ -516,8 +558,8 @@ def main():
         # The wallet's session ended with remote mode: local mode asks for this machine's token.
         page.wait("!!document.querySelector('#token')", "the token page once remote mode is off")
         page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
-        page.send("Page.navigate", url=link)
-        page.wait("!!document.querySelector('.side') && !document.querySelector('#signout')", "local mode again, from the token link")
+        page.send("Page.navigate", url=open_link())
+        page.wait("!!document.querySelector('.side') && !document.querySelector('#signout')", "local mode again, from a new link")
         page.click("#nav-dashboard")
         page.wait("(document.querySelector('#remote') || {}).innerText?.includes('Local mode')", "the card in local mode")
         time.sleep(1.5)
