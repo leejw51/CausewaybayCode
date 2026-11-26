@@ -1,0 +1,124 @@
+# Release build of the Mac app (Causewaybay Code.app, from `make package-dmg`) as workflow
+# artifacts: the app zipped, and its disk image. The same recipe as FruitNationMessenger's
+# release-macos.yml: a Developer ID certificate goes into a throwaway keychain and Tauri signs
+# and notarizes with it, reading
+#   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+# Without the secrets the app is signed ad hoc (as `make package` does on a Mac), so a dry run
+# still produces a build: one that macOS will not open from a download without Control-click,
+# Open.
+#
+# Repository secrets (all optional):
+#   MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD   Developer ID Application (.p12)
+#   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, TEAM_ID             notarization
+#
+# The model is not in the app (20 GB): users download it with `make download`, or the app's
+# backend reports it missing. Publishing a GitHub release from the artifacts stays a separate,
+# explicit step.
+name: Release (macOS app)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Build, sign, notarize
+    runs-on: macos-15 # Apple Silicon: the app's only target
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust, with the WebAssembly target
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            rust -> target
+            rust/web -> target
+            rust/desktop -> target
+
+      # capnp, trunk and cmake as for CI; the Tauri CLI for the app.
+      - name: Install build tools
+        run: |
+          brew install capnp trunk cmake
+          cargo install tauri-cli --version '^2' --locked
+
+      - name: Xcode's Metal compiler
+        run: xcrun -sdk macosx metal --version || { xcodebuild -downloadComponent MetalToolchain && xcrun -sdk macosx metal --version; }
+
+      - name: Import codesigning certificate
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ]; then
+            echo "::warning::MACOS_CERTIFICATE_P12_BASE64 not set, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          CERT_INFO=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" || true)
+          if [ -n "$CERT_INFO" ]; then
+            CERT_ID=$(echo "$CERT_INFO" | head -1 | awk -F'"' '{print $2}')
+            echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+            echo "Found certificate: $CERT_ID"
+          else
+            echo "::warning::No Developer ID Application certificate found, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
+      # Tauri takes APPLE_SIGNING_IDENTITY over tauri.conf.json's ad-hoc "-", and notarizes
+      # when APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are set.
+      - name: Build the app and its disk image
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          # An ad-hoc signature cannot be notarized.
+          if [ "${APPLE_SIGNING_IDENTITY:--}" = "-" ]; then unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; fi
+          make package-dmg
+          mkdir -p dist
+          app="rust/desktop/target/release/bundle/macos/Causewaybay Code.app"
+          ditto -c -k --keepParent "$app" "dist/Causewaybay-Code-macos-arm64.app.zip"
+          cp rust/desktop/target/release/bundle/dmg/*.dmg dist/
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+          ls -la dist
+
+      # What a person downloading it gets, printed either way.
+      - name: Assess with Gatekeeper
+        if: always()
+        run: |
+          app="rust/desktop/target/release/bundle/macos/Causewaybay Code.app"
+          [ -d "$app" ] && { codesign --verify --deep --strict -vv "$app" || true; spctl -a -t exec -vv "$app" || true; }
+          for f in dist/*.dmg; do [ -f "$f" ] && { spctl -a -t open --context context:primary-signature -vv "$f" || true; xcrun stapler validate "$f" || true; }; done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: causewaybay-code-macos
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12"
