@@ -220,6 +220,9 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .row.on { background: var(--btn2); border-left-color: var(--gold); }
 .row small { color: var(--dim); display: block; overflow: hidden; text-overflow: ellipsis; font-size: .85em; }
 .row.project, .row.session { display: flex; align-items: center; gap: .3rem; } .row.project .what, .row.session .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* "Remove?" with Yes and No, in place of the ×. */
+.row .confirm { display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto; } .row .confirm .ask { color: var(--bad); font-size: .92em; }
+.row .confirm button { min-height: 1.9rem; padding: 0 .55rem; }
 .row .remove { min-height: 1.9rem; width: 1.9rem; opacity: .55; } .row .remove:hover { opacity: 1; color: var(--bad); }
 /* The folder to open: always under the home folder, which the field says. */
 .open { display: flex; gap: .3rem; align-items: center; padding: 0 .55rem .4rem; }

@@ -121,6 +121,15 @@ class Page:
             el.dispatchEvent(new Event('input', {{bubbles: true}})); }})()""")
     def click(self, selector):
         self.js(f"document.querySelector({json.dumps(selector)}).click()")
+    def mouse(self, selector):
+        """A real click: the mouse pressed and released on the middle of the element, as a
+        person's is (not the element's own click(), which skips what a pointer goes through)."""
+        box = json.loads(self.js(f"(() => {{ const e = document.querySelector({json.dumps(selector)}); if (!e) return 'null'; e.scrollIntoView({{block: 'center'}}); const r = e.getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]); }})()"))
+        assert box and box[2] > 0 and box[3] > 0, f"nothing to click at {selector}: {box}"
+        hit = self.js(f"(() => {{ const e = document.elementFromPoint({box[0]}, {box[1]}); return !!e && !!e.closest({json.dumps(selector)}); }})()")
+        assert hit, f"{selector} is covered by something else where it would be clicked"
+        for kind in ("mousePressed", "mouseReleased"):
+            self.send("Input.dispatchMouseEvent", type=kind, x=box[0], y=box[1], button="left", clickCount=1)
     def click_text(self, selector, text):
         self.js(f"[...document.querySelectorAll({json.dumps(selector)})].find(e => e.textContent.trim() === {json.dumps(text)}).click()")
     def text(self, selector):
@@ -525,20 +534,40 @@ def main():
         page.click("#nav-chat"); page.click("#new-chat")
         page.type("#draft", "again"); page.click("#send")
         page.wait("document.querySelector('#transcript').innerText.includes('A second answer.')", "the second answer")
-        # A conversation is removed with its ×, after a question: "no" keeps it, "yes" removes it.
+        # A conversation is removed with its ×, by real mouse clicks. The × asks on the row itself
+        # ("Remove?" Yes / No; no browser dialog, which the Mac app's window would not show).
         rows = "document.querySelectorAll('.row.session').length"
         before = page.js(rows)
         assert before >= 2, before
-        page.js("window.confirm = () => false; document.querySelector('.row.session:not(.on) .remove').click()")
-        time.sleep(0.5)
-        assert page.js(rows) == before, "a conversation was removed without a yes"
-        page.js("window.confirm = (said) => { window.asked = said; return true; }; document.querySelector('.row.session:not(.on) .remove').click()")
+        page.js("window.confirm = () => { window.usedConfirm = true; return false; }")
+        other = ".row.session:not(.on)"
+        page.mouse(f"{other} .remove")
+        page.wait("!!document.querySelector('.row.session .remove-yes')", "the question on the row")
+        assert page.js(rows) == before, "a conversation was removed before a yes"
+        # No: the row is as it was.
+        page.mouse(".row.session .remove-no")
+        page.wait("!document.querySelector('.row.session .remove-yes')", "the question gone after No")
+        assert page.js(rows) == before, "No removed a conversation"
+        # Yes: it is gone, from the list and from the backend.
+        gone = page.js(f"document.querySelector('{other} small').innerText.split(' ')[0]")
+        page.mouse(f"{other} .remove")
+        page.wait("!!document.querySelector('.row.session .remove-yes')", "the question again")
+        page.shot(f"{shots}/7b-remove-ask.png")
+        page.mouse(".row.session .remove-yes")
         page.wait(f"{rows} === {before - 1}", "one conversation fewer")
-        assert "for good" in page.js("window.asked"), page.js("window.asked")
         page.wait("(document.querySelector('#notice') || {}).innerText?.includes('is removed')", "the notice that it was removed")
+        assert gone not in page.js("[...document.querySelectorAll('.row.session small')].map(e => e.innerText).join(' ')"), f"{gone} is still listed"
+        # It stays gone after a reload: the backend has deleted it.
+        page.send("Page.navigate", url=url)
+        page.wait(f"!!document.querySelector('.side') && {rows} === {before - 1}", "still gone after a reload")
         # The one that is open: removing it leaves an empty, new conversation.
-        page.js("document.querySelector('.row.session.on .remove').click()")
+        page.mouse(".row.session")
+        page.wait("!!document.querySelector('.row.session.on')", "a conversation open")
+        page.mouse(".row.session.on .remove")
+        page.wait("!!document.querySelector('.row.session .remove-yes')", "the question for the open one")
+        page.mouse(".row.session .remove-yes")
         page.wait(f"{rows} === {before - 2} && document.querySelector('#transcript').innerText.includes('What shall we work on?')", "a new conversation after removing the open one")
+        assert not page.js("window.usedConfirm"), "the browser's own confirm box was used"
         print("8. signing out ends the session; a reload stays signed out")
         session = page.js("localStorage.getItem('cwbcode-token')")
         page.click("#signout")

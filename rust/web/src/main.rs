@@ -104,6 +104,8 @@ struct App {
     lang: RwSignal<Lang>,
     /// The project and conversation to come back to after a refresh, until they are restored.
     resume: RwSignal<(String, i64)>,
+    /// The conversation whose row asks "Remove?" (0: none).
+    removing: RwSignal<i64>,
     /// Something to tell the user that is not an error.
     notice: RwSignal<String>,
     /// Tokens of context the conversation shown last reported (0: not known yet).
@@ -220,6 +222,7 @@ impl App {
             size: RwSignal::new(Some(text("size", "m")).filter(|s| SIZES.contains(&s.as_str())).unwrap_or_else(|| "m".into())),
             lang: RwSignal::new(prefs["lang"].as_str().and_then(Lang::from_code).unwrap_or_else(|| Lang::from_browser(&browser))),
             resume: RwSignal::new((text("project", ""), prefs["session"].as_i64().unwrap_or(0))),
+            removing: RwSignal::new(0),
             notice: RwSignal::new(String::new()),
             ctx: RwSignal::new(0),
             settings: RwSignal::new(false),
@@ -676,13 +679,10 @@ impl App {
         after_draw(|| motion::to_end("console-out"));
     }
 
-    /// Delete a conversation, once the user has said yes: it cannot be brought back.
+    /// Delete a conversation (the user has said yes on its row): it cannot be brought back.
     async fn remove_session(&self, id: i64) {
         let lang = self.lang.get_untracked();
-        let sure = web_sys::window().and_then(|w| w.confirm_with_message(&tr_with(lang, "remove_session_ask", &id.to_string())).ok()).unwrap_or(false);
-        if !sure {
-            return;
-        }
+        self.removing.set(0);
         if self.call(self.request(Method::RemoveSession).session(id)).await.is_some() {
             if self.session.get_untracked() == id {
                 self.new_conversation();
@@ -1367,10 +1367,21 @@ fn Sidebar() -> impl IntoView {
                                 on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); app.chosen(); spawn_local(async move { app.select_session(id).await }) }>
                                 <span class="what">{if label.is_empty() { format!("#{id}") } else { label }}
                                     <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small></span>
-                                // Removed for good (after a question): its log and undo history go with it.
-                                <button class="ghost round remove" title=t("remove_session") aria-label=t("remove_session")
-                                    on:click=move |ev| { ev.stop_propagation(); spawn_local(async move { app.remove_session(id).await }) }
-                                    on:keydown=move |ev| ev.stop_propagation()>"×"</button>
+                                // Removed for good, after a question asked on the row itself (the
+                                // browser's own confirm box is not shown in the Mac app's window):
+                                // the × becomes "Remove?" with Yes and No.
+                                <Show when=move || app.removing.get() == id fallback=move || view! {
+                                    <button class="ghost round remove" title=t("remove_session") aria-label=t("remove_session")
+                                        on:click=move |ev| { ev.stop_propagation(); app.removing.set(id) }
+                                        on:keydown=move |ev| ev.stop_propagation()>"×"</button>
+                                }>
+                                    <span class="confirm" title=move || tr_with(app.lang.get(), "remove_session_ask", &id.to_string())
+                                        on:click=move |ev| ev.stop_propagation() on:keydown=move |ev| ev.stop_propagation()>
+                                        <span class="ask">{t("remove_ask_short")}</span>
+                                        <button class="danger remove-yes" on:click=move |_| spawn_local(async move { app.remove_session(id).await })>{t("yes")}</button>
+                                        <button class="remove-no" on:click=move |_| app.removing.set(0)>{t("no")}</button>
+                                    </span>
+                                </Show>
                             </div>
                         }
                     }/>
