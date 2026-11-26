@@ -1,6 +1,6 @@
 [package]
 name = "cwbcode"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Causewaybay Code backend: the model on Apple MLX, the agent, its tools and its SQLite stores, served over HTTP/3 and HTTP/2"
 license = "Apache-2.0"
