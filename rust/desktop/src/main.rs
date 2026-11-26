@@ -166,15 +166,17 @@ fn minimal_path(path: &str) -> bool {
 
 /// What a terminal's environment has that a backend needs, and an app opened from the Finder
 /// does not get: the PATH (the agent's commands would not find cargo, Homebrew's tools, and
-/// the like), and the Hugging Face settings (a token exported in .zshrc makes the model's
-/// download faster; without it the backend finds none). Asked of an interactive login shell
+/// the like), the Hugging Face settings (a token exported in .zshrc makes the model's
+/// download faster; without it the backend finds none), and where the models are kept
+/// (OLLAMA_MODELS, CWBCODE_MODELS: a store moved to another disk in .zshrc would otherwise
+/// not be found, and the model downloaded again). Asked of an interactive login shell
 /// (~/.cargo/bin and exports are often in .zshrc, not .zprofile), which prints each with
 /// printenv after a marker (what its startup files print is passed over). Asked only when
 /// the app was not started from a terminal (its parent is launchd) or the PATH it has is the
 /// minimal one, and given a few seconds: the shell runs in a session of its own and is killed
 /// with whatever it started if it takes longer (startup files that wait for something, or
 /// leave a program holding its output). The token is passed to the backend only, never shown.
-const LOGIN_VARS: [&str; 5] = ["PATH", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "HF_HOME"];
+const LOGIN_VARS: [&str; 7] = ["PATH", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "HF_HOME", "OLLAMA_MODELS", "CWBCODE_MODELS"];
 
 fn login_env() -> Option<std::collections::HashMap<String, String>> {
     const MARK: &str = "__cwbcode_env__";
@@ -244,9 +246,9 @@ fn login_env() -> Option<std::collections::HashMap<String, String>> {
     }
     match path {
         Some(path) if path.starts_with('/') => {
-            let hf: Vec<&str> = LOGIN_VARS[1..].iter().copied().filter(|v| found.contains_key(*v)).collect();
-            if !hf.is_empty() {
-                note(&format!("from the login shell for the backend: {}", hf.join(", ")));
+            let taken: Vec<&str> = LOGIN_VARS[1..].iter().copied().filter(|v| found.contains_key(*v)).collect();
+            if !taken.is_empty() {
+                note(&format!("from the login shell for the backend: {}", taken.join(", ")));
             }
             Some(found)
         }

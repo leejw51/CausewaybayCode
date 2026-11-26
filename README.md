@@ -394,8 +394,12 @@ store or `~/.cwbcode/models` (`make download`) is used as it is.
   backend tells MLX to load it from there.
 - Opened from the Finder (or with only the system's PATH), the app takes the PATH of an
   interactive login shell (`printenv PATH`, so fish works too), so the agent's commands find
-  cargo and Homebrew's tools as in a terminal. A shell that takes more than 3 s is stopped,
-  and the backend gets the PATH the app has.
+  cargo and Homebrew's tools as in a terminal. From the same shell it takes the Hugging Face
+  settings (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HF_TOKEN_PATH`, `HF_HOME`) and where the
+  models are kept (`OLLAMA_MODELS`, `CWBCODE_MODELS`), so a token exported in `.zshrc`, or an
+  Ollama store moved to another disk there, is found as from a terminal (what the app was
+  given itself, e.g. by `launchctl setenv`, comes first; the token goes to the backend only).
+  A shell that takes more than 3 s is stopped, and the backend gets what the app has.
 - A backend it starts writes to `~/.cwbcode/app-backend.log`, and reads a wallet from
   `~/.cwbcode/app.env` if there is one (`CWBCODE_WALLET=0x...`, remote mode).
   `CWBCODE_APP_PORT` and `CWBCODE_APP_ARGS` change its port and add arguments; `make app
