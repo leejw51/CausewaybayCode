@@ -533,6 +533,19 @@ impl Worker {
                 let were = if before == 1 { "1 message was".to_string() } else { format!("{before} messages were") };
                 Ok(Response::text(format!("{were} replaced by a summary. The full transcript is kept in the log.")))
             }
+            Method::RemoveSession => {
+                // In its turn on the model's thread: never under a turn that is writing to it.
+                let store = Store::open_project_existing(&project)?.with_context(|| format!("this project has no conversation #{}", request.session))?;
+                if !store.has_session(request.session)? {
+                    bail!("this project has no conversation #{}", request.session);
+                }
+                // The conversation in memory, if it is this one, is given up with it.
+                if matches!(&self.current, Some((path, agent)) if *path == project && agent.session == request.session) {
+                    self.current = None;
+                }
+                store.remove_session(request.session)?;
+                Ok(Response::text(format!("Conversation #{} is removed. The project's files are untouched.", request.session)))
+            }
             Method::Undo => {
                 let store = Store::open_project_existing(&project)?.with_context(|| format!("this project has no conversation #{}", request.session))?;
                 if !store.has_session(request.session)? {

@@ -676,6 +676,22 @@ impl App {
         after_draw(|| motion::to_end("console-out"));
     }
 
+    /// Delete a conversation, once the user has said yes: it cannot be brought back.
+    async fn remove_session(&self, id: i64) {
+        let lang = self.lang.get_untracked();
+        let sure = web_sys::window().and_then(|w| w.confirm_with_message(&tr_with(lang, "remove_session_ask", &id.to_string())).ok()).unwrap_or(false);
+        if !sure {
+            return;
+        }
+        if self.call(self.request(Method::RemoveSession).session(id)).await.is_some() {
+            if self.session.get_untracked() == id {
+                self.new_conversation();
+            }
+            self.refresh_sessions().await;
+            self.tell(tr_with(lang, "removed_session", &id.to_string()));
+        }
+    }
+
     async fn remove_project(&self, path: String) {
         if self.call(Request::new(Method::RemoveProject).project(&path)).await.is_some() {
             let shown = self.tilde(&path);
@@ -1052,7 +1068,8 @@ const FONTS: [(&str, &str, &str, f64); 55] = [
 ];
 /// What stands in where a face has no glyph: the Korean pixel face, then the system's.
 const FONT_FALLBACK: &str = "\"NeoDGM\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Apple SD Gothic Neo\", \"Hiragino Sans\", \"PingFang HK\", \"PingFang SC\", sans-serif";
-const SIZES: [&str; 4] = ["s", "m", "l", "xl"];
+/// The sizes of the conversation's text, smallest first (style.css sets the scale of each).
+const SIZES: [&str; 7] = ["xs", "s", "m", "l", "xl", "2xl", "3xl"];
 
 #[component]
 fn Prefs() -> impl IntoView {
@@ -1090,7 +1107,7 @@ fn Prefs() -> impl IntoView {
 
 /// One size smaller or larger, within what there is.
 fn step_size(app: App, by: i32) {
-    let now = SIZES.iter().position(|s| *s == app.size.get_untracked()).unwrap_or(1) as i32;
+    let now = SIZES.iter().position(|s| *s == app.size.get_untracked()).unwrap_or(2) as i32;
     app.size.set(SIZES[(now + by).clamp(0, SIZES.len() as i32 - 1) as usize].to_string());
 }
 
@@ -1348,8 +1365,12 @@ fn Sidebar() -> impl IntoView {
                             <div class="row session" class:on=move || app.session.get() == id tabindex="0" role="button"
                                 on:click=move |_| { app.chosen(); spawn_local(async move { app.select_session(id).await }) }
                                 on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); app.chosen(); spawn_local(async move { app.select_session(id).await }) }>
-                                {if label.is_empty() { format!("#{id}") } else { label }}
-                                <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small>
+                                <span class="what">{if label.is_empty() { format!("#{id}") } else { label }}
+                                    <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small></span>
+                                // Removed for good (after a question): its log and undo history go with it.
+                                <button class="ghost round remove" title=t("remove_session") aria-label=t("remove_session")
+                                    on:click=move |ev| { ev.stop_propagation(); spawn_local(async move { app.remove_session(id).await }) }
+                                    on:keydown=move |ev| ev.stop_propagation()>"×"</button>
                             </div>
                         }
                     }/>

@@ -127,7 +127,8 @@
   color-scheme: light;
 }
 html { font-size: 14px; }
-:root[data-size="s"] { --zoom: .86; } :root[data-size="l"] { --zoom: 1.16; } :root[data-size="xl"] { --zoom: 1.38; }
+:root[data-size="xs"] { --zoom: .74; } :root[data-size="s"] { --zoom: .86; } :root[data-size="l"] { --zoom: 1.16; } :root[data-size="xl"] { --zoom: 1.38; }
+:root[data-size="2xl"] { --zoom: 1.62; } :root[data-size="3xl"] { --zoom: 1.9; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; }
@@ -218,7 +219,7 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .row:hover { background: var(--btn2); }
 .row.on { background: var(--btn2); border-left-color: var(--gold); }
 .row small { color: var(--dim); display: block; overflow: hidden; text-overflow: ellipsis; font-size: .85em; }
-.row.project { display: flex; align-items: center; gap: .3rem; } .row.project .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row.project, .row.session { display: flex; align-items: center; gap: .3rem; } .row.project .what, .row.session .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .row .remove { min-height: 1.9rem; width: 1.9rem; opacity: .55; } .row .remove:hover { opacity: 1; color: var(--bad); }
 /* The folder to open: always under the home folder, which the field says. */
 .open { display: flex; gap: .3rem; align-items: center; padding: 0 .55rem .4rem; }
@@ -366,7 +367,7 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 @media (pointer: coarse) {
   button, .chip, select, a.button, input:not([type="checkbox"]), .seg button { min-height: 44px; }
   button.round, .row .remove { width: 44px; min-height: 44px; }
-  .row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; } .row.project { flex-direction: row; align-items: center; }
+  .row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; } .row.project, .row.session { flex-direction: row; align-items: center; }
   input:not([type="checkbox"]), textarea, select { font-size: max(16px, 1em); }
   input[type="checkbox"] { width: 1.4rem; height: 1.4rem; }
 }

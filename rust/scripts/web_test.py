@@ -282,15 +282,17 @@ def main():
         said = "parseFloat(getComputedStyle(document.querySelector('#draft')).fontSize)"
         interface = "['#nav-chat', '#send', '#open-go'].map(q => getComputedStyle(document.querySelector(q)).fontSize).join()"
         sizes, around = [page.js(said)], page.js(interface)
-        page.click("#font-smaller"); page.wait("document.documentElement.dataset.size === 's'", "smaller text")
-        assert page.js("document.querySelector('#font-smaller').disabled"), "there is nothing smaller than small"
-        sizes.insert(0, page.js(said))
-        for size in ["m", "l", "xl"]:
+        # Seven steps: two down from the middle one, four up.
+        for size in ["s", "xs"]:
+            page.click("#font-smaller"); page.wait(f"document.documentElement.dataset.size === '{size}'", f"size {size}")
+            sizes.insert(0, page.js(said))
+        assert page.js("document.querySelector('#font-smaller').disabled"), "there is nothing smaller than the smallest"
+        for size in ["s", "m", "l", "xl", "2xl", "3xl"]:
             page.click("#font-larger"); page.wait(f"document.documentElement.dataset.size === '{size}'", f"size {size}")
-            if size != "m":
+            if size not in ("s", "m"):
                 sizes.append(page.js(said))
             assert page.js(interface) == around, f"the interface changed size with the messages ({size})"
-        assert sizes == sorted(sizes) and len(set(sizes)) == 4 and page.js("document.querySelector('#font-larger').disabled"), sizes
+        assert sizes == sorted(sizes) and len(set(sizes)) == 7 and page.js("document.querySelector('#font-larger').disabled"), sizes
         assert page.js("document.documentElement.scrollWidth <= innerWidth"), "the largest text makes the page scroll sideways"
         page.shot(f"{shots}/2b-light-stacked-turkish.png")
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'ko'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
@@ -298,13 +300,13 @@ def main():
         page.wait("!!document.querySelector('#kb-note')", "the knowledge view")
         prefs = json.loads(page.js("localStorage.getItem('cwbcode-prefs')"))
         assert (prefs["theme"], prefs["layout"], prefs["lang"], prefs["view"]) == ("light", "vertical", "ko", "knowledge") and prefs["project"].endswith("/proj"), prefs
-        assert (prefs["font"], prefs["size"]) == ("mono", "xl"), prefs
+        assert (prefs["font"], prefs["size"]) == ("mono", "3xl"), prefs
         page.send("Page.navigate", url=url)
         page.wait("!!document.querySelector('#kb-note') && document.querySelector('.app').classList.contains('vertical')", "the same view and layout after a refresh")
         assert page.js("document.documentElement.dataset.theme") == "light" and page.text("#nav-chat") == "채팅"
-        assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("mono", "xl"), "the typeface and size were not kept"
+        assert (page.js("document.documentElement.dataset.font"), page.js("document.documentElement.dataset.size")) == ("mono", "3xl"), "the typeface and size were not kept"
         page.js("(() => { const s = document.querySelector('#font'); s.value = 'pixel'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
-        page.click("#font-smaller"); page.click("#font-smaller")
+        for _ in range(4): page.click("#font-smaller")  # 3xl, 2xl, xl, l, m
         page.wait("document.documentElement.dataset.size === 'm' && document.documentElement.dataset.font === 'pixel'", "the usual typeface and size")
         page.wait("document.querySelector('.row.project.on')?.innerText.includes('proj')", "the same project after a refresh")
         page.wait("getComputedStyle(document.body).color === 'rgb(20, 28, 72)'", "the light theme's colours after a refresh")
@@ -523,6 +525,20 @@ def main():
         page.click("#nav-chat"); page.click("#new-chat")
         page.type("#draft", "again"); page.click("#send")
         page.wait("document.querySelector('#transcript').innerText.includes('A second answer.')", "the second answer")
+        # A conversation is removed with its ×, after a question: "no" keeps it, "yes" removes it.
+        rows = "document.querySelectorAll('.row.session').length"
+        before = page.js(rows)
+        assert before >= 2, before
+        page.js("window.confirm = () => false; document.querySelector('.row.session:not(.on) .remove').click()")
+        time.sleep(0.5)
+        assert page.js(rows) == before, "a conversation was removed without a yes"
+        page.js("window.confirm = (said) => { window.asked = said; return true; }; document.querySelector('.row.session:not(.on) .remove').click()")
+        page.wait(f"{rows} === {before - 1}", "one conversation fewer")
+        assert "for good" in page.js("window.asked"), page.js("window.asked")
+        page.wait("(document.querySelector('#notice') || {}).innerText?.includes('is removed')", "the notice that it was removed")
+        # The one that is open: removing it leaves an empty, new conversation.
+        page.js("document.querySelector('.row.session.on .remove').click()")
+        page.wait(f"{rows} === {before - 2} && document.querySelector('#transcript').innerText.includes('What shall we work on?')", "a new conversation after removing the open one")
         print("8. signing out ends the session; a reload stays signed out")
         session = page.js("localStorage.getItem('cwbcode-token')")
         page.click("#signout")

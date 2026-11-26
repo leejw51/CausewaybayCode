@@ -49,6 +49,8 @@ enum Method {
                        # own machine, and each code works once, for a few minutes.
   downloadModel @28;   # download the model (when Status.modelState is "missing"); Status
                        # then shows how far it is, and the model loads when it is done
+  removeSession @29;   # project, session: the conversation is deleted, with its log and the
+                       # file versions kept for undo. The project's files are not touched.
 }
 
 struct Upload {

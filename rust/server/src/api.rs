@@ -254,7 +254,7 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
     }
     let response = match request.method {
         // These need the model thread, in turn.
-        Method::KbAdd | Method::Compact | Method::Undo => queued(&app, request).await,
+        Method::KbAdd | Method::Compact | Method::Undo | Method::RemoveSession => queued(&app, request).await,
         Method::KbSearch if !request.flag => queued(&app, request).await,
         Method::Chat => Response::error(format!("chat is a stream: POST it to {CHAT_PATH}")),
         // The rest is answered at once, also while the model is busy.
@@ -587,7 +587,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 out.changes = store.changes(request.session)?;
             }
         }
-        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem | Method::DownloadModel => bail!("{:?} is not answered here", request.method),
+        Method::KbAdd | Method::Compact | Method::Undo | Method::RemoveSession | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem | Method::DownloadModel => bail!("{:?} is not answered here", request.method),
     }
     Ok(out)
 }

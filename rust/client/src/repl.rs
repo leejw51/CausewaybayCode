@@ -20,6 +20,7 @@ Conversation
   /compact               replace the model's context by a summary (the log keeps everything)
   /save [name]           name this conversation (every conversation is saved as you go)
   /sessions              list this project's conversations
+  /remove [id|name]      delete a conversation for good (this one, or the one named)
   /resume <id|name>      continue one
   /run [command]         run the project's code (the command, or one guessed from the folder)
   /undo                  take back the file changes of the last turn that made any
@@ -360,6 +361,15 @@ async fn command(session: &Session, state: &mut State, line: &str) -> Result<Flo
             println!("This conversation is saved as \"{name}\" (#{id}). Continue it later with /resume {name} or cwbcodeclient --resume {name}.");
         }
         "/sessions" => print!("{}", sessions(session).await?),
+        // Delete a conversation for good: this one, or one named by number or name.
+        "/remove" => {
+            let id = if rest.is_empty() { in_conversation(state)? } else { find_session(session, rest).await? };
+            println!("{}", client.call(&session.request(Method::RemoveSession).session(id)).await?.text);
+            if state.session == id {
+                state.session = 0;
+                println!("The next message starts a new conversation.");
+            }
+        }
         "/resume" => {
             state.session = find_session(session, need("<id|name>")?).await?;
             println!("Continuing conversation #{}.", state.session);

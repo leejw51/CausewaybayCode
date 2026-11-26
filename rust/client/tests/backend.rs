@@ -269,7 +269,8 @@ async fn the_token_and_the_certificate_are_required() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn projects_are_folders_under_home_with_their_own_store() {
-    let server = Server::start("projects", HELLO, &[]);
+    let twice = format!("[{0},{0}]", HELLO.trim_start_matches('[').trim_end_matches(']'));
+    let server = Server::start("projects", &twice, &[]);
     let client = server.client(true).await;
     // A folder that does not exist is not a project to talk in ...
     for outside in ["/etc", "/", "/tmp", "~", "~/.cwbcode", "~/missing", "relative/path"] {
@@ -333,6 +334,17 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     let sessions = client.call(&Request::new(Method::Sessions).project(&server.project())).await.unwrap().sessions;
     assert_eq!((sessions[0].id, sessions[0].name.as_str(), sessions[0].first.as_str()), (session, "greeting", "hello there"));
     assert!(client.call(&Request::new(Method::Transcript).project(&server.project()).session(999)).await.is_err());
+    // A conversation is removed for good, with its log; one that is not there is an error, and
+    // the project's files stay.
+    assert!(client.call(&Request::new(Method::RemoveSession).project(&server.project()).session(999)).await.is_err());
+    let said = client.call(&Request::new(Method::RemoveSession).project(&server.project()).session(session)).await.unwrap().text;
+    assert!(said.contains(&format!("#{session}")) && said.contains("removed"), "{said}");
+    assert!(client.call(&Request::new(Method::Sessions).project(&server.project())).await.unwrap().sessions.is_empty());
+    assert!(client.call(&Request::new(Method::Transcript).project(&server.project()).session(session)).await.is_err());
+    assert!(server.home.join("proj").is_dir());
+    // The next message starts a new conversation, with another number.
+    let events = read_all(&mut client.chat(&chat(&server, 0, "hello again", "")).await.unwrap()).await;
+    assert_ne!(session_of(&events), session);
 }
 
 const EDITS: &str = r#"[

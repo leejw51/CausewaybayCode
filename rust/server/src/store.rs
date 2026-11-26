@@ -428,7 +428,11 @@ impl Store {
     // ---------- conversations ----------
 
     pub fn new_session(&self, cwd: &str) -> Result<i64> {
-        self.conn.execute("INSERT INTO sessions (cwd) VALUES (?1)", [cwd])?;
+        // A number is never given twice: SQLite would hand a removed conversation's number
+        // (the highest) out again, and a client that remembers "#7" would open another's.
+        let removed: i64 = self.meta("last_removed_session")?.and_then(|v| String::from_utf8(v).ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let highest: i64 = self.conn.query_row("SELECT coalesce(max(id), 0) FROM sessions", [], |r| r.get(0))?;
+        self.conn.execute("INSERT INTO sessions (id, cwd) VALUES (?1, ?2)", params![highest.max(removed) + 1, cwd])?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -455,6 +459,15 @@ impl Store {
 
     pub fn name_session(&self, session: i64, name: &str) -> Result<()> {
         self.conn.execute("UPDATE sessions SET name = ?2 WHERE id = ?1", params![session, name])?;
+        Ok(())
+    }
+
+    /// Delete a conversation: its messages, its log and the file versions kept for undo go
+    /// with it (they refer to it and are deleted with it). The files it wrote stay as they are.
+    pub fn remove_session(&self, session: i64) -> Result<()> {
+        let removed: i64 = self.meta("last_removed_session")?.and_then(|v| String::from_utf8(v).ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+        self.set_meta("last_removed_session", removed.max(session).to_string().as_bytes())?;
+        self.conn.execute("DELETE FROM sessions WHERE id = ?1", [session])?;
         Ok(())
     }
 

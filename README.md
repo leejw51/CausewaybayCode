@@ -254,7 +254,7 @@ cwbcodeclient kb add notes.md design.png     # kb search "..." | list | get | ex
 
 With `-p`, nobody is there to approve anything: edits and commands are refused unless
 `--auto` is given. In the conversation, `/help` lists the commands: `/image`, `/file`,
-`/remember`, `/add`, `/kb`, `/search`, `/load`, `/export`, `/forget`, `/save`, `/sessions`,
+`/remember`, `/add`, `/kb`, `/search`, `/load`, `/export`, `/forget`, `/save`, `/sessions`, `/remove`,
 `/resume`, `/undo`, `/changes`, `/todos`, `/compact`, `/tools`, `/mode`, `/think`, `/status`,
 `/run`, `/clear`, `!command`. Ctrl-C stops the model or a running command; Ctrl-D leaves.
 
@@ -302,7 +302,7 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   FruitNation Messenger: pixel faces such as VT323, NeoDunggeunmo, Galmuri, IBM VGA and
   Commodore 64; code faces such as JetBrains Mono, Fira Code, Cascadia Code and Iosevka; text
   faces such as Atkinson Hyperlegible, Geist, Nanum Gothic and Noto Sans CJK; or the
-  system's own; the whole page is set in it), the **size** (A- and A+, four steps; it is the
+  system's own; the whole page is set in it), the **size** (A- and A+, seven steps from XS to 3XL; it is the
   conversation's alone: what is said, its code and what you type, not the interface), and the
   **language**: English,
   한국어, Čeština, 日本語, 廣東話, 中文, Español, Türkçe (the interface; what the backend
