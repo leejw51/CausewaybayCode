@@ -65,6 +65,10 @@ pub struct Shared {
     pub context_tokens: AtomicU64,
     pub memory_active: AtomicU64,
     pub memory_peak: AtomicU64,
+    /// The loaded model: where its files are, how large, and what it is ("" and 0 before).
+    pub model_about: Mutex<(String, u64, String)>,
+    /// Tokens per second in the last turn: (writing, reading the prompt).
+    pub speed: Mutex<(f64, f64)>,
     /// Approvals the model is waiting on: where the answer goes.
     pub approvals: Mutex<HashMap<i64, mpsc::Sender<String>>>,
     next_approval: AtomicI64,
@@ -110,6 +114,8 @@ pub fn start(config: Config, roots: Roots) -> Result<Arc<Shared>> {
         context_tokens: AtomicU64::new(0),
         memory_active: AtomicU64::new(0),
         memory_peak: AtomicU64::new(0),
+        model_about: Mutex::new((String::new(), 0, String::new())),
+        speed: Mutex::new((0.0, 0.0)),
         approvals: Mutex::new(HashMap::new()),
         next_approval: AtomicI64::new(1),
         jobs: Mutex::new(tx),
@@ -193,6 +199,7 @@ impl Worker {
         match Engine::load(&config.model, Sampler { temp: config.temp, top_k: config.top_k }) {
             Ok(engine) => {
                 eprintln!("cwbcode: model loaded in {:.1}s{}", t.elapsed().as_secs_f64(), if engine.model.draft.is_some() { ", draft network on" } else { "" });
+                *self.shared.model_about.lock().unwrap() = (engine.location.clone(), engine.bytes, engine.about.clone());
                 self.brain = Some(Brain::Model(Rc::new(engine)));
                 self.set_state("ready");
             }
@@ -359,7 +366,16 @@ impl Worker {
             Ok(usage) => sink.handle(What::Usage(Usage {
                 context_tokens: tokens as u64,
                 generated: usage.generated as u64,
-                tokens_per_second: if usage.gen_seconds > 0.0 { usage.generated as f64 / usage.gen_seconds } else { 0.0 },
+                tokens_per_second: {
+                    // The last turn's speeds, for the dashboard (a turn that wrote nothing
+                    // leaves the ones before).
+                    let writing = if usage.gen_seconds > 0.0 { usage.generated as f64 / usage.gen_seconds } else { 0.0 };
+                    let reading = if usage.read_seconds > 0.0 { usage.read as f64 / usage.read_seconds } else { 0.0 };
+                    if writing > 0.0 {
+                        *shared.speed.lock().unwrap() = (writing, reading);
+                    }
+                    writing
+                },
                 tool_calls: usage.tool_calls as u32,
                 seconds: usage.seconds,
                 steps: usage.steps as u32,

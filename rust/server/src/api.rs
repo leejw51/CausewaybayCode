@@ -317,6 +317,11 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
     match request.method {
         Method::Status => {
             let config = &shared.config;
+            // Each lock taken once, and let go here: a guard made inside the struct below
+            // would live to the end of the statement, and a second lock of the same mutex
+            // would wait for it forever.
+            let (model_path, model_bytes, model_info) = shared.model_about.lock().unwrap().clone();
+            let (gen_tps, prompt_tps) = *shared.speed.lock().unwrap();
             out.status = Some(Status {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 model: config.model.clone(),
@@ -340,6 +345,11 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 wallet_source: known.wallet_source.clone(),
                 user_home: shared.roots.home().display().to_string(),
                 ca_fingerprint: known.ca_fingerprint.clone(),
+                model_path,
+                model_bytes,
+                model_info,
+                gen_tps,
+                prompt_tps,
             });
         }
         Method::Projects => {

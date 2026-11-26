@@ -178,6 +178,16 @@ pub struct Status {
     /// SHA-256 of the server's certificate authority, in hex: what a device compares with
     /// `cwbcode url` before it trusts the authority.
     pub ca_fingerprint: String,
+    /// Where the model's files are (the store it was found in); "" when none is loaded.
+    pub model_path: String,
+    /// How large the model's files are, in bytes.
+    pub model_bytes: u64,
+    /// What the model is: architecture, layers, experts, quantization, vision, draft network.
+    pub model_info: String,
+    /// Tokens per second while writing, in the last turn (0: none yet).
+    pub gen_tps: f64,
+    /// Tokens per second while reading the prompt, in the last turn.
+    pub prompt_tps: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -437,6 +447,11 @@ impl Response {
             t.set_wallet_source(&s.wallet_source[..]);
             t.set_user_home(&s.user_home[..]);
             t.set_ca_fingerprint(&s.ca_fingerprint[..]);
+            t.set_model_path(&s.model_path[..]);
+            t.set_model_bytes(s.model_bytes);
+            t.set_model_info(&s.model_info[..]);
+            t.set_gen_tps(s.gen_tps);
+            t.set_prompt_tps(s.prompt_tps);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -534,6 +549,11 @@ impl Response {
                 wallet_source: text(s.get_wallet_source())?,
                 user_home: text(s.get_user_home())?,
                 ca_fingerprint: text(s.get_ca_fingerprint())?,
+                model_path: text(s.get_model_path())?,
+                model_bytes: s.get_model_bytes(),
+                model_info: text(s.get_model_info())?,
+                gen_tps: s.get_gen_tps(),
+                prompt_tps: s.get_prompt_tps(),
             })
         } else {
             None
@@ -668,7 +688,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into() }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25 }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),

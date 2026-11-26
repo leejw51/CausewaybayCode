@@ -1292,8 +1292,20 @@ fn Dashboard() -> impl IntoView {
         <div class="scroll">
             <div class="col wide">
                 <div class="cards">
-                    <div class="card glass"><h5>{t("d_model")}</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { tr(app.lang.get(), "d_offline").to_string() } else if s().busy { tr(app.lang.get(), "working").to_string() } else { s().model_state }}</div>
-                        <div class="sub">{move || s().model}</div></div>
+                    // The model: its state, its name, what it is, and where its files are and how
+                    // large (the last two once it is loaded).
+                    <div class="card glass model-card" id="model-card"><h5>{t("d_model")}</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { tr(app.lang.get(), "d_offline").to_string() } else if s().busy { tr(app.lang.get(), "working").to_string() } else { s().model_state }}</div>
+                        <div class="sub" id="model-name">{move || s().model}</div>
+                        <Show when=move || !s().model_info.is_empty()>
+                            <div class="sub" id="model-info">{move || s().model_info}</div>
+                        </Show>
+                        <Show when=move || !s().model_path.is_empty()>
+                            <div class="sub" id="model-where">{move || format!("{} · {:.1} GB", app.tilde(&s().model_path), s().model_bytes as f64 / 1e9)}</div>
+                        </Show></div>
+                    // How fast it writes, and reads a prompt, in the last turn.
+                    <div class="card glass" id="speed-card"><h5>{t("d_speed")}</h5>
+                        <div class="big" id="gen-tps"><Counter value=Signal::derive(move || s().gen_tps) decimals=1 suffix=fixed(" tok/s")/></div>
+                        <div class="sub" id="prompt-tps">{move || if s().gen_tps == 0.0 { tr(app.lang.get(), "speed_none").to_string() } else if s().prompt_tps == 0.0 { tr(app.lang.get(), "speed_last").to_string() } else { tr_with(app.lang.get(), "speed_read", &format!("{:.0}", s().prompt_tps)) }}</div></div>
                     <div class="card glass"><h5>{t("d_memory")}</h5><div class="big"><Counter value=Signal::derive(move || gb(s().memory_active)) decimals=1 suffix=fixed(" GB")/></div>
                         <div class="sub">{move || tr_with(app.lang.get(), "peak", &format!("{:.1}", gb(s().memory_peak)))}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", (gb(s().memory_active) / 36.0 * 100.0).min(100.0))></i></div></div>

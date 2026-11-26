@@ -122,7 +122,7 @@ pub async fn status(session: &Session) -> Result<String> {
     let s = session.client.call(&Request::new(Method::Status)).await?.status.context("the server sent no status")?;
     let gb = |bytes: u64| bytes as f64 / 1e9;
     Ok(format!(
-        "backend   cwbcode {} at {} over {}{}\nlogin     {}\nmodel     {} ({}){}\ncontext   {} tokens in memory (summarized from {})\nmemory    {:.1} GB in use, peak {:.1} GB\nsafety    {}\nproject   {}\nstore     {} · <project>/.cwbcode\nuptime    {}m\n",
+        "backend   cwbcode {} at {} over {}{}\nlogin     {}\nmodel     {} ({}){}{}\nspeed     {}\ncontext   {} tokens in memory (summarized from {})\nmemory    {:.1} GB in use, peak {:.1} GB\nsafety    {}\nproject   {}\nstore     {} · <project>/.cwbcode\nuptime    {}m\n",
         s.version,
         session.client.base(),
         s.protocol,
@@ -138,6 +138,13 @@ pub async fn status(session: &Session) -> Result<String> {
         s.model,
         s.model_state,
         if s.busy { format!(" · busy with {}{}", s.busy_project, if s.queued > 0 { format!(", {} waiting", s.queued) } else { String::new() }) } else { String::new() },
+        // What it is, and where its files are and how large, once it is loaded.
+        if s.model_path.is_empty() { String::new() } else { format!("\n          {}\n          {} · {:.1} GB", s.model_info, s.model_path, gb(s.model_bytes)) },
+        match (s.gen_tps, s.prompt_tps) {
+            (w, _) if w == 0.0 => "after the first answer".to_string(),
+            (w, r) if r == 0.0 => format!("{w:.1} tok/s writing, in the last turn"),
+            (w, r) => format!("{w:.1} tok/s writing, {r:.0} tok/s reading the prompt, in the last turn"),
+        },
         s.context_tokens,
         s.context_limit,
         gb(s.memory_active),

@@ -40,3 +40,5 @@ test-results/
 /rust/desktop/target/
 /rust/desktop/binaries/
 /rust/desktop/gen/
+# make release output
+/rust/dist/

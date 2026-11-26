@@ -90,6 +90,11 @@ struct Status {
                            # "the environment" (fixed there)
   caFingerprint @21 :Text; # SHA-256 of the server's certificate authority (what a device
                            # compares with `cwbcode url` before trusting it)
+  modelPath @22 :Text;     # where the model's files are (the store), "" when none is loaded
+  modelBytes @23 :UInt64;  # how large its files are
+  modelInfo @24 :Text;     # what it is: architecture, layers, experts, quantization, ...
+  genTps @25 :Float64;     # tokens per second while writing, in the last turn (0: none yet)
+  promptTps @26 :Float64;  # tokens per second while reading the prompt, in the last turn
 }
 
 struct Project {

@@ -291,6 +291,9 @@ button.lit { border-color: var(--accent); color: var(--accent); }
 .chip.center { justify-content: center; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: var(--gap); }
 .card { padding: .6rem .8rem .75rem; min-width: 0; }
+/* The model's card says more (what it is, where its files are): two columns where there are. */
+.cards .model-card { grid-column: span 2; } .model-card .sub { overflow-wrap: anywhere; margin-top: .15rem; }
+@container app (max-width: 40em) { .cards .model-card { grid-column: auto; } }
 .card h5 { margin: 0 0 .25rem; font-size: 1em; font-weight: normal; color: var(--accent); }
 .card .big { font-size: 1.7em; line-height: 1.15; color: var(--gold); } .card .big.small { font-size: 1.05em; line-height: 1.5; color: var(--text); }
 .card pre.doc { white-space: pre-wrap; max-height: 300px; overflow: auto; } .card pre.scrollx { overflow: auto; }

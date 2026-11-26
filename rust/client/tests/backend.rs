@@ -30,9 +30,11 @@ impl Drop for Server {
 }
 
 fn backend_binary() -> PathBuf {
-    // target/<profile>/deps/backend-xxxx -> target/<profile>/cwbcode
-    let exe = std::env::current_exe().unwrap();
-    let binary = exe.parent().unwrap().parent().unwrap().join("cwbcode");
+    // <target>/<profile>/cwbcode, where <target> is CARGO_TARGET_DIR or the workspace's own.
+    // (Not found from where this test program is: newer Cargos keep test programs elsewhere
+    // than target/<profile>/deps.)
+    let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));
+    let binary = target.join(if cfg!(debug_assertions) { "debug" } else { "release" }).join("cwbcode");
     assert!(binary.is_file(), "{} is not built: run `cargo build{}` first", binary.display(), if cfg!(debug_assertions) { "" } else { " --release" });
     binary
 }
@@ -199,6 +201,8 @@ async fn http3_is_used_and_http2_when_quic_is_off() {
     let status = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
     // The server says what it saw.
     assert_eq!((status.protocol.as_str(), status.h3, status.model_state.as_str()), ("h3", true, "scripted"));
+    // No model files behind a script, and no speed before the first answer.
+    assert_eq!((status.model_path.as_str(), status.model_bytes, status.model_info.as_str(), status.gen_tps), ("", 0, "", 0.0));
     // A client told not to use QUIC talks HTTP/2 to the same server.
     let over_tcp = server.client(false).await;
     let (response, arrived_by) = over_tcp.call_raw(&Request::new(Method::Status)).await.unwrap();
@@ -210,6 +214,10 @@ async fn http3_is_used_and_http2_when_quic_is_off() {
         assert!(events.iter().filter(|w| matches!(w, What::Text(_))).count() > 3, "the answer arrived in pieces");
         assert_eq!(events.last(), Some(&What::Done));
     }
+    // The last turn's writing speed is reported once there was one.
+    wait_idle(&client).await;
+    let after = client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap();
+    assert!(after.gen_tps > 0.0, "no writing speed after an answer: {}", after.gen_tps);
 
     // A server without HTTP/3: the client tries QUIC, gets no answer, and falls back.
     let tcp_only = Server::start("h2only", HELLO, &["--no-h3"]);
