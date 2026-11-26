@@ -2,7 +2,7 @@
 //! version carries them is the browser's choice (HTTP/3 when it accepts the server's
 //! certificate for QUIC, otherwise HTTP/2); the server says which in its status.
 
-use cwbcode_proto::{CALL_PATH, CHAT_PATH, Event, Frames, Request, Response};
+use cwbcode_proto::{CALL_PATH, CHAT_PATH, EVENTS_PATH, Event, Frames, Progress, Request, Response};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -62,6 +62,26 @@ pub async fn chat(token: &str, request: &Request, mut on_event: impl FnMut(Event
     }
     if frames.pending() > 0 {
         return Err("the stream ended in the middle of a message".to_string());
+    }
+    Ok(())
+}
+
+/// Follow the model's state and its download (the backend's events stream, the same for every
+/// client): `on_progress` gets each message, until the model is ready.
+pub async fn events(token: &str, mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
+    let response = post(token, EVENTS_PATH, Vec::new()).await?;
+    let reader: web_sys::ReadableStreamDefaultReader = response.body().ok_or("the server sent no stream")?.get_reader().unchecked_into();
+    let mut frames = Frames::new();
+    loop {
+        let chunk = JsFuture::from(reader.read()).await.map_err(|e| format!("the connection broke: {}", js_error(e)))?;
+        if js_sys::Reflect::get(&chunk, &"done".into()).map_err(js_error)?.as_bool().unwrap_or(true) {
+            break;
+        }
+        let value = js_sys::Reflect::get(&chunk, &"value".into()).map_err(js_error)?;
+        frames.push(&js_sys::Uint8Array::new(&value).to_vec());
+        while let Some(progress) = frames.next_progress().map_err(|e| format!("the stream could not be read: {e}"))? {
+            on_progress(progress);
+        }
     }
     Ok(())
 }

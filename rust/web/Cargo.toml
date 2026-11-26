@@ -19,7 +19,7 @@ console_error_panic_hook = "0.1"
 # The wallet code (in cwbcode-proto) reaches the browser's random source through this.
 getrandom = { version = "0.2", features = ["js"] }
 web-sys = { version = "0.3", features = [
-    "Window", "Document", "Location", "History", "Storage", "Element", "HtmlElement", "HtmlInputElement", "HtmlTextAreaElement",
+    "Window", "Document", "Performance", "Location", "History", "Storage", "Element", "HtmlElement", "HtmlInputElement", "HtmlTextAreaElement",
     "Request", "RequestInit", "Response", "Headers", "ReadableStream", "ReadableStreamDefaultReader",
     "File", "FileList", "Blob", "Url", "MediaQueryList", "Navigator", "KeyboardEvent", "Event", "EventTarget", "ScrollToOptions", "ScrollBehavior",
 ] }

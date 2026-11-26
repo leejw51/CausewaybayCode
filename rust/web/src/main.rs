@@ -3,10 +3,11 @@
 //! and the tools it has made. Built with Leptos; movement by Motion (motion.dev).
 
 mod api;
+mod forge;
 mod i18n;
 mod motion;
 
-use cwbcode_proto::{Doc, Hit, Method, Project, Request, Session, Status, Tool, Upload, What};
+use cwbcode_proto::{Doc, Hit, Method, Progress, Project, Request, Session, Status, Tool, Upload, What};
 use i18n::{Lang, tr, tr_with};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -133,6 +134,13 @@ struct App {
     next: RwSignal<usize>,
     /// Bumped when the conversation grows: the page follows it down.
     grew: RwSignal<u32>,
+    /// The backend's events stream is being followed (status is then not asked for every
+    /// second), and when to try it again after it failed (ms since the page loaded).
+    streaming: RwSignal<bool>,
+    stream_retry: RwSignal<f64>,
+    /// The model just became ready after the page watched it come: the Forge plays Ready,
+    /// then fades (1: playing, 2: fading, 0: done).
+    celebrate: RwSignal<u8>,
 }
 
 fn storage() -> Option<web_sys::Storage> {
@@ -232,6 +240,9 @@ impl App {
             error: RwSignal::new(String::new()),
             next: RwSignal::new(0),
             grew: RwSignal::new(0),
+            streaming: RwSignal::new(false),
+            stream_retry: RwSignal::new(0.0),
+            celebrate: RwSignal::new(0),
         }
     }
 
@@ -513,11 +524,75 @@ impl App {
         }
         let sent = self.token.get_untracked();
         match api::call(&sent, &Request::new(Method::Status)).await {
-            Ok(response) => self.status.set(response.status),
+            Ok(response) => self.set_status(response.status),
             Err(e) if e == "unauthorized" => self.fail_with(e, &sent),
             // The server may be restarting: the page keeps asking.
             Err(_) => self.status.set(None),
         }
+    }
+
+    /// Take the backend's status; a model that has just become ready after being on its way
+    /// plays the Forge's Ready, which then fades into the chat.
+    fn set_status(&self, status: Option<Status>) {
+        let was = self.status.with_untracked(|s| s.as_ref().is_some_and(model_coming));
+        let now_ready = status.as_ref().is_some_and(|s| s.model_state == "ready" || s.model_state == "scripted");
+        self.status.set(status);
+        if was && now_ready && self.celebrate.get_untracked() == 0 {
+            let celebrate = self.celebrate;
+            celebrate.set(1);
+            // Ready shows for 1.5 s, then the scene fades and the composer takes the focus.
+            set_timeout(move || celebrate.set(2), std::time::Duration::from_millis(1500));
+            set_timeout(move || {
+                celebrate.set(0);
+                if let Some(draft) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("draft")) {
+                    let _ = draft.unchecked_into::<web_sys::HtmlElement>().focus();
+                }
+            }, std::time::Duration::from_millis(2200));
+        }
+    }
+
+    /// A message of the events stream, put into the status the page shows.
+    fn take_progress(&self, p: Progress) {
+        let Some(mut status) = self.status.get_untracked() else { return };
+        status.model_state = if p.state == "failed" { format!("failed: {}", p.error) } else { p.state.clone() };
+        if p.state == "missing" {
+            status.download_error = p.error.clone();
+        }
+        status.download_done = p.done;
+        status.download_total = p.total;
+        status.download_speed = p.speed;
+        status.download_files_done = p.files_done;
+        status.download_files_total = p.files_total;
+        status.download_source_kind = p.source_kind;
+        status.download_token = p.token;
+        status.download_token_from = p.token_from;
+        status.download_token_refused = p.token_refused;
+        status.download_verified = p.verified;
+        status.download_note = p.note;
+        self.set_status(Some(status));
+    }
+
+    /// Follow the backend's events stream while the model is on its way: every page gets the
+    /// same messages pushed, without asking. If it cannot be had, the page asks for the
+    /// status every second instead, and tries the stream again a little later.
+    fn follow_model(&self) {
+        if self.streaming.get_untracked() || !self.ready_untracked() || now_ms() < self.stream_retry.get_untracked() {
+            return;
+        }
+        self.streaming.set(true);
+        let app = *self;
+        spawn_local(async move {
+            let sent = app.token.get_untracked();
+            let result = api::events(&sent, move |p| app.take_progress(p)).await;
+            app.streaming.set(false);
+            if let Err(e) = result {
+                if e == "unauthorized" {
+                    app.fail_with(e, &sent);
+                }
+                app.stream_retry.set(now_ms() + 5000.0);
+            }
+            app.refresh_status().await;
+        });
     }
 
     async fn refresh_projects(&self) {
@@ -699,6 +774,11 @@ fn gb(bytes: u64) -> f64 {
     bytes as f64 / 1e9
 }
 
+/// Milliseconds since the page loaded.
+fn now_ms() -> f64 {
+    web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     leptos::mount::mount_to_body(Root);
@@ -723,8 +803,13 @@ fn Root() -> impl IntoView {
     let ticks = StoredValue::new(0u32);
     let tick = Closure::<dyn Fn()>::new(move || {
         ticks.update_value(|n| *n = n.wrapping_add(1));
-        let moving = app.status.with_untracked(|s| s.as_ref().is_some_and(|s| s.model_state == "downloading" || s.model_state == "loading"));
-        if moving || ticks.get_value() % 3 == 0 {
+        let moving = app.status.with_untracked(|s| s.as_ref().is_some_and(|s| matches!(s.model_state.as_str(), "downloading" | "verifying" | "loading")));
+        let coming = app.status.with_untracked(|s| s.as_ref().is_some_and(model_coming));
+        if coming {
+            app.follow_model();
+        }
+        // (While the stream is followed it says what changes; status is asked for less often.)
+        if (moving && !app.streaming.get_untracked()) || ticks.get_value() % 3 == 0 {
             spawn_local(async move { app.refresh_status().await });
         }
     });
@@ -1054,7 +1139,9 @@ fn AppBar() -> impl IntoView {
                             let waiting = app.waiting() > 0;
                             let dot = if waiting { "dot ask" } else if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
                             let lang = app.lang.get();
-                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() };
+                            let forging = matches!(s.model_state.as_str(), "downloading" | "verifying" | "loading");
+                            let dot = if forging && !waiting { "dot forge" } else { dot };
+                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, "forge_pill", &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
                             view! {
                                 <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>
                                 <div id="login-state">{match s.auth.as_str() {
@@ -1271,7 +1358,13 @@ fn Sidebar() -> impl IntoView {
 /// Is the model being downloaded, or to be: what the chat view shows instead of its empty
 /// page (and the dashboard on the model's card). Also just after a download, while it loads.
 fn model_coming(s: &Status) -> bool {
-    s.model_state == "downloading" || s.model_state == "missing" || (s.model_state == "loading" && !s.download_note.is_empty())
+    let downloaded_here = !s.download_source_kind.is_empty();
+    matches!(s.model_state.as_str(), "downloading" | "verifying" | "missing") || (downloaded_here && (s.model_state == "loading" || s.model_state.starts_with("failed")))
+}
+
+/// How far the download is, in percent.
+fn share_of(s: &Status) -> f64 {
+    if s.download_total == 0 { 0.0 } else { (s.download_done as f64 / s.download_total as f64 * 100.0).clamp(0.0, 100.0) }
 }
 
 /// "1:02:03", "12:34": how long, in hours, minutes and seconds.
@@ -1280,15 +1373,58 @@ fn clock(seconds: f64) -> String {
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
 
-/// The model's download: how far it is (a bar that fills, with the bytes, the speed, the time
-/// left and where it comes from), or, when the model is not here and nothing is downloading
-/// it, a button that starts it, with why the last one stopped and a retry when one did.
-/// `card`: the smaller one on the dashboard's model card.
+/// Where the Forge is, from the backend's status: heat (the download starting), hammer
+/// (downloading), temper (verifying), wake (loading), ready, failed, missing.
+fn forge_stage(s: &Status, celebrating: bool) -> &'static str {
+    match s.model_state.as_str() {
+        "downloading" if s.download_total == 0 => "heat",
+        "downloading" => "hammer",
+        "verifying" => "temper",
+        "loading" => "wake",
+        "missing" if !s.download_error.is_empty() => "failed",
+        "missing" => "missing",
+        "ready" | "scripted" if celebrating => "ready",
+        "ready" | "scripted" => "ready",
+        state if state.starts_with("failed") => "failed",
+        _ => "heat",
+    }
+}
+
+/// The five stages, in order: (stage, its name, what happens, its accent).
+const STAGES: [(&str, &str, &str); 5] = [("heat", "forge_heat", "forge_heat_d"), ("hammer", "forge_hammer", "forge_hammer_d"), ("temper", "forge_temper", "forge_temper_d"), ("wake", "forge_wake", "forge_wake_d"), ("ready", "forge_ready", "forge_ready_d")];
+
+/// A text with one part marked [like this]: that part is set apart (the token's words).
+fn marked(text: String) -> impl IntoView {
+    let (before, rest) = text.split_once('[').unwrap_or((&text, ""));
+    let (mark, after) = rest.split_once(']').unwrap_or((rest, ""));
+    view! { {before.to_string()}<em>{mark.to_string()}</em>{after.to_string()} }
+}
+
+/// Where the download comes from, said with the token's place (never the token).
+fn source_line(lang: Lang, s: &Status) -> String {
+    if s.download_token {
+        tr_with(lang, "dl_src_token", &s.download_token_from)
+    } else if s.download_token_refused {
+        tr(lang, "dl_src_refused").to_string()
+    } else {
+        tr(lang, "dl_src_none").to_string()
+    }
+}
+
+const TIP_KEY: &str = "cwbcode-token-tip";
+
+/// The model on its way: the Forge, a robot forged part by part as the download goes (a 3D
+/// scene, assets/forge.js), with the numbers over it: the stage, a counting percent, a
+/// glowing bar, the gigabytes, the speed, the time left, the pieces, and where it comes from.
+/// When the model is not here and nothing downloads it, a cold forge and the button that
+/// starts it; when a download stopped, why, and Try again. `card`: the dashboard's model
+/// card, the numbers without the scene (one scene at a time: the GPU runs the model next).
 #[component]
 fn ModelDownload(card: bool) -> impl IntoView {
     let app = expect_context::<App>();
     let t = move |key: &'static str| app.t(key);
     let s = move || app.status.get().unwrap_or_default();
+    let stage = Memo::new(move |_| app.status.with(|s| s.as_ref().map(|s| forge_stage(s, app.celebrate.get() > 0)).unwrap_or("heat")));
     let starting = RwSignal::new(false);
     let start = move |_| {
         if starting.get_untracked() {
@@ -1301,10 +1437,7 @@ fn ModelDownload(card: bool) -> impl IntoView {
             starting.set(false);
         });
     };
-    let share = move || {
-        let s = s();
-        if s.download_total == 0 { 0.0 } else { (s.download_done as f64 / s.download_total as f64 * 100.0).clamp(0.0, 100.0) }
-    };
+    let share = move || share_of(&s());
     let left = move || {
         let s = s();
         if s.download_speed > 1.0 && s.download_total > s.download_done { tr_with(app.lang.get(), "dl_left", &clock((s.download_total - s.download_done) as f64 / s.download_speed)) } else { tr(app.lang.get(), "dl_left_unknown").to_string() }
@@ -1314,78 +1447,119 @@ fn ModelDownload(card: bool) -> impl IntoView {
         let total = if s.download_total == 0 { "…".to_string() } else { format!("{:.1} GB", gb(s.download_total)) };
         tr(app.lang.get(), "dl_bytes").replacen("{}", &format!("{:.1} GB", gb(s.download_done)), 1).replacen("{}", &total, 1)
     };
-    let id = if card { "model-download-card" } else { "model-download" };
+    let pieces = move || {
+        let s = s();
+        tr(app.lang.get(), "dl_pieces").replacen("{}", &s.download_files_done.to_string(), 1).replacen("{}", &if s.download_files_total == 0 { "…".to_string() } else { s.download_files_total.to_string() }, 1)
+    };
+    let speed = move || if s().download_speed > 0.0 { format!("{:.1} MB/s", s().download_speed / 1e6) } else { "— MB/s".to_string() };
+    let tip_hidden = RwSignal::new(stored(TIP_KEY).is_some());
+    let show_tip = move || !tip_hidden.get() && matches!(stage.get(), "heat" | "hammer") && !s().download_token && !s().download_source_kind.is_empty();
+    let numbered = move || matches!(stage.get(), "heat" | "hammer" | "temper" | "wake" | "ready");
+    let index = move || STAGES.iter().position(|(k, ..)| *k == stage.get()).unwrap_or(0);
+    let title = move || match stage.get() {
+        "failed" => t("forge_cold")(),
+        "missing" => t("dl_missing_title")(),
+        _ => tr(app.lang.get(), STAGES[index()].1),
+    };
+    let about = move || match stage.get() {
+        "failed" => t("dl_failed")(),
+        "missing" => t("dl_missing")(),
+        _ => tr(app.lang.get(), STAGES[index()].2),
+    };
+    let percent = NodeRef::<leptos::html::B>::new();
+    Effect::new(move |_| {
+        let p = share();
+        if let Some(el) = percent.get() {
+            forge::count_up(&el, p, 1, "%");
+        }
+    });
+    // The numbers: the same in the scene's panel and on the card.
+    let numbers = move || view! {
+        <div class="forge-nums">
+            <b class="forge-percent" id="dl-percent" node_ref=percent>"0.0%"</b>
+            <span id="dl-bytes">{bytes}</span>
+            <span id="dl-speed" class="speed">{speed}</span>
+            <span id="dl-left" class="left">{left}</span>
+            <span id="dl-files" class="dim">{pieces}</span>
+        </div>
+        <div class="forge-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=move || format!("{:.0}", share()) aria-label=title>
+            <i style:width=move || format!("{:.2}%", share())></i>
+            <b class="head" style:left=move || format!("calc({:.2}% - 9px)", share())></b>
+        </div>
+        <div class="forge-foot">
+            <span id="dl-source">{move || marked(source_line(app.lang.get(), &s()))}</span>
+            <span class="grow"></span>
+            <Show when=move || !card><span class="dim">{t("dl_meanwhile")}</span></Show>
+        </div>
+        <Show when=move || s().download_verified && matches!(stage.get(), "wake" | "ready")>
+            <div class="dim" id="dl-done">{t("dl_verified")}</div>
+        </Show>
+        <Show when=show_tip>
+            <div class="forge-tip" id="dl-tip"><span>{move || marked(t("dl_tip")().to_string())}</span>
+                <button class="ghost round" id="dl-tip-hide" aria-label=t("dl_tip_hide") title=t("dl_tip_hide") on:click=move |_| { store(TIP_KEY, "hidden"); tip_hidden.set(true); }>"×"</button></div>
+        </Show>
+    };
+    let actions = move || view! {
+        <Show when=move || stage.get() == "failed">
+            <p class="note bad" id="dl-error">{move || { let s = s(); if s.download_error.is_empty() { s.model_state.trim_start_matches("failed: ").to_string() } else { s.download_error } }}</p>
+            <div class="dl-acts"><button class="primary" id="dl-retry" disabled=move || starting.get() on:click=start>{t("dl_retry")}</button></div>
+        </Show>
+        <Show when=move || stage.get() == "missing">
+            <div class="dl-acts"><button class="primary" id="dl-start" disabled=move || starting.get() on:click=start>{t("dl_button")}</button></div>
+        </Show>
+    };
+    if card {
+        return view! {
+            <div class="download card forge-card" id="model-download-card" data-stage=move || stage.get()>
+                <h3>{title}</h3>
+                <Show when=numbered>{numbers}</Show>
+                {actions}
+            </div>
+        }
+        .into_any();
+    }
+    // The scene: mounted once, kept while the stages change, let go when this is.
+    let host = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        if let Some(el) = host.get() {
+            forge::forge_mount(&el);
+        }
+    });
+    Effect::new(move |_| {
+        let (stage, p, speed) = (stage.get(), share(), s().download_speed);
+        if let Some(el) = host.get() {
+            forge::forge_update(&el, stage, p, speed);
+        }
+    });
+    on_cleanup(move || {
+        if let Some(el) = host.get_untracked() {
+            forge::forge_dispose(&el);
+        }
+    });
     view! {
-        <div class="download" class:card=card class:glass=!card id=id>
-            {move || {
-                let st = s();
-                if st.model_state == "downloading" {
-                    view! {
-                        <div class="dl-head">
-                            <Show when=move || !card><img src="/art/empty.png" alt=""/></Show>
-                            <div>
-                                <h3>{t("dl_title")}</h3>
-                                <Show when=move || !card><p class="dim">{t("dl_why")}</p></Show>
-                            </div>
-                        </div>
-                        <div class="dl-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=move || format!("{:.0}", share()) aria-label=t("dl_title")>
-                            <i style:width=move || format!("{:.2}%", share())></i>
-                        </div>
-                        <div class="dl-stats">
-                            <b class="dl-percent" id="dl-percent">{move || format!("{:.1}%", share())}</b>
-                            <span id="dl-bytes">{bytes}</span>
-                            <span id="dl-speed">{move || if s().download_speed > 0.0 { format!("{:.1} MB/s", s().download_speed / 1e6) } else { "— MB/s".to_string() }}</span>
-                            <span id="dl-left">{left}</span>
-                        </div>
-                        <div class="dl-from sub" id="dl-source">{move || tr_with(app.lang.get(), "dl_from", &s().download_source)}{move || if s().download_note.is_empty() { String::new() } else { format!(" · {}", s().download_note) }}</div>
-                        // Whether a Hugging Face token is used, and where it was found (never the
-                        // token): with one the download is faster; without one, how to add one.
-                        <div class="dl-token" id="dl-token"
-                            class:used=move || { let t = s().download_token; !t.is_empty() && t != "refused" }
-                            class:refused=move || s().download_token == "refused">
-                            {move || {
-                                let (lang, token) = (app.lang.get(), s().download_token);
-                                match token.as_str() {
-                                    "" => tr(lang, "dl_token_none").to_string(),
-                                    "refused" => tr(lang, "dl_token_refused").to_string(),
-                                    from => tr_with(lang, "dl_token_used", from),
-                                }
-                            }}
-                        </div>
-                    }.into_any()
-                } else if st.model_state == "loading" {
-                    view! {
-                        <div class="dl-head"><div>
-                            <h3>{t("dl_loading_title")}</h3>
-                            <p class="dim" id="dl-done">{move || s().download_note}</p>
-                            <p class="dim">{t("dl_loading")}</p>
-                        </div></div>
-                        <div class="dl-bar done"><i style="width:100%"></i></div>
-                    }.into_any()
-                } else if !st.download_error.is_empty() {
-                    view! {
-                        <div class="dl-head"><div>
-                            <h3>{t("dl_failed_title")}</h3>
-                            <p class="note bad" id="dl-error">{move || s().download_error}</p>
-                            <p class="dim">{t("dl_failed")}</p>
-                        </div></div>
-                        <div class="dl-acts"><button class="primary" id="dl-retry" disabled=move || starting.get() on:click=start>{t("dl_retry")}</button></div>
-                    }.into_any()
-                } else {
-                    view! {
-                        <div class="dl-head">
-                            <Show when=move || !card><img src="/art/empty.png" alt=""/></Show>
-                            <div>
-                                <h3>{t("dl_missing_title")}</h3>
-                                <p class="dim">{t("dl_missing")}</p>
-                            </div>
-                        </div>
-                        <div class="dl-acts"><button class="primary" id="dl-start" disabled=move || starting.get() on:click=start>{t("dl_button")}</button></div>
-                    }.into_any()
-                }
-            }}
+        <div class="forge" id="model-download" data-stage=move || stage.get() data-percent=move || format!("{:.1}", share()) class:leaving=move || app.celebrate.get() == 2>
+            <div class="forge-scene" id="forge-scene" node_ref=host></div>
+            <div class="forge-title">
+                <Show when=numbered><div class="forge-step" id="forge-step">{move || tr_with(app.lang.get(), "forge_step", &(index() + 1).to_string())}</div></Show>
+                <h1 id="forge-stage">{title}</h1>
+                <p>{about}</p>
+            </div>
+            <Show when=numbered>
+                <ol class="forge-stages" id="forge-stages">
+                    {STAGES.iter().enumerate().map(|(i, (key, name, _))| view! {
+                        <li class:done=move || i < index() class:on=move || i == index() data-stage=*key>{move || tr(app.lang.get(), name)}</li>
+                    }).collect_view()}
+                </ol>
+            </Show>
+            <section class="forge-panel">
+                <h2 class="forge-phone-title">{title}</h2>
+                <p class="forge-phone-about">{about}</p>
+                <Show when=numbered>{numbers}</Show>
+                {actions}
+            </section>
         </div>
     }
+    .into_any()
 }
 
 /// A number that counts to its new value.
@@ -1700,6 +1874,8 @@ fn Chat() -> impl IntoView {
             }
         })
     };
+    // The model on its way (or just arrived, while the Forge plays Ready) comes first.
+    let forging = move || app.celebrate.get() > 0 || app.status.get().is_some_and(|s| model_coming(&s));
     let todo_lines = move || {
         let todos: serde_json::Value = serde_json::from_str(&app.todos.get()).unwrap_or_default();
         todos.as_array().cloned().unwrap_or_default().into_iter().map(|t| (t["content"].as_str().unwrap_or("").to_string(), t["status"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>()
@@ -1733,13 +1909,13 @@ fn Chat() -> impl IntoView {
         <div class="scroll" node_ref=scroller id="transcript">
             <div class="col">
                 // A model on its way (or to be fetched) comes first: without it nothing answers.
-                <Show when=move || app.status.get().is_some_and(|s| model_coming(&s))>
+                <Show when=forging>
                     <ModelDownload card=false/>
                 </Show>
-                <Show when=move || app.project.get().is_empty() && !app.status.get().is_some_and(|s| model_coming(&s))>
+                <Show when=move || app.project.get().is_empty() && !forging()>
                     <div class="empty"><h3>{t("empty_open_title")}</h3>{t("empty_open")}</div>
                 </Show>
-                <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty() && !app.status.get().is_some_and(|s| model_coming(&s))>
+                <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty() && !forging()>
                     <div class="empty" id="empty-chat"><img src="/art/empty.png" alt=""/><h3>{t("empty_chat_title")}</h3>{move || app.tilde(&app.project.get())}</div>
                 </Show>
                 <For each=move || app.items.get() key=|item| item.id children=move |item: Item| { let id = item.id; view! { <div class="it" id=format!("item-{id}")><ItemView item=item/></div> } }/>
