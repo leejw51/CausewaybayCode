@@ -4,6 +4,7 @@
 //!
 //!   POST /api/call   body: Request  ->  body: Response
 //!   POST /api/chat   body: Request  ->  body: Events, each framed by `frame`
+//!   POST /api/events (any body)     ->  body: Progress messages, each framed by `frame`
 //!
 //! The token goes in the `authorization: Bearer <token>` header.
 
@@ -20,6 +21,8 @@ pub use cwbcode_capnp::Method;
 
 pub const CALL_PATH: &str = "/api/call";
 pub const CHAT_PATH: &str = "/api/chat";
+/// The model's state and its download, pushed to every client that listens (see Progress).
+pub const EVENTS_PATH: &str = "/api/events";
 /// The response header that says how a request arrived: h3, h2 or http/1.1.
 pub const PROTOCOL_HEADER: &str = "x-cwbcode-protocol";
 /// The UDP port HTTP/3 is served on, for a backend whose HTTPS (TCP) port is `port`: the next
@@ -199,6 +202,101 @@ pub struct Status {
     pub download_note: String,
     /// The Hugging Face token: "" none found, "refused", else where it came from.
     pub download_token: String,
+    /// The same, as fields a client words in its own language: tensor files written and in
+    /// all, where from ("huggingface"), whether a Hugging Face token is used and where it was
+    /// found ("env HF_TOKEN", "~/.cache/huggingface/token"; never the token), whether one was
+    /// refused, and whether every file matched Ollama's registry.
+    pub download_files_done: u32,
+    pub download_files_total: u32,
+    pub download_source_kind: String,
+    pub download_token_used: bool,
+    pub download_token_from: String,
+    pub download_token_refused: bool,
+    pub download_verified: bool,
+}
+
+/// One message of the events stream: where the model is, the same for every client.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Progress {
+    /// Counts up with every message the backend sends.
+    pub seq: u64,
+    /// missing | downloading | verifying | loading | ready | failed | none | scripted
+    pub state: String,
+    /// failed: why; missing: why the last download stopped ("" if none).
+    pub error: String,
+    pub done: u64,
+    pub total: u64,
+    pub speed: f64,
+    pub files_done: u32,
+    pub files_total: u32,
+    pub source_kind: String,
+    pub token: bool,
+    pub token_from: String,
+    pub token_refused: bool,
+    pub verified: bool,
+    /// The backend's own words on what it is doing (English).
+    pub note: String,
+    pub model: String,
+}
+
+impl Progress {
+    /// Is the model there to use: nothing more will change (the stream ends after this).
+    pub fn settled(&self) -> bool {
+        matches!(self.state.as_str(), "ready" | "none" | "scripted")
+    }
+
+    /// Bytes done, as a share of all of them (0 when the total is not known yet).
+    pub fn fraction(&self) -> f64 {
+        if self.total == 0 { 0.0 } else { (self.done as f64 / self.total as f64).clamp(0.0, 1.0) }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut message = Builder::new_default();
+        let mut b = message.init_root::<schema::progress::Builder>();
+        b.set_seq(self.seq);
+        b.set_state(&self.state[..]);
+        b.set_error(&self.error[..]);
+        b.set_done(self.done);
+        b.set_total(self.total);
+        b.set_speed(self.speed);
+        b.set_files_done(self.files_done);
+        b.set_files_total(self.files_total);
+        b.set_source_kind(&self.source_kind[..]);
+        b.set_token(self.token);
+        b.set_token_from(&self.token_from[..]);
+        b.set_token_refused(self.token_refused);
+        b.set_verified(self.verified);
+        b.set_note(&self.note[..]);
+        b.set_model(&self.model[..]);
+        capnp::serialize::write_message_to_words(&message)
+    }
+
+    pub fn decode(mut bytes: &[u8]) -> Result<Self> {
+        let message = capnp::serialize::read_message(&mut bytes, options())?;
+        let r = message.get_root::<schema::progress::Reader>()?;
+        Ok(Self {
+            seq: r.get_seq(),
+            state: text(r.get_state())?,
+            error: text(r.get_error())?,
+            done: r.get_done(),
+            total: r.get_total(),
+            speed: r.get_speed(),
+            files_done: r.get_files_done(),
+            files_total: r.get_files_total(),
+            source_kind: text(r.get_source_kind())?,
+            token: r.get_token(),
+            token_from: text(r.get_token_from())?,
+            token_refused: r.get_token_refused(),
+            verified: r.get_verified(),
+            note: text(r.get_note())?,
+            model: text(r.get_model())?,
+        })
+    }
+
+    /// The message as one frame of the events stream.
+    pub fn frame(&self) -> Vec<u8> {
+        frame(&self.encode())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -470,6 +568,13 @@ impl Response {
             t.set_download_error(&s.download_error[..]);
             t.set_download_note(&s.download_note[..]);
             t.set_download_token(&s.download_token[..]);
+            t.set_download_files_done(s.download_files_done);
+            t.set_download_files_total(s.download_files_total);
+            t.set_download_source_kind(&s.download_source_kind[..]);
+            t.set_download_token_used(s.download_token_used);
+            t.set_download_token_from(&s.download_token_from[..]);
+            t.set_download_token_refused(s.download_token_refused);
+            t.set_download_verified(s.download_verified);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -579,6 +684,13 @@ impl Response {
                 download_error: text(s.get_download_error())?,
                 download_note: text(s.get_download_note())?,
                 download_token: text(s.get_download_token())?,
+                download_files_done: s.get_download_files_done(),
+                download_files_total: s.get_download_files_total(),
+                download_source_kind: text(s.get_download_source_kind())?,
+                download_token_used: s.get_download_token_used(),
+                download_token_from: text(s.get_download_token_from())?,
+                download_token_refused: s.get_download_token_refused(),
+                download_verified: s.get_download_verified(),
             })
         } else {
             None
@@ -666,6 +778,14 @@ impl Frames {
         }
     }
 
+    /// The next complete Progress message (of the events stream).
+    pub fn next_progress(&mut self) -> Result<Option<Progress>> {
+        match self.next()? {
+            Some(message) => Progress::decode(&message).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Bytes of an unfinished frame (at the end of a stream: it was cut off).
     pub fn pending(&self) -> usize {
         self.buffer.len()
@@ -713,7 +833,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25, download_done: 7 << 30, download_total: 19 << 30, download_speed: 24.5e6, download_source: "Hugging Face, without a token".into(), download_error: "e".into(), download_note: "412 of 1250 files".into(), download_token: "$HF_TOKEN".into() }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25, download_done: 7 << 30, download_total: 19 << 30, download_speed: 24.5e6, download_source: "Hugging Face, without a token".into(), download_error: "e".into(), download_note: "412 of 1250 files".into(), download_files_done: 412, download_files_total: 1250, download_source_kind: "huggingface".into(), download_token: "~/.cache/huggingface/token".into(), download_token_used: true, download_token_from: "~/.cache/huggingface/token".into(), download_token_refused: true, download_verified: true }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),
@@ -728,6 +848,19 @@ mod tests {
         assert_eq!(Response::decode(&response.encode()).unwrap(), response);
         assert_eq!(Response::decode(&Response::default().encode()).unwrap(), Response::default());
         assert_eq!(Response::error("no").ok(), Err("no".to_string()));
+    }
+
+    #[test]
+    fn progress_survives_encoding_and_framing() {
+        let p = Progress { seq: 9, state: "downloading".into(), error: "e".into(), done: 7 << 30, total: 20 << 30, speed: 42.5e6, files_done: 468, files_total: 1250, source_kind: "huggingface".into(), token: true, token_from: "env HF_TOKEN".into(), token_refused: false, verified: false, note: "468 of 1250 files".into(), model: "m".into() };
+        assert_eq!(Progress::decode(&p.encode()).unwrap(), p);
+        assert_eq!(Progress::decode(&Progress::default().encode()).unwrap(), Progress::default());
+        let mut frames = Frames::new();
+        frames.push(&[HEARTBEAT.to_vec(), p.frame(), HEARTBEAT.to_vec()].concat());
+        assert_eq!(frames.next_progress().unwrap(), Some(p.clone()));
+        assert_eq!(frames.next_progress().unwrap(), None);
+        assert!((p.fraction() - 0.35).abs() < 1e-9 && !p.settled());
+        assert!(Progress { state: "ready".into(), ..p }.settled());
     }
 
     #[test]

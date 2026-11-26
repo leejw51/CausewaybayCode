@@ -1,5 +1,6 @@
-//! The API: two POST routes whose bodies are Cap'n Proto messages (see cwbcode_proto), and
-//! the web client's files. Who may use the API is decided in auth.rs.
+//! The API: POST routes whose bodies are Cap'n Proto messages (see cwbcode_proto): a call,
+//! a chat (a stream of events), and the events stream of the model's state; and the web
+//! client's files. Who may use the API is decided in auth.rs.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -12,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Version, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::{get, post};
-use cwbcode_proto::{CALL_PATH, CHAT_PATH, Method, PROTOCOL_HEADER, Project, Request, Response, Session, Status, Tool, What};
+use cwbcode_proto::{CALL_PATH, CHAT_PATH, EVENTS_PATH, Method, PROTOCOL_HEADER, Project, Request, Response, Session, Status, Tool, What};
 
 use crate::agent;
 use crate::kb;
@@ -44,6 +45,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route(CALL_PATH, post(call))
         .route(CHAT_PATH, post(chat))
+        .route(EVENTS_PATH, post(events).get(events))
         .route(CA_PATH, get(ca))
         .fallback(get(web))
         .layer(DefaultBodyLimit::max(cwbcode_proto::MAX_MESSAGE_BYTES))
@@ -69,13 +71,49 @@ pub fn app_proof(token: &str, port: u16, nonce: &str) -> String {
 /// The router for the desktop app's plain-HTTP port (127.0.0.1 only): the backend's, plus
 /// the app's proof, and only for requests addressed to 127.0.0.1 or localhost at that port.
 /// (A site whose name a rebinding DNS server points at 127.0.0.1 would otherwise be the
-/// same origin as itself here, and its pages could read and call the backend.)
+/// same origin as itself here, and its pages could read and call the backend.) The app's
+/// own page (its fixed origin, see APP_ORIGINS) may call it across origins.
 pub fn local_router(app: App, token: String, port: u16) -> Router {
     Router::new()
         .route(APP_PROOF_PATH, get(proof))
         .with_state((Arc::new(token), port))
         .merge(router(app))
+        .layer(axum::middleware::from_fn(app_origin))
         .layer(axum::middleware::from_fn_with_state(port, local_host))
+}
+
+/// The Mac app's page: the app's own origin (Tauri's), the same at every start, so that what
+/// the page keeps in the browser stays; it calls the backend on this port across origins.
+/// No website has this origin: a browser sends it only for the app's own window.
+pub const APP_ORIGINS: [&str; 2] = ["tauri://localhost", "http://tauri.localhost"];
+
+/// The app's page, on the desktop port only: its preflight is answered, and its requests go
+/// on as the page's own would (the origin checks in auth.rs are for websites); the token is
+/// asked for as ever. Any other origin is left to those checks.
+async fn app_origin(request: HttpRequest, next: Next) -> HttpResponse {
+    let origin = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).filter(|o| APP_ORIGINS.contains(o)).map(String::from);
+    let Some(origin) = origin else { return next.run(request).await };
+    let allow = |response: &mut HttpResponse| {
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(&origin).expect("an origin from APP_ORIGINS"));
+        h.insert(header::VARY, HeaderValue::from_static("origin"));
+        h.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static(PROTOCOL_HEADER));
+    };
+    if request.method() == axum::http::Method::OPTIONS {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        allow(&mut response);
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type"));
+        h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        return response;
+    }
+    let mut request = request;
+    request.headers_mut().remove(header::ORIGIN);
+    request.headers_mut().remove("sec-fetch-site");
+    let mut response = next.run(request).await;
+    allow(&mut response);
+    response
 }
 
 async fn proof(State((token, port)): State<(Arc<String>, u16)>, request: HttpRequest) -> HttpResponse {
@@ -303,6 +341,59 @@ async fn chat(State(app): State<App>, request: HttpRequest) -> HttpResponse {
     ([(header::CONTENT_TYPE, "application/x-capnp-stream"), (header::CACHE_CONTROL, "no-store")], Body::from_stream(frames)).into_response()
 }
 
+/// The model's state and its download, as it changes, to every client that asks (the same
+/// messages for all of them, from one broadcast: nobody polls). First where it is now, then
+/// each message the backend sends: one on every change of state, and every half second while
+/// it downloads; a heartbeat when nothing is sent for a second. It ends once the model is
+/// ready (or there is none to wait for). Asked as any call is: the token or a session, from
+/// the backend's own page or a client.
+async fn events(State(app): State<App>, request: HttpRequest) -> HttpResponse {
+    if !app.allowed(request.headers(), request.uri(), peer(&request)) {
+        return refused();
+    }
+    // Subscribed before the first message is made: nothing sent in between is missed.
+    let receiver = app.shared.events.subscribe();
+    let first = app.shared.progress();
+    struct Feed {
+        receiver: tokio::sync::broadcast::Receiver<cwbcode_proto::Progress>,
+        shared: Arc<Shared>,
+        first: Option<cwbcode_proto::Progress>,
+        /// The number of the last message sent: older or repeated ones are skipped.
+        last: u64,
+        beat: tokio::time::Interval,
+        ended: bool,
+    }
+    let mut beat = tokio::time::interval(std::time::Duration::from_secs(1));
+    beat.reset();
+    let feed = Feed { receiver, shared: app.shared.clone(), first: Some(first), last: 0, beat, ended: false };
+    let frames = futures::stream::unfold(feed, |mut feed| async move {
+        if feed.ended {
+            return None;
+        }
+        loop {
+            let progress = match feed.first.take() {
+                Some(first) => first,
+                None => tokio::select! {
+                    biased;
+                    got = feed.receiver.recv() => match got {
+                        Ok(progress) if progress.seq <= feed.last => continue,
+                        Ok(progress) => progress,
+                        // Fell behind (a slow client): where it is now is what matters.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => feed.shared.progress(),
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    },
+                    _ = feed.beat.tick() => return Some((Ok::<_, std::convert::Infallible>(Bytes::from_static(&cwbcode_proto::HEARTBEAT)), feed)),
+                },
+            };
+            feed.last = feed.last.max(progress.seq);
+            feed.ended = progress.settled();
+            feed.beat.reset();
+            return Some((Ok(Bytes::from(progress.frame())), feed));
+        }
+    });
+    ([(header::CONTENT_TYPE, "application/x-capnp-stream"), (header::CACHE_CONTROL, "no-store")], Body::from_stream(frames)).into_response()
+}
+
 /// The project's store for a call that only reads: None if the project has none yet.
 fn existing_store(shared: &Shared, request: &Request) -> Result<Option<Store>> {
     Store::open_project_existing(&shared.roots.resolve(&request.project)?)
@@ -366,7 +457,15 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 download_source: download.source,
                 download_error: download.error,
                 download_note: download.note,
-                download_token: download.token,
+                download_files_done: download.files_done,
+                download_files_total: download.files_total,
+                download_source_kind: download.source_kind,
+                // (As 0.1.2 said it: "" none, "refused", else where it was found.)
+                download_token: if download.token_refused { "refused".to_string() } else if download.token { download.token_from.clone() } else { String::new() },
+                download_token_used: download.token,
+                download_token_from: download.token_from,
+                download_token_refused: download.token_refused,
+                download_verified: download.verified,
             });
         }
         Method::Projects => {

@@ -46,7 +46,7 @@ pub const DEFAULT_PORT: u16 = 7443;
     name = "cwbcode",
     version,
     about = "Causewaybay Code backend: a local AI coding agent (Inkling 2 Mini on Apple MLX) served over HTTP/3 and HTTP/2",
-    after_help = "The model is looked for in Ollama's store ($OLLAMA_MODELS, ~/.ollama/models), then in ~/.cwbcode/models ($CWBCODE_MODELS). One that is in neither is \"missing\": `serve --download-model` (or CWBCODE_DOWNLOAD_MODEL=1) downloads it at start, about 20 GB from Hugging Face (thinkingmachines/Inkling-2-Mini, with $HF_TOKEN or the token `hf auth login` saved when there is one, sent to huggingface.co only, and without one otherwise), into ~/.cwbcode/models, checks every tensor file against Ollama's registry, and loads it without a restart; the web client can start the same download. A stopped download goes on where it stopped."
+    after_help = "The model is looked for in Ollama's store ($OLLAMA_MODELS, ~/.ollama/models), then in ~/.cwbcode/models ($CWBCODE_MODELS). One that is in neither is downloaded at start (unless `serve --no-download-model`, or CWBCODE_DOWNLOAD_MODEL=0: then it is \"missing\", and the web client offers the download): about 20 GB from Hugging Face (thinkingmachines/Inkling-2-Mini), into ~/.cwbcode/models; every tensor file is checked against Ollama's registry, and the model loads without a restart. A Hugging Face token is used when there is one ($HF_TOKEN, $HUGGING_FACE_HUB_TOKEN, the file $HF_TOKEN_PATH names, or the one `hf auth login` saved in $HF_HOME/token, ~/.cache/huggingface/token by default), sent to huggingface.co only: downloads are faster with one, and work without. A stopped download goes on where it stopped. Clients follow it on POST /api/events, a stream pushed to all of them."
 )]
 struct Cli {
     /// Where the server keeps its database, certificate, token and compiled tools [default: ~/.cwbcode].
@@ -116,13 +116,23 @@ struct Serve {
     #[arg(long)]
     no_model: bool,
 
-    /// When the model is in neither Ollama's store nor ~/.cwbcode/models, download it at
-    /// start (about 20 GB, from Hugging Face; with the token in $HF_TOKEN or the one `hf auth
-    /// login` saved when there is one, without one otherwise) and load it when it is done,
-    /// without a restart. The Mac app starts its backend with this. Without it a missing
-    /// model is "missing", and the web client offers to download it.
-    #[arg(long, env = "CWBCODE_DOWNLOAD_MODEL", value_parser = clap::builder::BoolishValueParser::new())]
-    download_model: bool,
+    /// Download the model at start when it is in neither Ollama's store nor ~/.cwbcode/models
+    /// (the default; kept so that older command lines work). CWBCODE_DOWNLOAD_MODEL=0 is
+    /// --no-download-model.
+    #[arg(long, env = "CWBCODE_DOWNLOAD_MODEL", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true", value_name = "BOOL", hide = true)]
+    download_model: Option<bool>,
+
+    /// Do not download a missing model at start: it is "missing", and the web client (or a
+    /// call) starts the download when asked. By default a missing model is downloaded (about
+    /// 20 GB, from Hugging Face; with a Hugging Face token when there is one, without
+    /// otherwise) and loaded when it is done, without a restart.
+    #[arg(long)]
+    no_download_model: bool,
+
+    /// Tests: the script (--script) stands in for the model only once the model has been
+    /// downloaded, so that a whole download can be watched to "ready".
+    #[arg(long, hide = true, requires = "script")]
+    script_after_download: bool,
 
     /// Take the model's turns from a JSON script instead of a model (for tests).
     #[arg(long, value_name = "FILE")]
@@ -274,7 +284,8 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         network: options.allow_network,
         script: options.script.clone(),
         no_model: options.no_model,
-        download_model: options.download_model,
+        download_model: !options.no_download_model && options.download_model.unwrap_or(true),
+        script_after_download: options.script_after_download,
         h3: !options.no_h3,
     };
 

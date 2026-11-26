@@ -8,6 +8,7 @@
 //!   cwbcodeclient kb add notes.md          the project's knowledge base (kb search, list, ...)
 //!   cwbcodeclient status | projects | sessions | tools
 
+mod progress;
 mod repl;
 mod term;
 
@@ -436,6 +437,15 @@ async fn run(cli: Cli) -> Result<()> {
             bail!("--think {think}: use none, minimal, low, medium, high or max");
         }
     }
+    // A model that is not ready yet: follow it (the backend's events stream) until it is.
+    let status = session.client.call(&Request::new(Method::Status)).await?.status.unwrap_or_default();
+    match status.model_state.as_str() {
+        s if progress::ready(s) => {}
+        "missing" if !status.download_error.is_empty() => bail!("the model's download stopped: {} (start it again from the web client: Try again; what is done is kept)", status.download_error),
+        "missing" => bail!("the model is not downloaded, and the backend was started with --no-download-model: download it from the web client (Download the model), or start the backend without that"),
+        s if s.starts_with("failed") => bail!("the model did not load ({s})"),
+        _ => progress::follow(&session.client).await?,
+    }
     // The prompt: the arguments, and what is piped in.
     let mut prompt = cli.prompt.join(" ");
     let piped = !std::io::stdin().is_terminal();
@@ -469,8 +479,6 @@ async fn run(cli: Cli) -> Result<()> {
     for path in &cli.image {
         state.images.push(read_upload(path)?);
     }
-    // A model on its way (downloading, loading): its progress until it is ready.
-    repl::wait_for_model(&session).await?;
     if cli.print || piped {
         if prompt.trim().is_empty() {
             bail!("nothing to answer: give a prompt (cwbcodeclient -p \"...\") or pipe one in");

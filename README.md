@@ -133,16 +133,32 @@ SHA-256 in Ollama's registry. The backend looks in Ollama's store first, then in
 **The backend downloads it too**, without Python or Ollama (`rust/server/src/download.rs`,
 the same Hugging Face recipe in Rust, into the same store and with the same resume file):
 
-- `cwbcode serve --download-model` (or `CWBCODE_DOWNLOAD_MODEL=1`): a model that is in
-  neither store is downloaded at start and then loaded, without a restart. The Mac app starts
-  its backend this way.
-- Without it a missing model is `missing` (in Status, the bar's pill and the dashboard), and
-  the web client's chat view and model card offer **Download the model (about 20 GB)**: the
-  call (`downloadModel`) needs the sign-in or token, as every call does.
-- While it runs the model is `downloading`, and Status carries the bytes done and in all,
-  the speed over the last five seconds and the source (`Hugging Face, without a token`, or
-  with the token from where it was found); the page shows a bar that fills, the percent, the
-  gigabytes, the speed and the time left, asking every second meanwhile. A download that
+- By default a model that is in neither store is downloaded at start and then loaded, without
+  a restart: no flag is needed (`make start` still runs `scripts/model.py ensure` first, and
+  `--download-model` is still taken, and changes nothing).
+- `cwbcode serve --no-download-model` (or `CWBCODE_DOWNLOAD_MODEL=0`) turns that off: a
+  missing model is `missing` (in Status, the bar's pill and the dashboard), and the web
+  client's chat view and model card offer **Download the model (about 20 GB)**: the call
+  (`downloadModel`) needs the sign-in or token, as every call does.
+- A Hugging Face token is used when there is one: `$HF_TOKEN`, `$HUGGING_FACE_HUB_TOKEN`, the
+  file `$HF_TOKEN_PATH` names, or the one `hf auth login` saved (`$HF_HOME/token`,
+  `~/.cache/huggingface/token` by default; the Mac app, started from the Finder without the
+  shell's environment, finds that file). It goes to huggingface.co only, never to the CDN it
+  redirects to, and downloads are faster with it. Every client says whether one is used and
+  where it was found (`env HF_TOKEN`, `~/.cache/huggingface/token`; never the token); without
+  one they say so, with a one-line tip (`hf auth login`, then restart). A token Hugging Face
+  refuses (401, 403) is dropped, and the download goes on without it, saying so.
+- While it runs the model is `downloading`, then `verifying` (the check against Ollama's
+  registry), then `loading`. Every client follows it on **`POST /api/events`**: one stream,
+  the same messages pushed to all of them from one broadcast (nobody polls), a message on
+  every change of state and at least every 500 ms while it downloads, ending once the model is
+  ready; asked as any call is (the token or a session, the backend's own page). A
+  `Progress` message carries the state, the bytes done and in all, the speed over the last
+  five seconds, the tensor files done and in all, and where it comes from (as fields, which
+  each client words in its own language); Status carries the same. The web client shows the
+  Forge (below) and falls back to asking for Status every second when the stream cannot be
+  had; the terminal client draws a one-line bar until the model is ready, and
+  `cwbcodeclient status` shows the download too. A download that
   stops (a network error, the app quit) keeps what it finished: starting it again, or
   starting the backend again, goes on from there, and the page offers to try again with
   the reason. The backend's log (`server.log`, or `app-backend.log` for the app) says where
@@ -335,24 +351,34 @@ motion".
 
 `make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`), at
 `rust/desktop/target/release/bundle/macos/`; `make app` opens it, or drag it to
-/Applications. It is a window on the web client with the backend inside it: the app shows a
-starting page, uses a backend already running (`make start` serves the app's port too), or
-else starts the one it carries and stops it again on quit. Either way there is one backend
-and one copy of the model. Then the window opens the backend's page with its token, as the
-`open` link does.
+/Applications. It is built as desktop apps with a local server usually are: the page is the
+app's own (the web client, built into the app, on the app's fixed origin `tauri://localhost`),
+and the backend is the program it carries, which the app always starts and stops again on
+quit. That backend listens on this machine only (127.0.0.1), never on other interfaces, on
+ports the system gives as free each time the app starts (one in plain HTTP for the page, one
+in HTTPS, the next for HTTP/3). Once it answers, the app opens its page with
+`#api=http://127.0.0.1:<port>&token=...`, and the page calls the backend there; since its
+origin does not change, what it keeps (preferences, the last project and conversation) stays
+from one start to the next. Remote mode is for `make start`, which is for development and
+runs beside the app on its own ports (7443, 7480). (Both use `~/.cwbcode`; a `make start`
+backend with the model loaded beside the app's would be two copies of it in memory.)
+`make test-app` runs the app for real, twice, and checks all this.
 
 The model is not inside the app, and need not be downloaded first: on a Mac that has never
-had it, the backend the app starts downloads it by itself (`--download-model`; about 20 GB
+had it, the backend the app starts downloads it by itself (as every backend does; about 20 GB
 from Hugging Face, no account, no Python, no Ollama), the window shows the download's
 progress where a new user lands, and the model loads when it is done. Quitting the app part
 way keeps what is done; opening it again goes on from there. A model already in Ollama's
 store or `~/.cwbcode/models` (`make download`) is used as it is.
 
-- The window reaches the backend over plain HTTP on `127.0.0.1:7480` (`cwbcode serve
+- The page reaches the backend over plain HTTP on `127.0.0.1:<that port>` (`cwbcode serve
   --http-port`), because a web view will not take the backend's certificate. That port
   answers this machine only, only for requests addressed to `127.0.0.1` or `localhost` at
   that port (so a site that points its name at 127.0.0.1 cannot reach it), and asks for the
-  token like the HTTPS one; the page gets no commands of the app's. If the port is taken,
+  token like the HTTPS one; the page gets no commands of the app's. That port alone lets the
+  app's own origin (`tauri://localhost`) call it across origins (its preflight is answered);
+  no website has that origin, the token is still asked for, and the HTTPS port, which remote
+  mode opens to other machines, takes no other origin than its own. If the port is taken,
   the backend says so in its log and serves on without it.
 - Whatever answers on that port must first show that it holds the backend's token: the app
   sends a fresh nonce to `/app-proof` and checks the answer (an HMAC of it keyed with the
@@ -450,7 +476,8 @@ answered at once, also while the model works.
 
 **Protocol** (`rust/proto`, `rust/proto/schema/cwbcode.capnp`). `POST /api/call` takes a `Request` and
 answers a `Response`; `POST /api/chat` answers a stream of `Event`s, each framed by its
-length, with an empty frame as heartbeat. The same messages are used by the terminal client
+length, with an empty frame as heartbeat; `POST /api/events` answers a stream of `Progress`
+messages (the model's state and its download), framed the same way. The same messages are used by the terminal client
 and, compiled to WebAssembly, by the web client.
 
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for

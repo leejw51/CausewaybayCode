@@ -191,9 +191,11 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .seg button.on { color: #281810; }
 .pill { display: flex; align-items: center; gap: .9rem; min-height: 2.1rem; padding: 0 .8rem; border: 1px solid var(--line); border-radius: 99px; background: var(--well); font-size: .92em; color: var(--dim); white-space: nowrap; min-width: 0; overflow: hidden; }
 .pill #login-state { color: var(--accent); }
+.pill { min-width: 0; } .pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--dim); margin-right: .45rem; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
 .dot.busy { background: var(--accent); animation: blink 1s steps(1) infinite; }
+.dot.forging { background: #ff8a3d; box-shadow: 0 0 6px #ff8a3d; }
 @keyframes blink { 50% { opacity: .2; } }
 /* Settings: a sheet under the bar. */
 .sheet { display: none; position: absolute; right: var(--gap); top: calc(3.2rem + var(--gap) * 2 + 2px); z-index: 20; width: min(24rem, calc(100vw - 16px)); padding: .7rem; box-shadow: 0 18px 50px rgba(0, 0, 0, .45); }
@@ -394,12 +396,96 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 .download.card .dl-stats .dl-percent { font-size: 1.15em; min-width: 3.4rem; }
 .dl-stats span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .dl-from { overflow-wrap: anywhere; }
-/* The Hugging Face token: green when used, amber when none (with the tip), red when refused. */
-.dl-token { margin-top: .35rem; padding: .3rem .6rem; border-radius: var(--r); border: 1px solid var(--warn); color: var(--warn); font-size: .92em; overflow-wrap: anywhere; }
-.dl-token.used { border-color: var(--ok); color: var(--ok); }
-.dl-token.refused { border-color: var(--bad); color: var(--bad); }
 .dl-acts { display: flex; flex-wrap: wrap; gap: .5rem; }
 .dl-acts button { white-space: normal; min-height: 2.6rem; }
 @container app (max-width: 40em) { .download .dl-head img { width: 4.2rem; height: 4.2rem; } .download { padding: .9rem; } }
 @media (prefers-reduced-motion: reduce) { .dl-bar i::before, .dl-bar i::after { animation: none; } .dl-bar i::after { display: none; } .dl-bar i { transition: none; } }
+/* The Forge (design/forge/): while the model is on its way, a 3D scene of a robot forged on
+   an anvil fills the chat area, with the numbers over it. Its colours are the design's own,
+   the same in the light and dark themes (it is a night scene). The accent follows the stage. */
+.forge {
+  --f-night: #0a0d24; --f-panel: #10173e; --f-forge: #ff8a3d; --f-ember: #ffb547; --f-eye: #50d8f8;
+  --f-ready: #5ce08c; --f-cold: #ff8a7a; --f-text: #fcecc8; --f-soft: #d7d2f0; --f-dim: #9c97c2;
+  --f-accent: var(--f-forge);
+  position: relative; width: 100%; height: clamp(22rem, calc(100dvh - 16.5rem), 46rem); margin: 0 0 1rem;
+  border-radius: 12px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--f-accent) 30%, transparent);
+  background: radial-gradient(ellipse at 28% 70%, rgba(255, 122, 47, .28), transparent 55%), radial-gradient(ellipse at 80% 10%, rgba(80, 216, 248, .12), transparent 50%), var(--f-night);
+  color: var(--f-text); font-family: "VT323", var(--px), monospace; display: flex; flex-direction: column; justify-content: flex-end;
+  transition: opacity .6s ease, transform .6s ease;
+}
+.forge[data-stage="heat"] { --f-accent: var(--f-ember); }
+.forge[data-stage="temper"] { --f-accent: var(--f-eye); }
+.forge[data-stage="wake"] { --f-accent: #9aeaff; }
+.forge[data-stage="ready"] { --f-accent: var(--f-ready); }
+.forge[data-stage="failed"] { --f-accent: var(--f-cold); }
+.forge[data-stage="missing"] { --f-accent: var(--f-dim); }
+.forge[data-stage="failed"], .forge[data-stage="missing"] { background: radial-gradient(ellipse at 28% 70%, rgba(120, 90, 110, .18), transparent 55%), var(--f-night); }
+.forge.leaving { opacity: 0; transform: scale(.985); }
+.forge-scene { position: absolute; inset: 0; }
+.forge-scene canvas { display: block; width: 100%; height: 100%; }
+.forge-title { position: absolute; left: 28px; top: 24px; right: 270px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.forge-step { font-family: var(--px); font-size: 11px; color: var(--f-ember); letter-spacing: 1px; }
+.forge-title h1 { margin: 0; font-family: var(--px); font-size: 26px; line-height: 1.35; font-weight: normal; color: var(--f-text); text-shadow: 0 2px 0 #2a0e00; }
+.forge-title p { margin: 0; font-size: 22px; color: var(--f-soft); text-shadow: 0 1px 6px #000; }
+.forge-stages { position: absolute; right: 24px; top: 24px; width: 220px; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.forge-stages li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(8, 11, 34, .6); border: 1px solid rgba(156, 151, 194, .3); border-radius: 8px; font-size: 19px; color: var(--f-dim); }
+.forge-stages li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1px solid currentColor; flex: 0 0 auto; }
+.forge-stages li.done { background: rgba(8, 11, 34, .78); border-color: rgba(255, 181, 71, .55); color: var(--f-ember); }
+.forge-stages li.done::before { background: var(--f-ember); border-color: var(--f-ember); }
+.forge-stages li.on { background: color-mix(in srgb, var(--f-accent) 22%, transparent); border-color: var(--f-accent); color: var(--f-text); }
+.forge-stages li.on::before { background: var(--f-accent); border-color: var(--f-accent); box-shadow: 0 0 8px var(--f-accent); }
+.forge-panel { position: relative; margin: 0 24px 24px; padding: 20px 24px; background: rgba(8, 11, 34, .86); border: 1px solid color-mix(in srgb, var(--f-accent) 35%, transparent); border-radius: 14px; display: flex; flex-direction: column; gap: 12px; }
+.forge-phone-title, .forge-phone-about { display: none; }
+.forge-nums { display: flex; align-items: baseline; gap: 6px 24px; flex-wrap: wrap; font-size: 26px; }
+.forge-percent { font-family: var(--px); font-size: 44px; font-weight: normal; color: var(--f-ember); text-shadow: 0 0 18px rgba(255, 138, 61, .55); min-width: 7.5ch; font-variant-numeric: tabular-nums; }
+.forge-nums span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.forge-nums .speed { color: var(--f-eye); } .forge-nums .left { color: var(--f-soft); } .forge-nums .dim { color: var(--f-dim); font-size: 22px; }
+.forge-bar { position: relative; height: 18px; background: #050716; border: 1px solid rgba(255, 181, 71, .35); border-radius: 99px; overflow: hidden; }
+.forge-bar i { position: relative; display: block; height: 100%; border-radius: 99px; overflow: hidden; background: linear-gradient(90deg, #ff7a2f, #ffb547 70%, #ffe08a); box-shadow: 0 0 16px rgba(255, 138, 61, .8); transition: width .3s ease-out; }
+.forge-bar i::after { content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .6), transparent); animation: forge-sheen 2.4s ease-in-out infinite; }
+.forge-bar .head { position: absolute; top: -3px; width: 18px; height: 22px; border-radius: 50%; background: #fff2c8; box-shadow: 0 0 14px 4px rgba(255, 200, 120, .85); transition: left .3s ease-out; }
+.forge[data-stage="heat"] .forge-bar i { width: 100% !important; opacity: .35; animation: forge-ember 1.6s ease-in-out infinite; }
+.forge[data-stage="heat"] .forge-bar .head { display: none; }
+@keyframes forge-sheen { 0% { left: -40%; } 70%, 100% { left: 110%; } }
+@keyframes forge-ember { 50% { opacity: .6; } }
+.forge-foot { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; font-size: 21px; color: var(--f-soft); }
+.forge-foot em, .forge-tip em { font-style: normal; color: var(--f-ready); }
+.forge[data-stage] #dl-source em { color: var(--f-ready); }
+.forge-foot .dim, .forge .dim { color: var(--f-dim); }
+.forge-tip { display: flex; align-items: center; gap: 10px; font-size: 19px; color: var(--f-soft); padding: 6px 10px; border: 1px dashed rgba(80, 216, 248, .35); border-radius: 8px; }
+.forge-tip em { color: var(--f-eye); font-family: var(--mono, monospace); }
+.forge-tip span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.forge-foot span, .forge-panel p { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.forge-tip button { min-height: 32px; min-width: 32px; }
+.forge .note.bad { color: var(--f-cold); font-size: 21px; margin: 0; overflow-wrap: anywhere; }
+.forge .dl-acts button { min-height: 44px; }
+.forge[data-stage="failed"] .forge-title p, .forge[data-stage="missing"] .forge-title p { max-width: 40rem; }
+/* The dashboard's card: the numbers, smaller, without the scene. */
+.forge-card .forge-nums { font-size: 1.05em; gap: .2rem .9rem; }
+.forge-card .forge-percent { font-size: 1.2em; min-width: 0; }
+.forge-card .forge-nums .dim { font-size: 1em; }
+.forge-card .forge-bar { height: 12px; }
+.forge-card .forge-bar .head { width: 12px; height: 16px; margin-left: 3px; }
+.forge-card .forge-foot { font-size: 1em; }
+.forge-card .forge-foot em { color: var(--ok); }
+.forge-card .forge-tip { font-size: .95em; }
+/* A phone: the scene 360 px tall on top, the panel below it. */
+@container app (max-width: 40em) {
+  .forge { height: auto; display: block; border: 0; background: none; }
+  .forge-scene { position: relative; height: 360px; border-radius: 12px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--f-accent) 25%, transparent); background: radial-gradient(ellipse at 38% 70%, rgba(255, 122, 47, .28), transparent 60%), var(--f-night); }
+  .forge-title { left: 14px; top: 12px; right: auto; }
+  .forge-title h1, .forge-title p, .forge-stages { display: none; }
+  .forge-step { font-size: 10px; background: rgba(8, 11, 34, .7); padding: 6px 8px; border-radius: 6px; }
+  .forge-panel { margin: 8px 0 0; padding: 18px; background: var(--f-panel); }
+  .forge-phone-title { display: block; margin: 0; font-family: var(--px); font-size: 15px; line-height: 1.6; font-weight: normal; color: var(--f-text); }
+  .forge-phone-about { display: block; margin: 0; font-size: 20px; color: var(--f-soft); }
+  .forge-nums { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; font-size: 21px; }
+  .forge-percent { grid-column: 1 / -1; font-size: 32px; }
+  .forge-nums span { white-space: normal; }
+  .forge-bar { height: 16px; }
+  .forge-foot { font-size: 19px; }
+  .forge-foot .grow, .forge-foot .dim { display: none; }
+}
+/* Reduced motion: one still render of the scene, the bar and the numbers; nothing moves. */
+@media (prefers-reduced-motion: reduce) { .forge-bar i::after { display: none; } .forge.leaving { transform: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
