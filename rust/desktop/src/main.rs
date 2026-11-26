@@ -164,23 +164,29 @@ fn minimal_path(path: &str) -> bool {
     path.split(':').filter(|p| !p.is_empty()).all(|p| matches!(p, "/usr/bin" | "/bin" | "/usr/sbin" | "/sbin"))
 }
 
-/// The PATH a terminal would have. Opened from the Finder the app gets a minimal one, and the
-/// agent's commands would not find cargo, Homebrew's tools, and the like. It takes an
-/// interactive login shell (~/.cargo/bin is often added in .zshrc, not .zprofile), which
-/// prints it with printenv (a list with colons, also from fish); what its startup files print
-/// is passed over by a marker. Asked only when the app was not started from a terminal (its
-/// parent is launchd) or the PATH it has is the minimal one, and given a few seconds: the
-/// shell runs in a session of its own and is killed with whatever it started if it takes
-/// longer (startup files that wait for something, or leave a program holding its output).
-fn login_path() -> Option<String> {
-    const MARK: &str = "__cwbcode_path__=";
+/// What a terminal's environment has that a backend needs, and an app opened from the Finder
+/// does not get: the PATH (the agent's commands would not find cargo, Homebrew's tools, and
+/// the like), and the Hugging Face settings (a token exported in .zshrc makes the model's
+/// download faster; without it the backend finds none). Asked of an interactive login shell
+/// (~/.cargo/bin and exports are often in .zshrc, not .zprofile), which prints each with
+/// printenv after a marker (what its startup files print is passed over). Asked only when
+/// the app was not started from a terminal (its parent is launchd) or the PATH it has is the
+/// minimal one, and given a few seconds: the shell runs in a session of its own and is killed
+/// with whatever it started if it takes longer (startup files that wait for something, or
+/// leave a program holding its output). The token is passed to the backend only, never shown.
+const LOGIN_VARS: [&str; 5] = ["PATH", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "HF_HOME"];
+
+fn login_env() -> Option<std::collections::HashMap<String, String>> {
+    const MARK: &str = "__cwbcode_env__";
+    const END: &str = "__cwbcode_end__";
     let inherited = std::env::var("PATH").unwrap_or_default();
     if unsafe { libc::getppid() } != 1 && !minimal_path(&inherited) {
         return None;
     }
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".to_string());
+    let script: String = LOGIN_VARS.iter().map(|var| format!("printf '\\n{MARK}{var}='; /usr/bin/printenv {var}; ")).collect::<String>() + &format!("printf '\\n{END}\\n'");
     let mut command = Command::new(&shell);
-    command.args(["-i", "-l", "-c", &format!("printf '\\n{MARK}'; /usr/bin/printenv PATH")]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    command.args(["-i", "-l", "-c", &script]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     // A session of its own: no terminal to stop it for reading or writing, and one group to kill.
     unsafe {
         command.pre_exec(|| {
@@ -205,18 +211,25 @@ fn login_path() -> Option<String> {
         }
     });
     let deadline = Instant::now() + Duration::from_secs(LOGIN_PATH_SECONDS);
-    let mut path = None;
+    let mut found = std::collections::HashMap::new();
+    let mut done = false;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         match lines.recv_timeout(left) {
+            Ok(line) if line.trim() == END => {
+                done = true;
+                break;
+            }
             Ok(line) => {
-                if let Some(found) = line.strip_prefix(MARK) {
-                    path = Some(found.trim().to_string());
-                    break;
+                if let Some((var, value)) = line.strip_prefix(MARK).and_then(|rest| rest.split_once('=')) {
+                    if !value.trim().is_empty() {
+                        found.insert(var.to_string(), value.trim().to_string());
+                    }
                 }
             }
             Err(_) => break,
         }
     }
+    let path = if done { found.get("PATH").cloned() } else { None };
     // The shell ends right after printing; one that does not is killed, with its group.
     let ending = Instant::now();
     while child.try_wait().ok().flatten().is_none() {
@@ -230,7 +243,13 @@ fn login_path() -> Option<String> {
         std::thread::sleep(Duration::from_millis(20));
     }
     match path {
-        Some(path) if path.starts_with('/') => Some(path),
+        Some(path) if path.starts_with('/') => {
+            let hf: Vec<&str> = LOGIN_VARS[1..].iter().copied().filter(|v| found.contains_key(*v)).collect();
+            if !hf.is_empty() {
+                note(&format!("from the login shell for the backend: {}", hf.join(", ")));
+            }
+            Some(found)
+        }
         _ => {
             note(&format!("could not learn the login shell's PATH ({shell}, {LOGIN_PATH_SECONDS} s); the backend gets {inherited}"));
             None
@@ -266,8 +285,13 @@ fn start_backend(port: u16, https_port: u16) -> Result<Child, String> {
     if let Ok(more) = std::env::var("CWBCODE_APP_ARGS") {
         command.args(more.split_whitespace());
     }
-    if let Some(path) = login_path() {
-        command.env("PATH", path);
+    if let Some(found) = login_env() {
+        for (var, value) in found {
+            // (What the app was given itself comes first.)
+            if var == "PATH" || std::env::var_os(&var).is_none() {
+                command.env(var, value);
+            }
+        }
     }
     let user_home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
     command
