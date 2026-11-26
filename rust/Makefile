@@ -171,19 +171,37 @@ package-dmg: package
 	codesign --verify --deep --strict "$(APP_BUNDLE)"
 	@ls desktop/target/release/bundle/dmg/*.dmg
 
-# A release: everything built (web client, backend, Mac app with the backend inside) and put in
-# dist/ as the app zipped, its disk image, and their SHA-256 sums. The same command on a Mac and
-# in CI (.github/workflows/release-macos.yml), which signs and notarizes when it has Apple's
-# secrets (APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID); otherwise the app
-# is signed ad hoc.
+# A release: everything built and signed, in dist/:
+#   Causewaybay-Code-<version>-macos-arm64.dmg      the Mac app (backend inside), on a disk image
+#   Causewaybay-Code-<version>-macos-arm64.app.zip  the same app, zipped
+#   cwbcode-<version>-macos-arm64.zip               cwbcode and cwbcodeclient on their own, with
+#                                                   MLX's Metal library beside them
+#   SHA256SUMS
+# Signing, as in FruitNationMessenger: with a Developer ID (APPLE_SIGNING_IDENTITY, or the one in
+# the keychain) everything is signed with the hardened runtime and a timestamp; with APPLE_ID,
+# APPLE_PASSWORD and APPLE_TEAM_ID too (or APPLE_NOTARY_PROFILE), Apple notarizes it and the app
+# and the disk image get their tickets stapled. Without a Developer ID, everything is signed ad
+# hoc. The same command on a Mac and in CI (.github/workflows/release-macos.yml).
 VERSION := $(shell sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/tauri.conf.json)
 RELEASE_NAME := Causewaybay-Code-$(VERSION)-macos-arm64
+CLI_NAME := cwbcode-$(VERSION)-macos-arm64
+release: export APPLE_SIGNING_IDENTITY ?= $(shell scripts/apple-identity.sh)
 release: package-dmg
-	@rm -rf dist && mkdir -p dist
-	ditto -c -k --keepParent "$(APP_BUNDLE)" "dist/$(RELEASE_NAME).app.zip"
+	@echo "signing identity: $$APPLE_SIGNING_IDENTITY"
+	@rm -rf dist && mkdir -p dist/$(CLI_NAME)
+	@# The disk image: Tauri signed and notarized the app in it; the image itself is signed,
+	@# notarized and stapled here.
 	cp desktop/target/release/bundle/dmg/*.dmg "dist/$(RELEASE_NAME).dmg"
+	scripts/sign-dmg.sh "dist/$(RELEASE_NAME).dmg"
+	ditto -c -k --keepParent "$(APP_BUNDLE)" "dist/$(RELEASE_NAME).app.zip"
+	@# The programs on their own, each signed and notarized.
+	cp target/release/cwbcode target/release/cwbcodeclient desktop/binaries/mlx.metallib dist/$(CLI_NAME)/
+	scripts/codesign-binary.sh dist/$(CLI_NAME)/cwbcode
+	scripts/codesign-binary.sh dist/$(CLI_NAME)/cwbcodeclient
+	cd dist && ditto -c -k --keepParent $(CLI_NAME) $(CLI_NAME).zip && rm -rf $(CLI_NAME)
 	cd dist && shasum -a 256 *.zip *.dmg > SHA256SUMS
 	@echo "release $(VERSION) in $(CURDIR)/dist:"; ls -l dist
+	@codesign -dv "$(APP_BUNDLE)" 2>&1 | grep -E "^Authority=|^Signature=" | head -2 || true
 # Opened with the app's port: a backend it starts serves its window there.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
