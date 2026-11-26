@@ -267,6 +267,11 @@ def main():
         assert page.js("document.querySelector('#settings-sheet').classList.contains('open')"), "a click inside closed the sheet"
         page.js("document.querySelector('.main').click()")
         page.wait("!document.querySelector('#settings-sheet').classList.contains('open')", "the sheet closed by a click outside")
+        # Enter on a project's × is the ×'s (a button's own Enter clicks it), not the row's.
+        before = page.js("JSON.stringify([document.querySelector('.row.project.on .what').innerText, document.querySelector('#nav .on').id])")
+        page.js("document.querySelector('.row.project:not(.on) .remove')?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))")
+        time.sleep(0.5)
+        assert page.js("JSON.stringify([document.querySelector('.row.project.on .what').innerText, document.querySelector('#nav .on').id])") == before, "Enter on × opened the project"
         # Every view's button is named, also where its word is hidden.
         assert page.js("[...document.querySelectorAll('#nav button')].every(b => b.getAttribute('aria-label'))"), "a view's button has no name"
 
@@ -305,12 +310,23 @@ def main():
         assert "waiting for you" in page.text("#status-pill"), page.text("#status-pill")
         page.click("#nav-chat")
         page.wait("!document.querySelector('#waiting-badge')", "no badge in the chat itself")
+        # An iPad, upright and on its side, with touch: nothing wider than the screen either.
+        for width, height, name in [(820, 1180, "ipad-portrait"), (1366, 1024, "ipad-landscape")]:
+            page.send("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=2, mobile=True)
+            page.wait(f"innerWidth === {width}", f"the {name} width")
+            if page.js("getComputedStyle(document.querySelector('.side')).display === 'none'"):
+                page.click("#side-toggle")
+            time.sleep(0.5)
+            wide = page.js("JSON.stringify([...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || e.className).slice(0, 5))")
+            assert wide == "[]", f"wider than the {name} screen: {wide}"
+            page.shot(f"{shots}/2-approval-{name}.png")
         # Back to the desktop, with the sidebar open again.
         page.send("Emulation.clearDeviceMetricsOverride")
         page.send("Emulation.setTouchEmulationEnabled", enabled=False)
         page.send("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
         page.wait("innerWidth > 640", "the desktop width again")
-        page.click("#side-toggle")
+        if page.js("getComputedStyle(document.querySelector('.side')).display === 'none'"):
+            page.click("#side-toggle")
         page.wait("getComputedStyle(document.querySelector('.side')).display !== 'none'", "the sidebar again")
         page.shot(f"{shots}/2-approval.png")
         page.click(".approval .approve-yes")
@@ -457,10 +473,9 @@ def main():
         printed = subprocess.run([f"{ROOT}/target/release/cwbcode", "url", "--port", str(port2), "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), capture_output=True, text=True).stdout
         link = next(line.split()[1] for line in printed.splitlines() if line.startswith("open "))
         assert link == f"https://127.0.0.1:{port2}/#token={local_token}", printed
-        # (As a click in the terminal does: a fresh load, not a change of the # in the same page.)
-        page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
+        # Pasted into this same tab (only the part after # changes, the page does not reload).
         page.send("Page.navigate", url=link)
-        page.wait("!!document.querySelector('.side')", "the app from the token link")
+        page.wait("!!document.querySelector('.side')", "the app from the token link pasted into the open tab")
         assert page.js("location.hash") == "", "the token stayed in the address"
         # (Another address is another site to the browser: its language starts from the system's.)
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")

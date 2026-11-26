@@ -707,6 +707,14 @@ fn Root() -> impl IntoView {
             app.side.set(false);
         }
     });
+    // The token link pasted into this same tab changes only what follows the #: read it then
+    // too, as a fresh load does.
+    let _ = window_event_listener(leptos::ev::hashchange, move |_| {
+        let token = initial_token();
+        if !token.is_empty() && token != app.token.get_untracked() {
+            app.token.set(token);
+        }
+    });
     let _ = window_event_listener(leptos::ev::keydown, move |ev| {
         if ev.key() == "Escape" && app.settings.get_untracked() {
             app.settings.set(false);
@@ -1088,7 +1096,7 @@ fn Login() -> impl IntoView {
 }
 
 /// How to make this device trust the backend: install its certificate authority once. Then
-/// the browser shows no warning, and the page installs as an app with its icon.
+/// the browser shows no warning, and the page can be installed as an app.
 #[component]
 fn TrustDevice() -> impl IntoView {
     let app = expect_context::<App>();
@@ -1096,7 +1104,7 @@ fn TrustDevice() -> impl IntoView {
     view! {
         <div class="sub trust-steps">
             <p>{t("trust_why")}</p>
-            <a class="button ghost" id="trust-download" href="/ca.crt" download="causewaybay-code-ca.crt">{t("trust_download")}</a>
+            <a class="button ghost" id="trust-download" href="/ca.crt">{t("trust_download")}</a>
             <p>{t("trust_ios")}</p>
             <p>{t("trust_mac")}</p>
         </div>
@@ -1168,7 +1176,8 @@ fn Sidebar() -> impl IntoView {
                                 on:click=move |_| pick() on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); pick() }>
                                 <span class="what">{p.name.clone()}<small>{move || app.tilde(&shown)}</small></span>
                                 <button class="ghost round remove" title=t("remove_project") aria-label=t("remove_project")
-                                    on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }>"×"</button>
+                                    on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }
+                                    on:keydown=move |ev| ev.stop_propagation()>"×"</button>
                             </div>
                         }
                     }/>

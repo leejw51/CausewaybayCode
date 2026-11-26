@@ -69,8 +69,8 @@ pub struct Cli {
     #[arg(long, default_value = "https://127.0.0.1:7443", env = "CWBCODE_SERVER", global = true)]
     server: String,
 
-    /// A token for the backend [default: none in local mode; otherwise the session saved by
-    /// `cwbcodeclient login`, or this machine's ~/.cwbcode/token].
+    /// A token for the backend [default: this machine's ~/.cwbcode/token in local mode;
+    /// otherwise the session saved by `cwbcodeclient login`, or that token file].
     #[arg(long, env = "CWBCODE_TOKEN", hide_env_values = true, global = true)]
     token: Option<String>,
 

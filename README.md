@@ -263,20 +263,22 @@ the left of the bar), so the work has the whole window; panels reach the edges.
 Chrome: Install): it has a manifest, icons and a service worker, and then opens in a window
 of its own. The service worker asks the backend first, every time, so nothing is served
 stale; it keeps a copy only for when the backend cannot be reached, so that the app still
-opens and says it is offline. A browser registers a service worker, and installs the page
-with its icon, only where it trusts the certificate, so trust the backend's certificate
-authority once on each device first.
+opens and says it is offline. A browser registers a service worker only where it trusts the
+certificate, so trust the backend's certificate authority once on each device first. (An iPad
+that showed a letter instead of the icon on its home screen probably did so for the same
+reason; that is not yet confirmed.)
 
 **Trusting the backend on a device.** The backend makes its own certificate authority on
 first start (`~/.cwbcode/ca.pem`, its key `ca-key.pem` readable only by you) and signs its
 certificate with it. Install that authority once on a phone, tablet or another computer and
-every certificate the backend makes after is trusted there: no warning, and the page installs
-as an app. The dashboard (**Trust this backend on this device**) and the sign-in page link to
+every certificate the backend makes after is trusted there: no warning, and the page can be
+installed as an app. The dashboard (**Trust this backend on this device**) and the sign-in page link to
 it at `/ca.crt`, and `make url` prints where. On an iPhone or iPad: open the download in
 Safari, then Settings → Profile Downloaded → Install, then Settings → General → About →
 Certificate Trust Settings → turn it on. On a Mac: open it in Keychain Access and set it to
-Always Trust. Whoever has `ca-key.pem` could make certificates those devices trust, for any
-site: it never leaves the machine, and the sandbox keeps commands from reading it.
+Always Trust. The authority is not limited to this machine's names, so whoever has
+`ca-key.pem` could make certificates those devices trust, for any site: it never leaves the
+machine, and the sandbox keeps commands from reading it. Install it only on your own devices.
 
 These, and where you are (view, project, conversation), are kept in the browser, so a
 refresh comes back to the same place. The typefaces and the pictures are in the program:

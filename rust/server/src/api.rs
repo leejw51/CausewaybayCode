@@ -464,14 +464,12 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The certificate authority, as a file a phone or a computer offers to install.
+/// The certificate authority, as a file a phone or a computer offers to install. (By its type
+/// alone: Safari on an iPhone or iPad then offers it as a profile, which an attachment might
+/// only save to Files.)
 async fn ca(State(app): State<App>) -> HttpResponse {
     (
-        [
-            (header::CONTENT_TYPE, "application/x-x509-ca-cert"),
-            (header::CONTENT_DISPOSITION, "attachment; filename=\"causewaybay-code-ca.crt\""),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
+        [(header::CONTENT_TYPE, "application/x-x509-ca-cert"), (header::CACHE_CONTROL, "no-cache")],
         app.ca_pem.as_str().to_owned(),
     )
         .into_response()
