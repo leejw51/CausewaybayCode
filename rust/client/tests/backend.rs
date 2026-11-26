@@ -95,15 +95,17 @@ impl Server {
 
     fn spawn(home: &Path, port: u16, args: &[String]) -> Child {
         let real_home = std::env::var("HOME").unwrap();
+        // "no-script": a backend that looks for the real model (the download's test).
+        let script: Vec<std::ffi::OsString> = if args.iter().any(|a| a == "no-script") { vec![] } else { vec!["--script".into(), home.join("script.json").into()] };
         Command::new(backend_binary())
             // (No .env of the developer's is to decide how a test's backend behaves.)
-            .args(["serve", "--env-file", "/dev/null", "--script"])
-            .arg(home.join("script.json"))
+            .args(["serve", "--env-file", "/dev/null"])
+            .args(script)
             // "movable": the backend chooses its address by its mode (this machine only, or
             // every interface in remote mode) instead of being told one.
             .args(if args.iter().any(|a| a == "movable") { vec!["--port".to_string(), port.to_string()] } else { vec!["--bind".to_string(), format!("127.0.0.1:{port}")] })
             // An argument "env:NAME=value" is given to the backend as an environment variable.
-            .args(args.iter().filter(|a| !a.starts_with("env:") && *a != "movable"))
+            .args(args.iter().filter(|a| !a.starts_with("env:") && *a != "movable" && *a != "no-script"))
             .env_remove("CWBCODE_WALLET")
             .envs(args.iter().filter_map(|a| a.strip_prefix("env:")?.split_once('=')))
             .env("HOME", home)
@@ -1123,4 +1125,307 @@ async fn the_web_client_is_served_whole_over_http3_as_over_http2() {
     // been told of it by an earlier version) is turned away at once and stays on HTTP/2.
     assert!(std::net::UdpSocket::bind(("127.0.0.1", server.port)).is_ok(), "something listens on UDP {}", server.port);
     assert!(std::net::UdpSocket::bind(("127.0.0.1", cwbcode_proto::quic_port(server.port))).is_err(), "HTTP/3 is not on the port after");
+}
+
+// ---------- the model's download, from a Hugging Face and a registry of the test's own ----------
+
+/// What the fake Hugging Face, its "CDN" and the fake Ollama registry were asked: each
+/// request's host, path and Authorization header.
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Option<String>)>>>;
+
+/// A safetensors file: a JSON header (as Hugging Face writes it, with spaces) and the data.
+fn safetensors(tensors: &[(&str, &str, &[u64], &[u8])]) -> Vec<u8> {
+    let mut entries = vec![r#""__metadata__": {"format": "pt"}"#.to_string()];
+    let mut data = Vec::new();
+    for (name, dtype, shape, bytes) in tensors {
+        let shape: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
+        entries.push(format!(r#""{name}": {{"dtype": "{dtype}", "shape": [{}], "data_offsets": [{}, {}]}}"#, shape.join(", "), data.len(), data.len() + bytes.len()));
+        data.extend_from_slice(bytes);
+    }
+    let head = format!("{{{}}}", entries.join(", "));
+    let mut out = (head.len() as u64).to_le_bytes().to_vec();
+    out.extend(head.as_bytes());
+    out.extend(data);
+    out
+}
+
+/// A tensor file as Ollama has it, written out by hand: compact JSON, metadata first, padded
+/// with spaces to a multiple of eight, then the bytes.
+fn ollama_blob(meta: Option<(&str, &str)>, tensors: &[(&str, &str, &[u64], &[u8])]) -> Vec<u8> {
+    let mut entries = Vec::new();
+    if let Some((group, quant)) = meta {
+        entries.push(format!(r#""__metadata__":{{"group_size":"{group}","quant_type":"{quant}"}}"#));
+    }
+    let mut data = Vec::new();
+    for (name, dtype, shape, bytes) in tensors {
+        let shape: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
+        entries.push(format!(r#""{name}":{{"dtype":"{dtype}","shape":[{}],"data_offsets":[{},{}]}}"#, shape.join(","), data.len(), data.len() + bytes.len()));
+        data.extend_from_slice(bytes);
+    }
+    let mut head = format!("{{{}}}", entries.join(",")).into_bytes();
+    while head.len() % 8 != 0 {
+        head.push(b' ');
+    }
+    let mut out = (head.len() as u64).to_le_bytes().to_vec();
+    out.extend(head);
+    out.extend(data);
+    out
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("sha256:{}", sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// A small HTTP/1.1 server on 127.0.0.1: `answer(path, headers)` gives the status, headers
+/// and body; a body is sent at about `rate` bytes a second (0: at once).
+fn http_server(seen: Seen, rate: usize, answer: impl Fn(&str, &std::collections::HashMap<String, String>) -> (u16, Vec<(String, String)>, Vec<u8>) + Send + Sync + 'static) -> u16 {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let answer = std::sync::Arc::new(answer);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (seen, answer) = (seen.clone(), answer.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                    }
+                }
+                seen.lock().unwrap().push((headers.get("host").cloned().unwrap_or_default(), path.clone(), headers.get("authorization").cloned()));
+                let (status, extra, body) = answer(&path, &headers);
+                let mut out = stream;
+                let mut head = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+                for (k, v) in extra {
+                    head.push_str(&format!("{k}: {v}\r\n"));
+                }
+                head.push_str("\r\n");
+                if out.write_all(head.as_bytes()).is_err() {
+                    return;
+                }
+                for chunk in body.chunks(if rate == 0 { body.len().max(1) } else { 32 << 10 }) {
+                    if out.write_all(chunk).is_err() {
+                        return;
+                    }
+                    if rate > 0 {
+                        std::thread::sleep(Duration::from_secs_f64(chunk.len() as f64 / rate as f64));
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+/// Bytes [a, b] of `data` for a Range header, as a 206 (or the whole as a 200).
+fn ranged(data: &[u8], range: Option<&String>) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let Some((a, b)) = range.and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) else { return (200, vec![], data.to_vec()) };
+    let a: usize = a.parse().unwrap();
+    let b: usize = b.parse::<usize>().unwrap().min(data.len() - 1);
+    (206, vec![("Content-Range".into(), format!("bytes {a}-{b}/{}", data.len()))], data[a..=b].to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_backend_downloads_the_model_itself_shows_how_far_it_is_and_picks_up_where_it_stopped() {
+    // The checkpoint: a large plain tensor (sent slowly, so that the download can be watched
+    // and stopped half way), an NVFP4 expert bank and an MXFP8 one with their scales, and the
+    // draft network's file.
+    let big: Vec<u8> = (0..(6u32 << 20)).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    let (w13, w13s, w2, w2s, fc) = ([7u8; 128], [9u8; 16], [3u8; 16], [5u8; 2], [1u8, 2, 3, 4, 5, 6, 7, 8]);
+    let shard = safetensors(&[
+        ("model.llm.big.weight", "BF16", &[1536, 2048], &big),
+        ("model.llm.layers.0.mlp.experts.w13_weight", "U8", &[2, 4, 16], &w13),
+        ("model.llm.layers.0.mlp.experts.w13_weight_scale", "F8_E4M3", &[2, 4, 2], &w13s),
+        ("model.llm.layers.0.mlp.experts.w2_weight", "F8_E4M3", &[2, 8], &w2),
+        ("model.llm.layers.0.mlp.experts.w2_weight_scale", "U8", &[2, 1], &w2s),
+    ]);
+    let mtp = safetensors(&[("fc.weight", "BF16", &[4], &fc)]);
+    // What Ollama's registry has for them.
+    let expected = [
+        ("model.llm.big.weight", ollama_blob(None, &[("model.llm.big.weight", "BF16", &[1536, 2048], &big)])),
+        ("model.llm.layers.0.mlp.experts.w13_weight", ollama_blob(Some(("16", "nvfp4")), &[("model.llm.layers.0.mlp.experts.w13_weight", "U32", &[2, 4, 4], &w13), ("model.llm.layers.0.mlp.experts.w13_weight_scale", "U8", &[2, 4, 2], &w13s)])),
+        ("model.llm.layers.0.mlp.experts.w2_weight", ollama_blob(Some(("32", "mxfp8")), &[("model.llm.layers.0.mlp.experts.w2_weight", "U32", &[2, 2], &w2), ("model.llm.layers.0.mlp.experts.w2_weight_scale", "U8", &[2, 1], &w2s)])),
+        ("draft.fc.weight", ollama_blob(None, &[("draft.fc.weight", "BF16", &[4], &fc)])),
+    ];
+    let layers: Vec<String> = expected.iter().map(|(name, blob)| format!(r#"{{"mediaType":"application/vnd.ollama.image.tensor","digest":"{}","size":{},"name":"{name}"}}"#, sha256(blob), blob.len())).collect();
+    let registry = format!(r#"{{"schemaVersion":2,"layers":[{}]}}"#, layers.join(","));
+    let config = r#"{"architectures": ["FakeForTest"], "mtp_config": {"hidden_size": 4, "rms_norm_eps": 1e-06}}"#;
+    let mut files: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    files.insert("model.safetensors.index.json".into(), br#"{"metadata": {"total_size": 1}, "weight_map": {"model.llm.big.weight": "model-00001-of-00001.safetensors"}}"#.to_vec());
+    files.insert("model-00001-of-00001.safetensors".into(), shard);
+    files.insert("mtp.safetensors".into(), mtp);
+    for name in ["generation_config.json", "hf_quant_config.json", "processor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"] {
+        files.insert(name.into(), format!(r#"{{"file": "{name}"}}"#).into_bytes());
+    }
+    files.insert("config.json".into(), config.as_bytes().to_vec());
+    let files = std::sync::Arc::new(files);
+
+    // The "CDN" (on another origin: localhost, not 127.0.0.1) has the bytes, slowly.
+    let seen: Seen = Default::default();
+    let cdn_files = files.clone();
+    let cdn = http_server(seen.clone(), 2 << 20, move |path, headers| {
+        let file = path.trim_start_matches("/xet/").split('?').next().unwrap_or("");
+        match cdn_files.get(file) {
+            Some(data) => ranged(data, headers.get("range")),
+            None => (404, vec![], b"no such file".to_vec()),
+        }
+    });
+    // The hub sends a file's bytes to the CDN, its small JSON files through a redirect of its
+    // own (as huggingface.co does), and has the registry's manifest too.
+    let hub_files = files.clone();
+    const REPO: &str = "/thinkingmachines/Inkling-2-Mini/resolve/c9d028302cd0f035fdf8e7e91f089a4ce94d2195/";
+    let hub = http_server(seen.clone(), 0, move |path, headers| {
+        if path == "/v2/library/inkling-2-mini/manifests/26b-a5b-nvfp4" {
+            return (200, vec![("Content-Type".into(), "application/json".into())], registry.clone().into_bytes());
+        }
+        if let Some(file) = path.strip_prefix("/api/resolve-cache/") {
+            return match hub_files.get(file) {
+                Some(data) => ranged(data, headers.get("range")),
+                None => (404, vec![], vec![]),
+            };
+        }
+        match path.strip_prefix(REPO) {
+            Some(file) if file.ends_with(".json") => (307, vec![("Location".into(), format!("/api/resolve-cache/{file}"))], vec![]),
+            Some(file) => (302, vec![("Location".into(), format!("http://localhost:{cdn}/xet/{file}?Signature=abc"))], vec![]),
+            None => (404, vec![], vec![]),
+        }
+    });
+
+    let base = std::env::temp_dir().join(format!("cwbcode-it-download-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let models = base.join("models");
+    let env = |k: &str, v: &str| format!("env:{k}={v}");
+    let args = [
+        "no-script".to_string(),
+        env("CWBCODE_MODELS", &models.display().to_string()),
+        env("OLLAMA_MODELS", &base.join("no-ollama").display().to_string()),
+        env("HF_HOME", &base.join("no-hf").display().to_string()),
+        env("HF_TOKEN", "hf_test_token"),
+        env("CWBCODE_HF_ENDPOINT", &format!("http://127.0.0.1:{hub}")),
+        env("CWBCODE_OLLAMA_REGISTRY", &format!("http://127.0.0.1:{hub}")),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut server = Server::start("download", "[]", &args);
+    let client = server.client(false).await;
+    let status = || async { client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap() };
+
+    // Not in any store: "missing", and nothing is fetched until asked.
+    let start = Instant::now();
+    while status().await.model_state != "missing" {
+        assert!(start.elapsed() < Duration::from_secs(20), "the backend did not find the model missing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    // Asking needs the token, as every call does.
+    let stranger = Client::connect(&server.url, "not-the-token", server.trust.clone(), false).await.unwrap();
+    assert!(stranger.call(&Request::new(Method::DownloadModel)).await.is_err());
+    assert_eq!(status().await.model_state, "missing");
+
+    // Asked: it downloads, and says how far it is; stopped half way.
+    client.call(&Request::new(Method::DownloadModel)).await.unwrap();
+    let state_file = models.join(".download-inkling-2-mini-26b-a5b-nvfp4.json");
+    let start = Instant::now();
+    let mut first = None;
+    loop {
+        let s = status().await;
+        assert_eq!(s.model_state, "downloading", "{s:?}");
+        assert_eq!(s.download_source, "Hugging Face, with the token from $HF_TOKEN");
+        assert!(s.download_done <= s.download_total);
+        if s.download_total > 0 && s.download_done > 0 {
+            first.get_or_insert(s.download_done);
+        }
+        let finished = std::fs::read_to_string(&state_file).ok().map_or(0, |t| t.matches("sha256:").count());
+        if finished == 3 && s.download_done > first.unwrap_or(u64::MAX) && s.download_speed > 0.0 && s.download_done < s.download_total / 4 * 3 {
+            assert_eq!(s.download_total, (6 << 20) + 128 + 16 + 16 + 2 + 8);
+            assert!(s.download_note.ends_with("of 4 files"), "{}", s.download_note);
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "no progress to see: {s:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    server.restart();
+    let client = server.client(false).await;
+    let status = || async { client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap() };
+
+    // Started again (by the call, as the page's button does), it goes on from there.
+    let start = Instant::now();
+    while status().await.model_state != "missing" {
+        assert!(start.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    client.call(&Request::new(Method::DownloadModel)).await.unwrap();
+    assert!(client.call(&Request::new(Method::DownloadModel)).await.is_err(), "a second download at once");
+    let start = Instant::now();
+    let mut seen_progress = Vec::new();
+    let last = loop {
+        let s = status().await;
+        if s.model_state == "downloading" {
+            // (Until the checkpoint's headers are read the total is not known: 0.)
+            if s.download_total > 0 {
+                seen_progress.push(s.download_done);
+            }
+        } else {
+            break s;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "the download did not end: {s:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let log = std::fs::read_to_string(server.home.join("server.log")).unwrap();
+    assert!(log.contains("resuming: 3 of 4 tensor files"), "{log}");
+    // Bytes done never went back, and started with what was there (the three small files).
+    assert!(seen_progress.windows(2).all(|w| w[0] <= w[1]) && seen_progress.first().is_some_and(|&d| d >= 128 + 16 + 16 + 2 + 8), "{seen_progress:?}");
+    // Done, checked against the registry, and then loaded at once, without a restart (this
+    // fake model is refused by the loader: that is how far a test without 20 GB can go).
+    assert_eq!(last.download_error, "", "{last:?}");
+    assert_eq!(last.download_note, "verified: all 4 tensor files match Ollama's registry (SHA-256)");
+    assert_eq!(last.download_done, last.download_total);
+    let start = Instant::now();
+    let mut state = last.model_state.clone();
+    while state == "loading" {
+        assert!(start.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        state = status().await.model_state;
+    }
+    assert!(state.starts_with("failed:") && state.contains("FakeForTest"), "{state}");
+    assert!(log.contains("download: verified: all 4 tensor files match"), "{log}");
+
+    // The store: Ollama's layout, every tensor file Ollama's byte for byte, and no leftovers.
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(models.join("manifests/registry.ollama.ai/library/inkling-2-mini/26b-a5b-nvfp4")).unwrap()).unwrap();
+    let blob = |name: &str| {
+        let layer = manifest["layers"].as_array().unwrap().iter().find(|l| l["name"] == name).unwrap_or_else(|| panic!("no {name} in the manifest"));
+        std::fs::read(models.join("blobs").join(layer["digest"].as_str().unwrap().replace(':', "-"))).unwrap()
+    };
+    for (name, bytes) in &expected {
+        assert!(blob(name) == *bytes, "{name} is not Ollama's");
+    }
+    assert_eq!(blob("config.json"), config.as_bytes());
+    assert_eq!(blob("draft/config.json"), br#"{"hidden_size": 4, "rms_norm_eps": 1e-06, "architectures": ["Inkling2ForConditionalGenerationMTP"]}"#);
+    assert_eq!(manifest["layers"].as_array().unwrap().len(), 4 + 7 + 1);
+    assert!(!state_file.exists());
+    assert!(!std::fs::read_dir(models.join("blobs")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(".partial-")));
+
+    // The token went to the hub, and never to the CDN (nor to the registry).
+    let seen = seen.lock().unwrap();
+    let cdn_host = format!("localhost:{cdn}");
+    assert!(seen.iter().any(|(host, _, _)| *host == cdn_host), "the CDN was not used");
+    assert!(seen.iter().filter(|(host, path, _)| *host != cdn_host && path.contains("/resolve/")).all(|(_, _, auth)| auth.as_deref() == Some("Bearer hf_test_token")));
+    for (host, path, auth) in seen.iter() {
+        if *host == cdn_host || path.starts_with("/v2/") {
+            assert_eq!(auth, &None, "the token was sent to {host}{path}");
+        }
+    }
+    drop(seen);
+    let _ = std::fs::remove_dir_all(&base);
 }

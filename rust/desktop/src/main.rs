@@ -24,6 +24,10 @@
 //! app.lock). If the backend stops while the window is open, the window goes back to the
 //! starting page and says why; a backend the app did not start is waited for to come back.
 //!
+//! The backend the app starts downloads the model by itself when it is not there yet
+//! (`--download-model`); the window shows the download's progress, and the model loads when
+//! it is done.
+//!
 //!   CWBCODE_HOME       the backend's folder [~/.cwbcode]
 //!   CWBCODE_APP_PORT   the app's port [7480]
 //!   CWBCODE_APP_ARGS   more arguments for a backend the app starts (e.g. `--no-model`)
@@ -228,7 +232,10 @@ fn start_backend(port: u16) -> Result<Child, String> {
     let log_path = home.join("app-backend.log");
     let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("cannot write {}: {e}", log_path.display()))?;
     let mut command = Command::new(&program);
-    command.arg("serve").arg("--http-port").arg(port.to_string()).arg("--exit-with-stdin");
+    // A Mac that has never had the model gets it here: the backend downloads it (from Hugging
+    // Face, about 20 GB) when it is in no store, the window shows how far it is, and it loads
+    // when it is done. Nothing else (Python, Ollama, `make download`) is needed.
+    command.arg("serve").arg("--http-port").arg(port.to_string()).arg("--exit-with-stdin").arg("--download-model");
     // (A wallet in this file turns remote mode on, as with `make start`.)
     let env_file = home.join("app.env");
     if env_file.exists() {

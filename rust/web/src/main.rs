@@ -718,10 +718,18 @@ fn after_draw(f: impl FnOnce() + 'static) {
 fn Root() -> impl IntoView {
     let app = App::new();
     provide_context(app);
-    // The backend's state, every few seconds.
-    let tick = Closure::<dyn Fn()>::new(move || spawn_local(async move { app.refresh_status().await }));
+    // The backend's state: every three seconds, and every second while the model downloads
+    // or loads (the download's bar moves with it).
+    let ticks = StoredValue::new(0u32);
+    let tick = Closure::<dyn Fn()>::new(move || {
+        ticks.update_value(|n| *n = n.wrapping_add(1));
+        let moving = app.status.with_untracked(|s| s.as_ref().is_some_and(|s| s.model_state == "downloading" || s.model_state == "loading"));
+        if moving || ticks.get_value() % 3 == 0 {
+            spawn_local(async move { app.refresh_status().await });
+        }
+    });
     if let Some(window) = web_sys::window() {
-        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), 3000);
+        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), 1000);
     }
     tick.forget();
     spawn_local(async move { app.hello().await });
@@ -1260,6 +1268,112 @@ fn Sidebar() -> impl IntoView {
     }
 }
 
+/// Is the model being downloaded, or to be: what the chat view shows instead of its empty
+/// page (and the dashboard on the model's card). Also just after a download, while it loads.
+fn model_coming(s: &Status) -> bool {
+    s.model_state == "downloading" || s.model_state == "missing" || (s.model_state == "loading" && !s.download_note.is_empty())
+}
+
+/// "1:02:03", "12:34": how long, in hours, minutes and seconds.
+fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// The model's download: how far it is (a bar that fills, with the bytes, the speed, the time
+/// left and where it comes from), or, when the model is not here and nothing is downloading
+/// it, a button that starts it, with why the last one stopped and a retry when one did.
+/// `card`: the smaller one on the dashboard's model card.
+#[component]
+fn ModelDownload(card: bool) -> impl IntoView {
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    let s = move || app.status.get().unwrap_or_default();
+    let starting = RwSignal::new(false);
+    let start = move |_| {
+        if starting.get_untracked() {
+            return;
+        }
+        starting.set(true);
+        spawn_local(async move {
+            app.call(Request::new(Method::DownloadModel)).await;
+            app.refresh_status().await;
+            starting.set(false);
+        });
+    };
+    let share = move || {
+        let s = s();
+        if s.download_total == 0 { 0.0 } else { (s.download_done as f64 / s.download_total as f64 * 100.0).clamp(0.0, 100.0) }
+    };
+    let left = move || {
+        let s = s();
+        if s.download_speed > 1.0 && s.download_total > s.download_done { tr_with(app.lang.get(), "dl_left", &clock((s.download_total - s.download_done) as f64 / s.download_speed)) } else { tr(app.lang.get(), "dl_left_unknown").to_string() }
+    };
+    let bytes = move || {
+        let s = s();
+        let total = if s.download_total == 0 { "…".to_string() } else { format!("{:.1} GB", gb(s.download_total)) };
+        tr(app.lang.get(), "dl_bytes").replacen("{}", &format!("{:.1} GB", gb(s.download_done)), 1).replacen("{}", &total, 1)
+    };
+    let id = if card { "model-download-card" } else { "model-download" };
+    view! {
+        <div class="download" class:card=card class:glass=!card id=id>
+            {move || {
+                let st = s();
+                if st.model_state == "downloading" {
+                    view! {
+                        <div class="dl-head">
+                            <Show when=move || !card><img src="/art/empty.png" alt=""/></Show>
+                            <div>
+                                <h3>{t("dl_title")}</h3>
+                                <Show when=move || !card><p class="dim">{t("dl_why")}</p></Show>
+                            </div>
+                        </div>
+                        <div class="dl-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=move || format!("{:.0}", share()) aria-label=t("dl_title")>
+                            <i style:width=move || format!("{:.2}%", share())></i>
+                        </div>
+                        <div class="dl-stats">
+                            <b class="dl-percent" id="dl-percent">{move || format!("{:.1}%", share())}</b>
+                            <span id="dl-bytes">{bytes}</span>
+                            <span id="dl-speed">{move || if s().download_speed > 0.0 { format!("{:.1} MB/s", s().download_speed / 1e6) } else { "— MB/s".to_string() }}</span>
+                            <span id="dl-left">{left}</span>
+                        </div>
+                        <div class="dl-from sub" id="dl-source">{move || tr_with(app.lang.get(), "dl_from", &s().download_source)}{move || if s().download_note.is_empty() { String::new() } else { format!(" · {}", s().download_note) }}</div>
+                    }.into_any()
+                } else if st.model_state == "loading" {
+                    view! {
+                        <div class="dl-head"><div>
+                            <h3>{t("dl_loading_title")}</h3>
+                            <p class="dim" id="dl-done">{move || s().download_note}</p>
+                            <p class="dim">{t("dl_loading")}</p>
+                        </div></div>
+                        <div class="dl-bar done"><i style="width:100%"></i></div>
+                    }.into_any()
+                } else if !st.download_error.is_empty() {
+                    view! {
+                        <div class="dl-head"><div>
+                            <h3>{t("dl_failed_title")}</h3>
+                            <p class="note bad" id="dl-error">{move || s().download_error}</p>
+                            <p class="dim">{t("dl_failed")}</p>
+                        </div></div>
+                        <div class="dl-acts"><button class="primary" id="dl-retry" disabled=move || starting.get() on:click=start>{t("dl_retry")}</button></div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div class="dl-head">
+                            <Show when=move || !card><img src="/art/empty.png" alt=""/></Show>
+                            <div>
+                                <h3>{t("dl_missing_title")}</h3>
+                                <p class="dim">{t("dl_missing")}</p>
+                            </div>
+                        </div>
+                        <div class="dl-acts"><button class="primary" id="dl-start" disabled=move || starting.get() on:click=start>{t("dl_button")}</button></div>
+                    }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
 /// A number that counts to its new value.
 #[component]
 fn Counter(value: Signal<f64>, decimals: u32, suffix: Signal<String>) -> impl IntoView {
@@ -1301,6 +1415,10 @@ fn Dashboard() -> impl IntoView {
                         </Show>
                         <Show when=move || !s().model_path.is_empty()>
                             <div class="sub" id="model-where">{move || format!("{} · {:.1} GB", app.tilde(&s().model_path), s().model_bytes as f64 / 1e9)}</div>
+                        </Show>
+                        // The model's download, or the button that starts it.
+                        <Show when=move || app.status.get().is_some_and(|s| model_coming(&s))>
+                            <ModelDownload card=true/>
                         </Show></div>
                     // How fast it writes, and reads a prompt, in the last turn.
                     <div class="card glass" id="speed-card"><h5>{t("d_speed")}</h5>
@@ -1600,10 +1718,14 @@ fn Chat() -> impl IntoView {
         <div class="chatbody">
         <div class="scroll" node_ref=scroller id="transcript">
             <div class="col">
-                <Show when=move || app.project.get().is_empty()>
+                // A model on its way (or to be fetched) comes first: without it nothing answers.
+                <Show when=move || app.status.get().is_some_and(|s| model_coming(&s))>
+                    <ModelDownload card=false/>
+                </Show>
+                <Show when=move || app.project.get().is_empty() && !app.status.get().is_some_and(|s| model_coming(&s))>
                     <div class="empty"><h3>{t("empty_open_title")}</h3>{t("empty_open")}</div>
                 </Show>
-                <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty()>
+                <Show when=move || !app.project.get().is_empty() && app.items.get().is_empty() && !app.status.get().is_some_and(|s| model_coming(&s))>
                     <div class="empty" id="empty-chat"><img src="/art/empty.png" alt=""/><h3>{t("empty_chat_title")}</h3>{move || app.tilde(&app.project.get())}</div>
                 </Show>
                 <For each=move || app.items.get() key=|item| item.id children=move |item: Item| { let id = item.id; view! { <div class="it" id=format!("item-{id}")><ItemView item=item/></div> } }/>

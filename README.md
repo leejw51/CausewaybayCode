@@ -36,7 +36,8 @@ You need:
 - Rust with the `wasm32-unknown-unknown` target, `cmake`, `capnp` and `trunk`
   (`brew install cmake capnp trunk`; `rustup target add wasm32-unknown-unknown`)
 - Python 3 for `make start` and the model download; [Ollama](https://ollama.com) is optional
-  (the model can come from Ollama or from Hugging Face, no account or key needed for either)
+  (the model can come from Ollama or from Hugging Face, no account or key needed for either;
+  the Mac app needs neither Python nor Ollama: its backend downloads the model itself)
 
 ```sh
 git clone https://github.com/leejw51/CausewaybayCode.git
@@ -126,6 +127,27 @@ The Hugging Face checkpoint holds the same bytes as Ollama's; it is written, as 
 one tensor per file, labelled as Ollama labels them, and every file is checked against the
 SHA-256 in Ollama's registry. The backend looks in Ollama's store first, then in
 `~/.cwbcode/models`.
+
+**The backend downloads it too**, without Python or Ollama (`rust/server/src/download.rs`,
+the same Hugging Face recipe in Rust, into the same store and with the same resume file):
+
+- `cwbcode serve --download-model` (or `CWBCODE_DOWNLOAD_MODEL=1`): a model that is in
+  neither store is downloaded at start and then loaded, without a restart. The Mac app starts
+  its backend this way.
+- Without it a missing model is `missing` (in Status, the bar's pill and the dashboard), and
+  the web client's chat view and model card offer **Download the model (about 20 GB)**: the
+  call (`downloadModel`) needs the sign-in or token, as every call does.
+- While it runs the model is `downloading`, and Status carries the bytes done and in all,
+  the speed over the last five seconds and the source (`Hugging Face, without a token`, or
+  with the token from where it was found); the page shows a bar that fills, the percent, the
+  gigabytes, the speed and the time left, asking every second meanwhile. A download that
+  stops (a network error, the app quit) keeps what it finished: starting it again, or
+  starting the backend again, goes on from there, and the page offers to try again with
+  the reason. The backend's log (`server.log`, or `app-backend.log` for the app) says where
+  it comes from, how far it is every 30 s, and what the check against Ollama's registry
+  found.
+- Disk space is checked first (what is left to fetch, and 2 GB). Large tensors come in
+  32 MB pieces over 16 connections.
 
 **Local mode and remote mode.** The backend starts in local mode. Setting the wallet that
 owns it turns remote mode on:
@@ -315,7 +337,14 @@ motion".
 starting page, uses a backend already running (`make start` serves the app's port too), or
 else starts the one it carries and stops it again on quit. Either way there is one backend
 and one copy of the model. Then the window opens the backend's page with its token, as the
-`open` link does. The model is not inside the app: download it first (`make download`).
+`open` link does.
+
+The model is not inside the app, and need not be downloaded first: on a Mac that has never
+had it, the backend the app starts downloads it by itself (`--download-model`; about 20 GB
+from Hugging Face, no account, no Python, no Ollama), the window shows the download's
+progress where a new user lands, and the model loads when it is done. Quitting the app part
+way keeps what is done; opening it again goes on from there. A model already in Ollama's
+store or `~/.cwbcode/models` (`make download`) is used as it is.
 
 - The window reaches the backend over plain HTTP on `127.0.0.1:7480` (`cwbcode serve
   --http-port`), because a web view will not take the backend's certificate. That port
@@ -521,20 +550,25 @@ make test         # unit tests, and the backend started for real with a scripted
                   # requests from other sites' pages, certificate pinning, folders
                   # outside home, approvals (answered, abandoned, interrupted), the event
                   # log, file versions and undo, the knowledge base, tools made at runtime,
-                  # plan mode, hooks, the user's own commands, taking a project off the list
+                  # plan mode, hooks, the user's own commands, taking a project off the list,
+                  # and the model's download from a fake Hugging Face (progress, a stop
+                  # and a resume, every file Ollama's, the token never sent to the CDN)
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
                   # wrong ones refused), that the phrase is never stored, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
                   # dashboard, knowledge base, sign-out, and local mode with the one-time link,
-                  # and remote mode turned on and off from the dashboard
+                  # and remote mode turned on and off from the dashboard, and a backend
+                  # without the model: the download button, and the retry
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own
                   # tests and pass tests it has never seen (needs Node and Google Chrome)
                   # and, in a second test, the web client's own features: projects under
                   # ~/, the conversation's typeface, the context bar, copying, plan mode,
                   # your own commands and hooks
-make test-model   # semantic search with the model: paraphrases, Korean against English
+make test-model   # semantic search with the model: paraphrases, Korean against English;
+                  # and the download's plan against the real Hugging Face and Ollama's
+                  # registry (all 1250 files, a few MB read)
 make e2e          # real tasks with the real model through the backend and the client
 ```
 

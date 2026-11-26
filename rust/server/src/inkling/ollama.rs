@@ -1,5 +1,5 @@
 //! Read a model straight out of Ollama's store (or one in its layout, made from a Hugging
-//! Face download by `scripts/model.py`): the manifest maps each tensor name and config
+//! Face download by the backend itself or `scripts/model.py`): the manifest maps each tensor name and config
 //! file to a blob, and every tensor blob is a small safetensors file.
 
 use std::collections::HashMap;
@@ -18,13 +18,18 @@ pub struct Manifest {
     pub size: u64,
 }
 
-/// The stores a model is looked for in, in order: Ollama's own (`ollama pull`), then the one
-/// `scripts/model.py` writes a Hugging Face download into, in the same layout.
+/// The store a Hugging Face download is written into (by the backend itself, see
+/// download.rs, or by `scripts/model.py`), in Ollama's layout: $CWBCODE_MODELS, or
+/// ~/.cwbcode/models.
+pub fn own_store() -> PathBuf {
+    std::env::var("CWBCODE_MODELS").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cwbcode/models"))
+}
+
+/// The stores a model is looked for in, in order: Ollama's own (`ollama pull`), then cwbcode's.
 fn stores() -> [PathBuf; 2] {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let ollama = std::env::var("OLLAMA_MODELS").map(PathBuf::from).unwrap_or_else(|_| home.join(".ollama/models"));
-    let own = std::env::var("CWBCODE_MODELS").map(PathBuf::from).unwrap_or_else(|_| home.join(".cwbcode/models"));
-    [ollama, own]
+    [ollama, own_store()]
 }
 
 /// Is `spec` an Ollama model name ("inkling-2-mini:26b-a5b-nvfp4", optionally "ollama:...")

@@ -43,6 +43,8 @@ enum Method {
   redeem @27;          # text (the one-time code of a link `cwbcode url` printed) -> text (the
                        # backend's token). Needs no credentials, but only from the backend's
                        # own machine, and each code works once, for a few minutes.
+  downloadModel @28;   # download the model (when Status.modelState is "missing"); Status
+                       # then shows how far it is, and the model loads when it is done
 }
 
 struct Upload {
@@ -67,7 +69,8 @@ struct Request {
 struct Status {
   version @0 :Text;
   model @1 :Text;
-  modelState @2 :Text;     # loading | ready | none | failed: ...
+  modelState @2 :Text;     # loading | ready | none | scripted | missing (not downloaded) |
+                           # downloading | failed: ...
   protocol @3 :Text;       # how this request arrived: h3 | h2 | http/1.1
   busy @4 :Bool;
   busyProject @5 :Text;
@@ -95,6 +98,13 @@ struct Status {
   modelInfo @24 :Text;     # what it is: architecture, layers, experts, quantization, ...
   genTps @25 :Float64;     # tokens per second while writing, in the last turn (0: none yet)
   promptTps @26 :Float64;  # tokens per second while reading the prompt, in the last turn
+  # The model's download (Method.downloadModel, or `cwbcode serve --download-model`):
+  downloadDone @27 :UInt64;    # bytes of it here
+  downloadTotal @28 :UInt64;   # bytes in all (0: not known yet)
+  downloadSpeed @29 :Float64;  # bytes per second, over the last few seconds
+  downloadSource @30 :Text;    # where it comes from: "Hugging Face, without a token", ...
+  downloadError @31 :Text;     # why the last download stopped ("" if it did not)
+  downloadNote @32 :Text;      # what it is doing ("412 of 1250 files"), or what the check found
 }
 
 struct Project {

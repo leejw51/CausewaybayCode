@@ -132,16 +132,17 @@ pub struct Engine {
 impl Engine {
     /// Load an Inkling 2 model from Ollama's store or ~/.cwbcode/models (`make download`).
     pub fn load(spec: &str, sampler: Sampler) -> Result<Self> {
-        init_mlx_thread();
-        // MLX keeps freed buffers for reuse; unbounded, that cache grows by gigabytes while a
-        // long prompt is read, next to a 20 GB model. (CWBCODE_MLX_CACHE_GB changes the cap.)
-        let cache_gb: f64 = std::env::var("CWBCODE_MLX_CACHE_GB").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
-        mlx_rs::memory::set_cache_limit((cache_gb * 1e9) as usize)?;
+        // What the model is, first: one that is not Inkling 2 is refused before MLX starts.
         let manifest = inkling::ollama::Manifest::load(spec)?;
         let arch = manifest.json("config.json")?["architectures"][0].as_str().unwrap_or("").to_string();
         if arch != "Inkling2LoopForConditionalGeneration" {
             bail!("{spec}: cwbcode runs Inkling 2 models (this one is {arch:?})");
         }
+        init_mlx_thread();
+        // MLX keeps freed buffers for reuse; unbounded, that cache grows by gigabytes while a
+        // long prompt is read, next to a 20 GB model. (CWBCODE_MLX_CACHE_GB changes the cap.)
+        let cache_gb: f64 = std::env::var("CWBCODE_MLX_CACHE_GB").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        mlx_rs::memory::set_cache_limit((cache_gb * 1e9) as usize)?;
         let mut model = inkling::Model::load(&manifest)?;
         let tok = Tokenizer::from_file(manifest.file("tokenizer.json")?).map_err(anyhow::Error::msg)?;
         model.image_token = tok.token_to_id(inkling::vision::IMAGE_TOKEN).map(|id| id as i32);

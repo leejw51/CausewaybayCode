@@ -368,4 +368,34 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
   input:not([type="checkbox"]), textarea, select { font-size: max(16px, 1em); }
   input[type="checkbox"] { width: 1.4rem; height: 1.4rem; }
 }
+/* The model's download: a bar that fills smoothly (the page asks every second; the width
+   glides between), with stripes that move and a sheen across it while it runs. */
+.download { padding: 1.1rem 1.2rem 1rem; max-width: 46rem; width: 100%; margin: 1.5rem auto; display: grid; gap: .7rem; }
+.download.card { padding: .2rem 0 0; margin: .5rem 0 0; max-width: none; background: none; border: 0; gap: .45rem; }
+.download .dl-head { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.download .dl-head img { width: 6.5rem; height: 6.5rem; flex: 0 0 auto; image-rendering: pixelated; }
+.download h3 { margin: 0 0 .3rem; color: var(--gold); font-size: 1.3em; font-weight: normal; }
+.download.card h3 { font-size: 1.05em; color: var(--text); }
+.download p { margin: .15rem 0; line-height: 1.4; overflow-wrap: anywhere; }
+.download .note { padding: 0; }
+.dl-bar { position: relative; height: 1.15rem; border-radius: 99px; background: var(--well); border: 1px solid var(--line2); overflow: hidden; }
+.download.card .dl-bar { height: .8rem; }
+.dl-bar i { position: relative; display: block; height: 100%; min-width: .6rem; border-radius: 99px; overflow: hidden;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--gold))); transition: width 1.05s linear; }
+.dl-bar i::before { content: ""; position: absolute; inset: 0; opacity: .28;
+  background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .9) 0 .45rem, transparent .45rem .9rem); background-size: 1.27rem 100%; animation: dl-stripes .9s linear infinite; }
+.dl-bar i::after { content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .55), transparent); animation: dl-sheen 2.2s ease-in-out infinite; }
+.dl-bar.done i { background: var(--ok); } .dl-bar.done i::before { display: none; }
+@keyframes dl-stripes { to { background-position: 1.27rem 0; } }
+@keyframes dl-sheen { 0% { left: -40%; } 70%, 100% { left: 110%; } }
+.dl-stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem 1.1rem; color: var(--dim); }
+.dl-stats .dl-percent { color: var(--gold); font-size: 1.6em; font-weight: normal; min-width: 4.2rem; font-variant-numeric: tabular-nums; }
+.download.card .dl-stats .dl-percent { font-size: 1.15em; min-width: 3.4rem; }
+.dl-stats span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dl-from { overflow-wrap: anywhere; }
+.dl-acts { display: flex; flex-wrap: wrap; gap: .5rem; }
+.dl-acts button { white-space: normal; min-height: 2.6rem; }
+@container app (max-width: 40em) { .download .dl-head img { width: 4.2rem; height: 4.2rem; } .download { padding: .9rem; } }
+@media (prefers-reduced-motion: reduce) { .dl-bar i::before, .dl-bar i::after { animation: none; } .dl-bar i::after { display: none; } .dl-bar i { transition: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
