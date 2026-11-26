@@ -1,7 +1,11 @@
 //! Who may use the backend.
 //!
-//!   open     local mode (no wallet, listening on this machine only): no login. Requests are
-//!            still refused when they come from another website's page in the user's browser.
+//!   open     local mode (no wallet, listening on this machine only): no wallet sign-in, but
+//!            the backend's token is still needed, and only from this machine. It is in
+//!            ~/.cwbcode/token, readable by this user alone; the web client gets it from the
+//!            link `cwbcode url` prints. Without it any program on the machine, another
+//!            user's or one behind a port forward (ssh -L, tailscale serve), could run
+//!            commands. Requests from another website's page are refused as well.
 //!   wallet   CWBCODE_WALLET is set: sign in by signing a one-time challenge with that
 //!            wallet's key (the web client derives it from the recovery phrase, in the
 //!            browser). A session token is given in return. The backend's own token file
@@ -159,7 +163,7 @@ impl Auth {
         let local = peer.is_none_or(|ip| ip.is_loopback());
         let own = |given: &str| same(given.as_bytes(), self.token.as_bytes());
         match &self.mode() {
-            Mode::Open => local,
+            Mode::Open => local && bearer(headers).is_some_and(own),
             Mode::Token => bearer(headers).is_some_and(own),
             Mode::Wallet(_) => bearer(headers).is_some_and(|given| self.session(given) || (local && own(given))),
         }
@@ -264,19 +268,23 @@ mod tests {
     const ELSEWHERE: Option<IpAddr> = Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)));
 
     #[test]
-    fn local_mode_needs_no_login_but_only_its_own_page_may_ask() {
+    fn local_mode_takes_the_token_from_this_machine_and_its_own_page_only() {
         let (auth, _) = auth(Mode::Open, "open");
         let host = Some("127.0.0.1:7443");
-        // The terminal client (no page), and the backend's own page.
-        assert!(auth.allowed(&headers(&[]), host, HERE));
-        assert!(auth.allowed(&headers(&[("origin", "https://127.0.0.1:7443")]), host, HERE));
-        assert!(auth.allowed(&headers(&[("sec-fetch-site", "same-origin")]), host, HERE));
+        let token = ("authorization", "Bearer the-file-token");
+        // The terminal client (no page), and the backend's own page, with the token.
+        assert!(auth.allowed(&headers(&[token]), host, HERE));
+        assert!(auth.allowed(&headers(&[token, ("origin", "https://127.0.0.1:7443")]), host, HERE));
+        assert!(auth.allowed(&headers(&[token, ("sec-fetch-site", "same-origin")]), host, HERE));
+        // Without it, or with a wrong one, nothing: any program on this machine could ask.
+        assert!(!auth.allowed(&headers(&[]), host, HERE));
+        assert!(!auth.allowed(&headers(&[("authorization", "Bearer a-guess")]), host, HERE));
         // A page of another site in the same browser, however it asks.
-        for foreign in [vec![("origin", "https://evil.example")], vec![("origin", "null")], vec![("origin", "https://127.0.0.1:9999")], vec![("sec-fetch-site", "cross-site")], vec![("sec-fetch-site", "same-site")]] {
+        for foreign in [vec![token, ("origin", "https://evil.example")], vec![token, ("origin", "null")], vec![token, ("origin", "https://127.0.0.1:9999")], vec![token, ("sec-fetch-site", "cross-site")], vec![token, ("sec-fetch-site", "same-site")]] {
             assert!(!auth.allowed(&headers(&foreign), host, HERE), "{foreign:?}");
         }
-        // Another machine, should the port ever be reachable from one.
-        assert!(!auth.allowed(&headers(&[]), host, ELSEWHERE));
+        // Another machine, should the port ever be reachable from one, even with the token.
+        assert!(!auth.allowed(&headers(&[token]), host, ELSEWHERE));
         assert!(auth.challenge().is_err());
     }
 
@@ -352,10 +360,11 @@ mod tests {
         let with = |token: &str| headers(&[("authorization", &format!("Bearer {token}"))]);
         let session = sign_in(&auth, PHRASE, 0).unwrap();
         assert!(auth.allowed(&with(&session), None, ELSEWHERE));
-        // Remote mode off: local, no login; nobody from elsewhere.
+        // Remote mode off: local, with the token from this machine; nobody from elsewhere.
         auth.set_mode(Mode::Open);
         assert_eq!(auth.label(), "open");
-        assert!(auth.allowed(&headers(&[]), None, HERE));
+        assert!(auth.allowed(&with("the-file-token"), None, HERE));
+        assert!(!auth.allowed(&headers(&[]), None, HERE));
         assert!(!auth.allowed(&with(&session), None, ELSEWHERE));
         // On again, for another wallet: the old session is not a way in.
         auth.set_mode(Mode::Wallet("0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into()));

@@ -32,13 +32,13 @@ async function ask(page, text) {
 }
 
 test('the agent writes a Rust crate that builds, passes its own tests and passes ours', async ({ page }) => {
-  const { url, project, run: runDir } = run();
+  const { url, token, project, run: runDir } = run();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
 
   await test.step('sign in and wait for the model', async () => {
-    // The test's backend is in local mode (no wallet, this machine only): no login.
-    await page.goto(url);
+    // The test's backend is in local mode (no wallet, this machine only): the token link.
+    await page.goto(`${url}/#token=${token}`);
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('#login-state')).toContainText('local mode');
     await expect(page.locator('#status-pill')).toContainText('ready', { timeout: 3 * 60 * 1000 });

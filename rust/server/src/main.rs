@@ -79,8 +79,8 @@ struct Serve {
     #[arg(long, value_name = "FILE")]
     env_file: Option<PathBuf>,
 
-    /// Ask for the backend's token even in local mode (no wallet, this machine only), where
-    /// no login is needed otherwise.
+    /// Take the backend's token from any address, not only from this machine, when there is
+    /// no wallet. (Local mode asks for the token anyway, from this machine only.)
     #[arg(long)]
     require_token: bool,
 
@@ -175,7 +175,7 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
         format!("{:<9} {bind}  ({scope}, {why})", "bind"),
         match control::mode(wallet, bind, options.require_token) {
             auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (it stays in your browser)", "login"),
-            auth::Mode::Open => format!("{:<9} none: local mode (turn remote mode on from the dashboard, or `cwbcodeclient remote on <wallet address>`)", "login"),
+            auth::Mode::Open => format!("{:<9} the backend's token, from this machine only: open the `open` link below (it carries it), or the terminal client reads it itself", "login"),
             auth::Mode::Token => format!("{:<9} the backend's token", "login"),
         },
     ]
@@ -195,7 +195,13 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     match control::mode(&wallet, bind, serve.require_token) {
         auth::Mode::Token => println!("{:<9} {token}", "token"),
         auth::Mode::Wallet(_) => println!("{:<9} {} (for clients on this machine; others sign in with the wallet)", "token", home.join("token").display()),
-        auth::Mode::Open => {}
+        // Local mode: a link that carries the token. The page keeps it and takes it out of
+        // the address. (Printed here only, never into the log.)
+        auth::Mode::Open => {
+            if let Some((_, web)) = addresses(bind).first() {
+                println!("{:<9} {web}/#token={token}", "open");
+            }
+        }
     }
     println!("{:<9} {} (sha256 {})", "cert", home.join("cert.pem").display(), identity.fingerprint);
     Ok(())

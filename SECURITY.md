@@ -19,8 +19,9 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
 **Who can reach it.**
 
 - **Local mode** (no wallet set, the default): the backend listens on `127.0.0.1:7443` and
-  asks for no login. It answers only its own page and clients that are not web pages: a page
-  of another website open in your browser is refused.
+  asks for its token (`~/.cwbcode/token`, readable only by you), from this machine only; the
+  `open` link `make url` prints carries it to the browser. It answers only its own page and
+  clients that are not web pages: a page of another website open in your browser is refused.
 - **Remote mode** (a wallet set, with `CWBCODE_WALLET` in `.env` or the environment, from
   the dashboard, or with `cwbcodeclient remote on`): the backend listens on `0.0.0.0:7443`,
   and every request needs a session obtained by signing a one-time challenge with that

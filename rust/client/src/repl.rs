@@ -113,7 +113,7 @@ pub fn remote_lines(s: &cwbcode_proto::Status) -> String {
             s.bind,
             if s.wallet_source == "settings" { "cwbcodeclient remote off".to_string() } else { format!("remove CWBCODE_WALLET from {} and restart the backend", s.wallet_source) },
         ),
-        "open" => format!("remote mode: off (local mode)\nlistening   {}\nlogin       none\nturn on     cwbcodeclient remote on <wallet address>   (or the web client's dashboard)", s.bind),
+        "open" => format!("remote mode: off (local mode)\nlistening   {}\nlogin       this machine's token (~/.cwbcode/token)\nturn on     cwbcodeclient remote on <wallet address>   (or the web client's dashboard)", s.bind),
         _ => format!("remote mode: off, but the backend listens on {} and asks for its token", s.bind),
     }
 }
@@ -131,7 +131,7 @@ pub async fn status(session: &Session) -> Result<String> {
             None => String::new(),
         },
         match s.auth.as_str() {
-            "open" => "none: local mode".to_string(),
+            "open" => "local mode: this machine's token".to_string(),
             "wallet" => format!("wallet {}", s.wallet),
             _ => "the backend's token".to_string(),
         },

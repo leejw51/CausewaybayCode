@@ -630,7 +630,7 @@ const TEST_PHRASE: &str = "test test test test test test test test test test tes
 const TEST_WALLET: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
+async fn local_mode_takes_the_token_file_and_refuses_other_sites_pages() {
     // No wallet, this machine only.
     let server = Server::start("open", HELLO, &[]);
     for h3 in [true, false] {
@@ -638,7 +638,12 @@ async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
         let hello = client.call(&Request::new(Method::Hello)).await.unwrap().status.unwrap();
         assert_eq!((hello.auth.as_str(), hello.wallet.as_str()), ("open", ""));
         assert_eq!(hello.fingerprint.len(), 64);
-        // No token, and everything works.
+        // Without the token nothing but the greeting: any program on this machine could ask,
+        // and nobody may turn remote mode on with a wallet of their own.
+        assert!(client.call(&Request::new(Method::Status)).await.is_err(), "h3={h3}: answered without the token");
+        assert!(client.call(&Request::new(Method::Setup).text(TEST_WALLET)).await.is_err(), "h3={h3}: remote mode was set up without the token");
+        // With the token file's token, everything works.
+        client.set_token(&server.token);
         assert_eq!(client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().auth, "open");
         let events = read_all(&mut client.chat(&chat(&server, 0, "hi", "")).await.unwrap()).await;
         assert!(events.iter().any(|w| matches!(w, What::Text(_))), "h3={h3}: {events:?}");
@@ -647,16 +652,17 @@ async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
     // A page of another website, open in the same browser, is turned away: with its Origin,
     // without one but marked cross-site, and for the sign-in calls too.
     let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
-    let post = |header: (&'static str, &'static str), request: Request| http.post(format!("{}/api/call", server.url)).header(header.0, header.1).body(request.encode()).send();
+    // (With the token: the page is turned away for where it comes from, not for lacking it.)
+    let post = |header: (&'static str, &'static str), request: Request| http.post(format!("{}/api/call", server.url)).bearer_auth(&server.token).header(header.0, header.1).body(request.encode()).send();
     for foreign in [("origin", "https://evil.example"), ("origin", "null"), ("sec-fetch-site", "cross-site")] {
         assert_eq!(post(foreign, Request::new(Method::Projects)).await.unwrap().status(), 401, "{foreign:?}");
         assert_eq!(post(foreign, Request::new(Method::Hello)).await.unwrap().status(), 401, "{foreign:?}");
-        let chat = http.post(format!("{}/api/chat", server.url)).header(foreign.0, foreign.1).body(chat(&server, 0, "hi", "auto").encode()).send().await.unwrap();
+        let chat = http.post(format!("{}/api/chat", server.url)).bearer_auth(&server.token).header(foreign.0, foreign.1).body(chat(&server, 0, "hi", "auto").encode()).send().await.unwrap();
         assert_eq!(chat.status(), 401, "{foreign:?}");
     }
     // The backend's own page is not.
     let own = format!("https://127.0.0.1:{}", server.port);
-    let from_own_page = http.post(format!("{}/api/call", server.url)).header("origin", own).body(Request::new(Method::Projects).encode()).send().await.unwrap();
+    let from_own_page = http.post(format!("{}/api/call", server.url)).bearer_auth(&server.token).header("origin", own).body(Request::new(Method::Projects).encode()).send().await.unwrap();
     assert_eq!(from_own_page.status(), 200);
 }
 
@@ -736,8 +742,8 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     let everywhere = format!("0.0.0.0:{}", server.port);
     let settings = server.home.join(".cwbcode/settings.jsonl");
 
-    // Local mode: this machine only, no login, nothing set up.
-    let client = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
+    // Local mode: this machine only, the token file's token, nothing set up.
+    let client = Client::connect(&server.url, &server.token, server.trust.clone(), true).await.unwrap();
     let before = hello(&client).await.unwrap();
     assert_eq!((before.auth.as_str(), before.bind.as_str(), before.wallet_source.as_str()), ("open", local.as_str(), ""));
     if let Some(ip) = lan_address() {
@@ -800,6 +806,8 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     let fresh = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
     let finally = hello(&fresh).await.unwrap();
     assert_eq!((finally.auth.as_str(), finally.bind.as_str(), finally.wallet_source.as_str()), ("open", local.as_str(), ""));
+    assert!(fresh.call(&Request::new(Method::Status)).await.is_err(), "local mode answered without the token");
+    fresh.set_token(&server.token);
     assert!(fresh.call(&Request::new(Method::Status)).await.is_ok());
     if let Some(ip) = lan_address() {
         let from_outside = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), false).await.unwrap();

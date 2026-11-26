@@ -46,8 +46,9 @@ make build      # the first build compiles MLX from source and takes a few minut
 make start      # starts the backend and prints its web address and certificate
 ```
 
-Open the `web` address `make start` printed (`https://127.0.0.1:7443` in local mode), accept
-the self-signed certificate (its fingerprint is on the `cert` line), and pick a folder under
+Open the `open` link `make start` printed (`https://127.0.0.1:7443/#token=...` in local mode:
+it carries the backend's token, which the page keeps), accept the certificate (its
+fingerprint is on the `cert` line), and pick a folder under
 your home folder to work in. Or, in a project folder, run the terminal client:
 
 ```sh
@@ -127,8 +128,8 @@ owns it turns remote mode on:
 | | local mode (no wallet) | remote mode (a wallet is set) |
 |---|---|---|
 | listens on | `127.0.0.1:7443`: this machine only | `0.0.0.0:7443`: your network and tailnet too |
-| login | none | required: sign in with that wallet |
-| web client | opens straight into the app | asks for the wallet's recovery phrase |
+| login | the backend's token, from this machine only | required: sign in with that wallet |
+| web client | opens from the `open` link `make url` prints (it carries the token) | asks for the wallet's recovery phrase |
 | terminal client | just works | on this Mac just works; elsewhere `cwbcodeclient login` |
 
 Turn it on from the web client's **Dashboard → Remote access** (type the wallet's address,
@@ -137,7 +138,7 @@ or its recovery phrase to have the address worked out in the browser), or from t
 ```sh
 cwbcodeclient remote                  # which mode, and where the backend listens
 cwbcodeclient remote on 0x5290…9EE7   # or `remote on` alone, to type the recovery phrase
-cwbcodeclient remote off              # back to this machine only, no login
+cwbcodeclient remote off              # back to this machine only, with its token
 ```
 
 It takes effect at once, without a restart: the backend moves its listeners to the new
@@ -149,7 +150,7 @@ address and starts (or stops) asking for the wallet. The setting is kept in
 {"time":"2026-11-26 09:02:51","set":"wallet","value":""}
 ```
 
-Turning it on needs no login (in local mode whoever is at this machine may); turning it off
+Turning it on needs the backend's token (in local mode, whoever holds it on this machine); turning it off
 needs the wallet's owner to be signed in, or the terminal client on this machine. A
 conversation in progress is cut short when the listeners move.
 
@@ -213,8 +214,9 @@ With `-p`, nobody is there to approve anything: edits and commands are refused u
 
 Open the address `make start` printed (`https://127.0.0.1:7443` in local mode,
 `https://localhost:7443` and the machine's other addresses in remote mode) and accept the self-signed
-certificate. In local mode the app opens at once; with a wallet, sign in with its recovery
-phrase.
+certificate. In local mode open the `open` link instead: it carries the backend's token,
+which the page keeps and takes out of the address (or type the token from
+`~/.cwbcode/token`); with a wallet, sign in with its recovery phrase.
 
 - **Dashboard**: model state, memory, context in use, protocol, projects, remote access.
 - **Chat**: open any folder under `~` (one that does not exist is created, with the folders
@@ -375,9 +377,11 @@ question finds an English note.
 
 **Safety** (`sandbox.rs`, `projects.rs`, `api.rs`).
 
-- In local mode (no wallet) the backend listens on this machine only and asks for no
-  login, but answers only its own page and clients that are not pages: a page of another
-  website open in your browser is refused. With a wallet, every request needs a session
+- In local mode (no wallet) the backend listens on this machine only and asks for its token
+  (`~/.cwbcode/token`, readable only by you), from this machine only: another user of the
+  Mac, a program of someone else's, or anything behind a port forward (`ssh -L`, `tailscale
+  serve`) gets nothing without it. It answers only its own page and clients that are not
+  pages: a page of another website open in your browser is refused. With a wallet, every request needs a session
   obtained by signing in with it; the backend's own token (`~/.cwbcode/token`, readable
   only by you) is accepted from this machine only. Without credentials nothing beyond a
   small sign-in message is read, and failed sign-ins are limited to ten a minute.
@@ -428,7 +432,7 @@ make test-web     # the web client in headless Chrome: sign-in with a recovery p
                   # wrong ones refused), the remembered phrase, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
-                  # dashboard, knowledge base, sign-out, and local mode without a login,
+                  # dashboard, knowledge base, sign-out, and local mode with the token link,
                   # and remote mode turned on and off from the dashboard
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own

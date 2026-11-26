@@ -2,7 +2,7 @@
 """The web client, tested in a real browser: starts the backend with a scripted model in a
 scratch home folder, drives headless Chrome over its DevTools protocol through the page
 (sign in with a wallet's recovery phrase, open a project, chat, approve an edit, dashboard,
-knowledge base, tools, sign out; then a backend in local mode, which asks for no login, and
+knowledge base, tools, sign out; then a backend in local mode, opened with the token link, and
 turning its remote mode on and off from the dashboard), and
 checks what the page shows and what happened on disk. Screenshots go to the folder given
 as the first argument (default: a temporary one).
@@ -95,6 +95,9 @@ def main():
         assert token, "the backend did not start"
         page = Page(connect([t for t in tabs if t["type"] == "page"][0]["webSocketDebuggerUrl"], max_size=50_000_000))
         for domain in ("Runtime", "Log", "Page"): page.send(f"{domain}.enable")
+        # A first visit follows the system's light or dark; the checks below start from dark,
+        # whatever the Mac is set to (it changes with the time of day when set to Auto).
+        page.send("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
         url = f"https://127.0.0.1:{port}"
 
         print("1. the page asks for the wallet's recovery phrase; only the right one signs in")
@@ -373,7 +376,7 @@ def main():
         assert not [e for e in page.errors if "401" not in e], f"the page reported errors: {page.errors}"
         page.errors.clear()
 
-        print("9. a backend without a wallet is in local mode: no login at all")
+        print("9. a backend without a wallet is in local mode: the token link, no wallet")
         port2 = free_port()
         # (No address is given: the backend chooses it by its mode, and moves when the mode changes.)
         local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port2), "--script", f"{home}/script.json", "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -381,8 +384,19 @@ def main():
             try:
                 socket.create_connection(("127.0.0.1", port2), timeout=0.2).close(); break
             except OSError: time.sleep(0.1)
+        # Without the token: only the page that asks for it.
         page.send("Page.navigate", url=f"https://127.0.0.1:{port2}")
-        page.wait("!!document.querySelector('.side')", "the app, straight away")
+        page.wait("!!document.querySelector('#token') && !document.querySelector('.side')", "the token page in local mode")
+        local_token = open(f"{home}/.cwbcode-local/token").read().strip()
+        # The link `cwbcode url` prints carries it; the page keeps it and takes it out of the address.
+        printed = subprocess.run([f"{ROOT}/target/release/cwbcode", "url", "--port", str(port2), "--env-file", "/dev/null"], env=dict(env, CWBCODE_HOME=f"{home}/.cwbcode-local"), capture_output=True, text=True).stdout
+        link = next(line.split()[1] for line in printed.splitlines() if line.startswith("open "))
+        assert link == f"https://127.0.0.1:{port2}/#token={local_token}", printed
+        # (As a click in the terminal does: a fresh load, not a change of the # in the same page.)
+        page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
+        page.send("Page.navigate", url=link)
+        page.wait("!!document.querySelector('.side')", "the app from the token link")
+        assert page.js("location.hash") == "", "the token stayed in the address"
         # (Another address is another site to the browser: its language starts from the system's.)
         page.js("(() => { const s = document.querySelector('#lang'); s.value = 'en'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         assert page.js("!document.querySelector('#phrase') && !document.querySelector('#token') && !document.querySelector('#signout')"), "local mode showed a login"
@@ -419,7 +433,12 @@ def main():
         page.wait(f"document.querySelector('#remote').innerText.includes('0.0.0.0:{port2}')", "the new address on the card")
         page.shot(f"{shots}/8-remote-on.png")
         page.click("#remote-off")
-        page.wait("!!document.querySelector('.side') && !document.querySelector('#signout')", "local mode again, with no login")
+        # The wallet's session ended with remote mode: local mode asks for this machine's token.
+        page.wait("!!document.querySelector('#token')", "the token page once remote mode is off")
+        page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
+        page.send("Page.navigate", url=link)
+        page.wait("!!document.querySelector('.side') && !document.querySelector('#signout')", "local mode again, from the token link")
+        page.click("#nav-dashboard")
         page.wait("(document.querySelector('#remote') || {}).innerText?.includes('Local mode')", "the card in local mode")
         time.sleep(1.5)
         listening = subprocess.run(["lsof", "-nP", f"-iTCP:{port2}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout

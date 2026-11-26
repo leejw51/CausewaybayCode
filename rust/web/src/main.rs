@@ -255,11 +255,11 @@ impl App {
         set_timeout(move || notice.set(String::new()), std::time::Duration::from_secs(5));
     }
 
-    /// May the app be shown: local mode, or signed in?
+    /// May the app be shown: is there a token (local mode too asks for the backend's), or a
+    /// session?
     fn ready(&self) -> bool {
         match self.auth.get().as_str() {
             "" => false,
-            "open" => true,
             _ => !self.token.get().is_empty(),
         }
     }
@@ -267,7 +267,6 @@ impl App {
     fn ready_untracked(&self) -> bool {
         match self.auth.get_untracked().as_str() {
             "" => false,
-            "open" => true,
             _ => !self.token.get_untracked().is_empty(),
         }
     }
