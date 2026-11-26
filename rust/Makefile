@@ -27,7 +27,7 @@ SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg app
+.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg release app
 
 help:
 	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
@@ -43,6 +43,7 @@ help:
 	@echo "make package     - the Mac app (Tauri): a window on the web client, with the backend inside"
 	@echo "make app         - open the app: it uses a running backend, or starts its own and stops it on quit"
 	@echo "make package-dmg - the app, and a disk image of it"
+	@echo "make release     - everything built, in dist/: the app zipped, its disk image, SHA-256 sums"
 	@echo "make test-web    - the web client in headless Chrome"
 	@echo "make test-playwright - Playwright: the agent writes a Rust crate through the web client (real model)"
 	@echo "make test-model  - tests that load the model (semantic search)"
@@ -66,6 +67,14 @@ web:
 
 build: web
 	cargo build --release
+	@# MLX's Metal library is written by mlx-sys's build script outside target/ (~/.mlx/lib/...,
+	@# the path the binary names). A cached target/ (CI, or a cleared ~/.mlx) skips that script:
+	@# then build mlx-sys again, which writes it.
+	@metallib=$$(strings target/release/cwbcode | grep -m1 '/mlx\.metallib$$'); \
+	  if [ -n "$$metallib" ] && [ ! -f "$$metallib" ]; then \
+	    echo "MLX's Metal library is missing ($$metallib): building mlx-sys again"; \
+	    cargo clean --release -p mlx-sys && cargo build --release; \
+	  fi
 	@mkdir -p bin
 	@# Copied beside, then moved into place: a backend running from ./bin is not written over.
 	@for p in cwbcode cwbcodeclient; do cp target/release/$$p bin/.$$p.new && mv -f bin/.$$p.new bin/$$p; done
@@ -162,11 +171,45 @@ package: build
 	@echo "open it with: make app   (or drag it to /Applications)"
 
 # The disk image too. (Making it drives the Finder, which needs a logged-in desktop.)
+# (CI=true: Tauri's disk-image script then skips laying out the Finder window by AppleScript,
+# which times out with no desktop session to drive, in CI or a background shell.)
 package-dmg: package
-	cd desktop && cargo tauri build --bundles dmg
+	@# (Both bundles: asked for the disk image alone, Tauri removes the app it made it from.)
+	cd desktop && CI=true cargo tauri build --bundles app,dmg
 	codesign --verify --deep --strict "$(APP_BUNDLE)"
 	@ls desktop/target/release/bundle/dmg/*.dmg
 
+# A release: everything built and signed, in dist/:
+#   Causewaybay-Code-<version>-macos-arm64.dmg      the Mac app (backend inside), on a disk image
+#   Causewaybay-Code-<version>-macos-arm64.app.zip  the same app, zipped
+#   cwbcode-<version>-macos-arm64.zip               cwbcode and cwbcodeclient on their own, with
+#                                                   MLX's Metal library beside them
+#   SHA256SUMS
+# Signing, as in FruitNationMessenger: with a Developer ID (APPLE_SIGNING_IDENTITY, or the one in
+# the keychain) everything is signed with the hardened runtime and a timestamp; with APPLE_ID,
+# APPLE_PASSWORD and APPLE_TEAM_ID too (or APPLE_NOTARY_PROFILE), Apple notarizes it and the app
+# and the disk image get their tickets stapled. Without a Developer ID, everything is signed ad
+# hoc. The same command on a Mac and in CI (.github/workflows/release-macos.yml).
+VERSION := $(shell sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/tauri.conf.json)
+RELEASE_NAME := Causewaybay-Code-$(VERSION)-macos-arm64
+CLI_NAME := cwbcode-$(VERSION)-macos-arm64
+release: export APPLE_SIGNING_IDENTITY ?= $(shell scripts/apple-identity.sh)
+release: package-dmg
+	@echo "signing identity: $$APPLE_SIGNING_IDENTITY"
+	@rm -rf dist && mkdir -p dist/$(CLI_NAME)
+	@# The disk image: Tauri signed and notarized the app in it; the image itself is signed,
+	@# notarized and stapled here.
+	cp desktop/target/release/bundle/dmg/*.dmg "dist/$(RELEASE_NAME).dmg"
+	scripts/sign-dmg.sh "dist/$(RELEASE_NAME).dmg"
+	ditto -c -k --keepParent "$(APP_BUNDLE)" "dist/$(RELEASE_NAME).app.zip"
+	@# The programs on their own, each signed and notarized.
+	cp target/release/cwbcode target/release/cwbcodeclient desktop/binaries/mlx.metallib dist/$(CLI_NAME)/
+	scripts/codesign-binary.sh dist/$(CLI_NAME)/cwbcode
+	scripts/codesign-binary.sh dist/$(CLI_NAME)/cwbcodeclient
+	cd dist && ditto -c -k --keepParent $(CLI_NAME) $(CLI_NAME).zip && rm -rf $(CLI_NAME)
+	cd dist && shasum -a 256 *.zip *.dmg > SHA256SUMS
+	@echo "release $(VERSION) in $(CURDIR)/dist:"; ls -l dist
+	@codesign -dv "$(APP_BUNDLE)" 2>&1 | grep -E "^Authority=|^Signature=" | head -2 || true
 # Opened with the app's port: a backend it starts serves its window there.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
