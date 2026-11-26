@@ -52,12 +52,13 @@ What the agent does:
   27 GB (developed and tested on a 36 GB M5 Max)
 - Rust with the `wasm32-unknown-unknown` target, `cmake`, `capnp` and `trunk`
   (`brew install cmake capnp trunk`; `rustup target add wasm32-unknown-unknown`)
-- [Ollama](https://ollama.com), only to download the model; Python 3 for `make start`
+- Python 3 for `make start` and the model download; [Ollama](https://ollama.com) is optional
+  (the model can come from Ollama or from Hugging Face, no account or key needed for either)
 
 ## Build and run
 
 ```sh
-make pull       # ollama pull inkling-2-mini:26b-a5b-nvfp4  (20 GB, once)
+make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
 make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
 make start      # start the backend under supervisor (0.0.0.0 with CWBCODE_WALLET in .env, else 127.0.0.1)
@@ -71,6 +72,23 @@ The `make` targets work from the repository root (which passes them on) or from 
 status` and `make logs` show how it is doing. The first build compiles MLX from source and
 takes a few minutes. The weights are read straight from Ollama's store; Ollama does not need
 to be running (and if it has the model loaded, stop it first: two copies do not fit).
+
+**The model** (`rust/scripts/model.py`). `make start` checks for it first and, when it is
+missing, downloads it: with Ollama when Ollama is installed, from Hugging Face otherwise.
+`make download` asks which; `make pull` takes Ollama without asking; `make model` prints
+where it is and what it is. Either way a progress bar shows the speed and the time left, and
+a stopped download picks up where it left off.
+
+| | from Ollama | from Hugging Face |
+|---|---|---|
+| needs | Ollama installed (`ollama serve` is started for the download if it is not running) | nothing: [thinkingmachines/Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) is public |
+| key | none | none; `$HF_TOKEN`, or the token `hf auth login` saved, is used when there is one (and is sent to huggingface.co only) |
+| goes to | `~/.ollama/models` (`$OLLAMA_MODELS`) | `~/.cwbcode/models` (`$CWBCODE_MODELS`), in the same layout |
+
+The Hugging Face checkpoint holds the same bytes as Ollama's; it is written, as it arrives,
+one tensor per file, labelled as Ollama labels them, and every file is checked against the
+SHA-256 in Ollama's registry. The backend looks in Ollama's store first, then in
+`~/.cwbcode/models`.
 
 **Local mode and remote mode.** The backend starts in local mode. Setting the wallet that
 owns it turns remote mode on:
@@ -392,7 +410,7 @@ make e2e          # real tasks with the real model through the backend and the c
 
 ## Limits
 
-- One model: Inkling 2 Mini from Ollama's store. macOS on Apple Silicon only.
+- One model: Inkling 2 Mini, from Ollama's store or downloaded from Hugging Face. macOS on Apple Silicon only.
 - One request at a time uses the model; others wait their turn.
 - Memory grows with the context: 27 GB at the peak with 25k tokens, 31 GB with 48k (measured).
 - What a command (or a made tool) changes is versioned and undone like an edit only in

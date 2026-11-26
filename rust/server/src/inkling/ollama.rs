@@ -1,4 +1,5 @@
-//! Read a model straight out of Ollama's store: the manifest maps each tensor name and config
+//! Read a model straight out of Ollama's store (or one in its layout, made from a Hugging
+//! Face download by `scripts/model.py`): the manifest maps each tensor name and config
 //! file to a blob, and every tensor blob is a small safetensors file.
 
 use std::collections::HashMap;
@@ -17,22 +18,27 @@ pub struct Manifest {
     pub size: u64,
 }
 
-fn models_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("OLLAMA_MODELS") {
-        return PathBuf::from(dir);
-    }
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".ollama/models")
+/// The stores a model is looked for in, in order: Ollama's own (`ollama pull`), then the one
+/// `scripts/model.py` writes a Hugging Face download into, in the same layout.
+fn stores() -> [PathBuf; 2] {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let ollama = std::env::var("OLLAMA_MODELS").map(PathBuf::from).unwrap_or_else(|_| home.join(".ollama/models"));
+    let own = std::env::var("CWBCODE_MODELS").map(PathBuf::from).unwrap_or_else(|_| home.join(".cwbcode/models"));
+    [ollama, own]
 }
 
-/// Is `spec` an Ollama model name ("inkling-2-mini:26b-a5b-nvfp4", optionally "ollama:...")?
-pub fn manifest_path(spec: &str) -> Option<PathBuf> {
+/// Is `spec` an Ollama model name ("inkling-2-mini:26b-a5b-nvfp4", optionally "ollama:...")
+/// in one of the stores? Its manifest, and the store it is in.
+pub fn manifest_path(spec: &str) -> Option<(PathBuf, PathBuf)> {
     let spec = spec.strip_prefix("ollama:").unwrap_or(spec);
     if spec.contains('/') && !spec.starts_with("registry.") || spec.is_empty() {
         return None;
     }
     let (name, tag) = spec.split_once(':').unwrap_or((spec, "latest"));
-    let p = models_dir().join("manifests/registry.ollama.ai/library").join(name).join(tag);
-    p.is_file().then_some(p)
+    stores().into_iter().find_map(|store| {
+        let p = store.join("manifests/registry.ollama.ai/library").join(name).join(tag);
+        p.is_file().then_some((p, store))
+    })
 }
 
 /// MLX keeps every tensor file open until its array is evaluated, and this model is hundreds of
@@ -54,9 +60,9 @@ fn allow_open_files(count: usize) {
 
 impl Manifest {
     pub fn load(spec: &str) -> Result<Self> {
-        let path = manifest_path(spec).with_context(|| format!("no Ollama model {spec} (try `ollama pull {spec}`)"))?;
+        let (path, store) = manifest_path(spec).with_context(|| format!("no model {spec} in Ollama's store or ~/.cwbcode/models (run `make download`)"))?;
         let root: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-        let blobs = models_dir().join("blobs");
+        let blobs = store.join("blobs");
         let mut files = HashMap::new();
         let mut size = 0;
         for layer in root["layers"].as_array().context("manifest has no layers")? {

@@ -21,10 +21,12 @@ SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help pull build web install start stop restart status logs url test test-web test-playwright test-model e2e clean
+.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean
 
 help:
-	@echo "make pull        - download the model into Ollama's store (ollama pull $(MODEL), 20 GB)"
+	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
+	@echo "make pull        - download the model with Ollama, without asking"
+	@echo "make model       - where the model is and what it is"
 	@echo "make build       - build the web client and both programs (release) into rust/bin"
 	@echo "make install     - build, then copy cwbcode and cwbcodeclient to $(BINDIR)"
 	@echo "make start       - start the backend under supervisor: local mode (127.0.0.1, no login)"
@@ -37,8 +39,17 @@ help:
 	@echo "make test-model  - tests that load the model (semantic search)"
 	@echo "make e2e         - real tasks through the backend with the real model"
 
+# The model: scripts/model.py finds it (Ollama's store, then ~/.cwbcode/models), says where it
+# is and what it is, and downloads it with a progress bar: through Ollama, or from Hugging Face
+# (with $$HF_TOKEN or the saved `hf auth login` token when there is one, without one otherwise).
+download:
+	@python3 scripts/model.py download --model $(MODEL)
+
 pull:
-	ollama pull $(MODEL)
+	@python3 scripts/model.py download --source ollama --model $(MODEL)
+
+model:
+	@python3 scripts/model.py status --model $(MODEL)
 
 # The web client is built first: the backend embeds its files.
 web:
@@ -68,6 +79,7 @@ start: .venv/bin/supervisord
 	@if $(RUNNING); then \
 		echo "already running (make stop to stop it)"; \
 	else \
+		python3 scripts/model.py ensure --model $(MODEL) || exit 1; \
 		bin/cwbcode url $(SERVE_ARGS) >/dev/null || exit 1; \
 		CWBCODE_SERVE_ARGS="$(SERVE_ARGS)" $(SUPERVISORD) && echo "started the backend; log: $(HOME)/.cwbcode/server.log"; \
 	fi

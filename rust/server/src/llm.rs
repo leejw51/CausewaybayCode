@@ -126,7 +126,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Load an Inkling 2 model from Ollama's store (`ollama pull inkling-2-mini:26b-a5b-nvfp4`).
+    /// Load an Inkling 2 model from Ollama's store or ~/.cwbcode/models (`make download`).
     pub fn load(spec: &str, sampler: Sampler) -> Result<Self> {
         init_mlx_thread();
         // MLX keeps freed buffers for reuse; unbounded, that cache grows by gigabytes while a
