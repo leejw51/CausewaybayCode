@@ -174,7 +174,7 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
         },
         format!("{:<9} {bind}  ({scope}, {why})", "bind"),
         match control::mode(wallet, bind, options.require_token) {
-            auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (it stays in your browser)", "login"),
+            auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (only a signature leaves the browser; the phrase is not stored)", "login"),
             auth::Mode::Open => format!("{:<9} the backend's token, from this machine only: open the `open` link below (it carries it), or the terminal client reads it itself", "login"),
             auth::Mode::Token => format!("{:<9} the backend's token", "login"),
         },

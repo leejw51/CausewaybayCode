@@ -76,7 +76,7 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("phrase_ph", ["twelve or twenty-four words", "12개 또는 24개 단어", "dvanáct nebo dvacet čtyři slov", "12語または24語", "十二或者廿四個字", "12 或 24 个单词", "doce o veinticuatro palabras", "on iki veya yirmi dört kelime"]),
     ("show", ["show", "보기", "zobrazit", "表示", "顯示", "显示", "mostrar", "göster"]),
     ("account", ["account", "계정", "účet", "アカウント", "帳戶", "账户", "cuenta", "hesap"]),
-    ("remember", ["remember on this device", "이 기기에 저장", "zapamatovat v tomto zařízení", "この端末に保存", "喺呢部機記住", "在此设备上记住", "recordar en este dispositivo", "bu cihazda hatırla"]),
+    ("remember", ["stay signed in on this device (the phrase is never saved)", "이 기기에서 로그인 유지 (구문은 저장하지 않음)", "zůstat přihlášen v tomto zařízení (fráze se nikdy neukládá)", "この端末でサインインしたままにする(フレーズは保存しません)", "喺呢部機保持登入(唔會儲存助記詞)", "在此设备上保持登录(从不保存助记词)", "mantener la sesión en este dispositivo (la frase nunca se guarda)", "bu cihazda oturumu açık tut (ifade asla kaydedilmez)"]),
     ("sign_in", ["Sign in", "로그인", "Přihlásit se", "サインイン", "登入", "登录", "Iniciar sesión", "Giriş yap"]),
     ("signing_in", ["Signing in ...", "로그인 중 ...", "Přihlašování ...", "サインイン中 ...", "登入緊 ...", "正在登录 ...", "Iniciando sesión ...", "Giriş yapılıyor ..."]),
     ("cert_note", ["Server certificate (compare with `cwbcode url`):", "서버 인증서 (`cwbcode url` 과 비교):", "Certifikát serveru (porovnejte s `cwbcode url`):", "サーバー証明書(`cwbcode url` と照合):", "伺服器證書(同 `cwbcode url` 對一對):", "服务器证书(与 `cwbcode url` 比对):", "Certificado del servidor (compáralo con `cwbcode url`):", "Sunucu sertifikası (`cwbcode url` ile karşılaştırın):"]),

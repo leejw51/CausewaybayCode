@@ -18,8 +18,8 @@ use wasm_bindgen::closure::Closure;
 const TOKEN_KEY: &str = "cwbcode-token";
 /// the preferences and where the user was: theme, layout, language, view, project, conversation,
 const PREFS_KEY: &str = "cwbcode-prefs";
-/// and, when "remember on this device" is ticked, the wallet's recovery phrase and account,
-/// with which the page signs in again by itself when the session has ended.
+/// Where earlier versions kept the wallet's recovery phrase. It is never stored now (it
+/// controls the whole wallet), and a phrase left there is deleted when the page loads.
 const PHRASE_KEY: &str = "cwbcode-phrase";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -156,11 +156,6 @@ fn stored_prefs() -> serde_json::Value {
     stored(PREFS_KEY).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| serde_json::json!({}))
 }
 
-/// The recovery phrase and account kept on this device, if any.
-fn stored_phrase() -> Option<(String, u32)> {
-    let saved: serde_json::Value = serde_json::from_str(&stored(PHRASE_KEY)?).ok()?;
-    Some((saved["phrase"].as_str().filter(|p| !p.trim().is_empty())?.to_string(), saved["index"].as_u64().unwrap_or(0) as u32))
-}
 
 /// Does the system ask for a light interface?
 fn system_prefers_light() -> bool {
@@ -185,6 +180,7 @@ fn initial_token() -> String {
 
 impl App {
     fn new() -> Self {
+        forget(PHRASE_KEY);
         // Preferences and place from the last visit; for a first visit, what the system says.
         let prefs = stored_prefs();
         let text = |key: &str, fallback: &str| prefs[key].as_str().unwrap_or(fallback).to_string();
@@ -278,40 +274,30 @@ impl App {
                 let status = response.status.unwrap_or_default();
                 self.wallet.set(status.wallet);
                 self.fingerprint.set(status.fingerprint);
-                let wallet_mode = status.auth == "wallet";
                 self.auth.set(status.auth);
-                // A phrase remembered on this device signs in by itself.
-                if wallet_mode && self.token.get_untracked().is_empty() {
-                    self.sign_in_remembered().await;
-                }
             }
             Err(e) => self.fail(e),
         }
     }
 
-    /// Sign in with the phrase kept on this device, if there is one. A phrase that no longer
-    /// fits (the backend belongs to another wallet now) is forgotten.
-    async fn sign_in_remembered(&self) {
-        if let Some((phrase, index)) = stored_phrase() {
-            if self.sign_in(phrase, index, true).await.is_err() {
-                forget(PHRASE_KEY);
-            }
+    /// Use this token (the backend's, or a session from signing in); with `keep`, also after
+    /// a refresh, until it ends or the user signs out.
+    fn remember(&self, token: &str, keep: bool) {
+        if keep {
+            store(TOKEN_KEY, token);
+        } else {
+            forget(TOKEN_KEY);
         }
-    }
-
-    fn remember(&self, token: &str) {
-        store(TOKEN_KEY, token);
         self.token.set(token.to_string());
     }
 
     /// Sign in with the wallet's recovery phrase. The key is derived here, in the browser;
-    /// the backend gets a signature of its one-time challenge and nothing else. With
-    /// `keep`, the phrase is kept in this browser's storage, so that a refresh, or a session
-    /// that has ended, signs in again without typing it.
+    /// the backend gets a signature of its one-time challenge and nothing else. The phrase
+    /// is never stored: it controls the whole wallet, not only this backend. With `keep`,
+    /// the session (good for 30 days, ended by signing out) is kept in this browser.
     async fn sign_in(&self, phrase: String, index: u32, keep: bool) -> Result<(), String> {
         use cwbcode_proto::wallet;
         let key = wallet::key_from_phrase(&phrase, index)?;
-        let normal = phrase.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>().join(" ");
         drop(phrase);
         let address = wallet::address(&key)?;
         let expected = self.wallet.get_untracked();
@@ -328,12 +314,7 @@ impl App {
         }
         let signature = wallet::sign(&key, &challenge)?;
         let session = api::call("", &Request::new(Method::Login).text(&challenge).name(&signature)).await?.text;
-        if keep {
-            store(PHRASE_KEY, &serde_json::json!({"phrase": normal, "index": index}).to_string());
-        } else {
-            forget(PHRASE_KEY);
-        }
-        self.remember(&session);
+        self.remember(&session, keep);
         Ok(())
     }
 
@@ -344,9 +325,6 @@ impl App {
         if let Some(status) = response.status {
             // The session of the mode before is over, either way.
             forget(TOKEN_KEY);
-            if status.auth != "wallet" {
-                forget(PHRASE_KEY);
-            }
             self.token.set(String::new());
             self.status.set(None);
             self.wallet.set(status.wallet);
@@ -358,9 +336,8 @@ impl App {
 
     async fn sign_out(&self) {
         let _ = api::call(&self.token.get_untracked(), &Request::new(Method::Logout)).await;
-        // Signing out forgets the session and the phrase kept on this device.
+        // Signing out forgets the session kept on this device.
         forget(TOKEN_KEY);
-        forget(PHRASE_KEY);
         self.resume.set((String::new(), 0));
         self.token.set(String::new());
         self.projects.set(Vec::new());
@@ -376,11 +353,9 @@ impl App {
     /// Show an error; a refused token sends the user back to the token page.
     fn fail(&self, error: String) {
         if error == "unauthorized" {
+            // The session has ended (or the token is wrong): back to the sign-in page.
             forget(TOKEN_KEY);
             self.token.set(String::new());
-            // The session has ended: with the phrase kept on this device, sign in again.
-            let app = *self;
-            spawn_local(async move { app.sign_in_remembered().await });
             return;
         }
         self.error.set(error);
@@ -977,7 +952,7 @@ fn Login() -> impl IntoView {
     let enter_token = move || {
         let token = typed.get_untracked().trim().to_string();
         if !token.is_empty() {
-            app.remember(&token);
+            app.remember(&token, true);
         }
     };
     let enter_phrase = move || {

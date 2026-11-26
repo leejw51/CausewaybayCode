@@ -418,6 +418,45 @@ fn cache_rule(name: &str) -> &'static str {
     }
 }
 
+/// The page loads nothing but its own files, and runs no inline script but the page's own two
+/// (the loader Trunk writes and the error reporter), allowed by their SHA-256: a script
+/// injected into the page would not run.
+static CSP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use sha2::Digest;
+    let page = Web::get("index.html").map(|f| String::from_utf8_lossy(&f.data).into_owned()).unwrap_or_default();
+    let hashes: String = inline_scripts(&page).iter().map(|s| format!(" 'sha256-{}'", base64(&sha2::Sha256::digest(s.as_bytes())))).collect();
+    format!("default-src 'self'; script-src 'self'{hashes} 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
+});
+
+/// The bodies of a page's inline scripts (those without a `src`), as the browser hashes them.
+fn inline_scripts(page: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = page;
+    while let Some(start) = rest.find("<script") {
+        rest = &rest[start..];
+        let Some(open_end) = rest.find('>') else { break };
+        let attributes = &rest[..open_end];
+        let Some(close) = rest[open_end..].find("</script>") else { break };
+        if !attributes.contains("src=") {
+            out.push(&rest[open_end + 1..open_end + close]);
+        }
+        rest = &rest[open_end + close..];
+    }
+    out
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
 /// The web client: its files are built into the program. Any other path is the app itself.
 async fn web(uri: axum::http::Uri) -> HttpResponse {
     let path = uri.path().trim_start_matches('/');
@@ -439,7 +478,7 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
                     // The page is not to be framed by another site, nor to load anything but its own files.
                     (header::X_FRAME_OPTIONS, "DENY".to_string()),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                    (header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'".to_string()),
+                    (header::CONTENT_SECURITY_POLICY, CSP.clone()),
                 ],
                 file.data.into_owned(),
             )
@@ -451,7 +490,19 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::cache_rule;
+    use super::{base64, cache_rule, inline_scripts};
+
+    #[test]
+    fn only_the_pages_own_inline_scripts_are_allowed_by_their_hash() {
+        let page = "<head><script>\n  one();\n</script><script type=\"module\">two()</script><script src=\"/x.js\"></script></head>";
+        assert_eq!(inline_scripts(page), vec!["\n  one();\n", "two()"]);
+        // The digest as a browser writes it in a policy.
+        use sha2::Digest;
+        assert_eq!(base64(&sha2::Sha256::digest(b"two()")), "iMrPAWirDC2X0OhZzLsM2MRIWSmepJGI4r7D8ZlwBOw=");
+        assert_eq!((base64(b"a"), base64(b"ab"), base64(b"abc")), ("YQ==".into(), "YWI=".into(), "YWJj".into()));
+        let csp = super::CSP.as_str();
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'") && csp.contains("'sha256-"), "{csp}");
+    }
 
     #[test]
     fn only_files_named_after_their_contents_are_kept_for_good() {

@@ -119,17 +119,24 @@ def main():
         page.wait("!!document.querySelector('.side')", "the app after signing in")
         page.wait("document.querySelector('#status-pill').innerText.includes('scripted')", "the backend's status")
         assert "wallet 0xf39F" in page.text("#login-state"), page.text("#login-state")
-        # The browser keeps the session and, as "remember on this device" is ticked, the phrase.
+        # The browser keeps the session ("stay signed in" is ticked), and never the phrase:
+        # nothing in its storage holds any word of it.
         assert page.js("/^[0-9a-f]{64}$/.test(localStorage.getItem('cwbcode-token') || '')"), "no session was stored"
-        kept = json.loads(page.js("localStorage.getItem('cwbcode-phrase')") or "{}")
-        assert kept == {"phrase": PHRASE, "index": 0}, f"the phrase was not remembered: {kept}"
-        # A refresh comes straight back in; so does a session that has ended, by the phrase.
+        stored = page.js("JSON.stringify(Object.assign({}, localStorage, sessionStorage))")
+        assert "junk" not in stored and "cwbcode-phrase" not in stored, f"the phrase was stored: {stored[:300]}"
+        # A refresh comes straight back in; a session that has ended asks for the phrase again.
         page.send("Page.navigate", url=url)
         page.wait("!!document.querySelector('.side')", "the app after a refresh")
         page.js("localStorage.setItem('cwbcode-token', 'an-ended-session')")
         page.send("Page.navigate", url=url)
-        page.wait("!!document.querySelector('.side') && /^[0-9a-f]{64}$/.test(localStorage.getItem('cwbcode-token') || '')", "signing in again with the remembered phrase")
+        page.wait("!!document.querySelector('#phrase') && !localStorage.getItem('cwbcode-token')", "the sign-in page for an ended session")
         page.errors.clear()  # (the ended session was refused once, as it should be)
+        # A phrase an earlier version left in storage is deleted when the page loads.
+        page.js(f"localStorage.setItem('cwbcode-phrase', {json.dumps(json.dumps({'phrase': PHRASE, 'index': 0}))})")
+        page.send("Page.navigate", url=url)
+        page.wait("!!document.querySelector('#phrase') && localStorage.getItem('cwbcode-phrase') === null", "the old phrase deleted")
+        page.type("#phrase", PHRASE); page.click("#signin")
+        page.wait("!!document.querySelector('.side')", "the app after signing in again")
 
         # A progressive web app: a manifest, and a service worker in charge of the page.
         assert page.js("document.querySelector('link[rel=manifest]').getAttribute('href')") == "/manifest.webmanifest"

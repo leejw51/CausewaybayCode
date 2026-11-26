@@ -166,11 +166,14 @@ challenge from the backend (EIP-191, naming the wallet and the backend's certifi
 for five minutes, once), and the backend checks that the signature is the wallet's. The
 phrase is never sent. A phrase of another wallet is told so before anything is sent.
 
-With **remember on this device** ticked (it is by default), the phrase is kept in the
-browser's storage beside the session, so that a refresh, or a session that has ended (they
-last 30 days), signs in again without typing it. **Sign out** removes both. Anyone who can
-use that browser profile can read what it stores: untick the box on a device that is not
-yours alone.
+The phrase is never stored: it controls the whole wallet, not only this backend. With **stay
+signed in on this device** ticked (it is by default), the session is kept in the browser's
+storage, so a refresh comes straight back in; when it ends (sessions last 30 days) the page
+asks for the phrase again. **Sign out** ends it. Untick the box on a device that is not yours
+alone. A phrase that earlier versions kept is deleted when the page loads.
+
+Use a wallet made for this, with nothing in it: whoever has its phrase has this backend, and
+anything the wallet holds.
 
 Only the wallet's public address is ever saved or put in `.env`: a private key or recovery
 phrase there is refused (and never echoed). `.env` is git-ignored. `make start
@@ -413,9 +416,9 @@ What it does **not** do:
 - Whoever can sign in is you, as far as the backend is concerned: they can choose `auto`
   mode and any folder under your home folder. With a wallet that means whoever holds its
   recovery phrase.
-- Typing a recovery phrase into a web page is only as safe as the page, and keeping it in
-  the browser ("remember on this device") only as safe as the browser profile: use it on the
-  backend you run yourself, over its own address, and check the certificate fingerprint.
+- Typing a recovery phrase into a web page is only as safe as the page: use it on the
+  backend you run yourself, over its own address, and check the certificate fingerprint. The
+  page does not store the phrase; it keeps only the session. Use a wallet with nothing in it.
 - A browser cannot pin the self-signed certificate: on first visit compare the fingerprint
   it shows with the one `cwbcode url` prints.
 
@@ -429,7 +432,7 @@ make test         # unit tests, and the backend started for real with a scripted
                   # log, file versions and undo, the knowledge base, tools made at runtime,
                   # plan mode, hooks, the user's own commands, taking a project off the list
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
-                  # wrong ones refused), the remembered phrase, a folder created on opening,
+                  # wrong ones refused), that the phrase is never stored, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
                   # dashboard, knowledge base, sign-out, and local mode with the token link,

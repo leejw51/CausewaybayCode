@@ -52,8 +52,8 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
 above: a command can read the rest of your home folder and the backend's environment, and
 what it reads becomes part of the conversation. The model can be steered by text it reads.
 Whoever can sign in is you as far as the backend is concerned; in remote mode, that is
-whoever holds the wallet's recovery phrase. Keeping the phrase in a browser ("remember on
-this device") is only as safe as that browser profile.
+whoever holds the wallet's recovery phrase. The web client never stores the phrase, only the
+session it signs in to; use a wallet made for this, with nothing in it.
 
 A report is most useful when it shows one of the promises above broken: a tool or a command
 reaching the network, writing outside the project, reading a credential or a `.cwbcode`
