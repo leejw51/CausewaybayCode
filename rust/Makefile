@@ -142,6 +142,11 @@ test:
 	@# given to HTTP/3 before falling back) does not depend on how busy the machine is.
 	cargo test --release -p cwbcodeclient --test backend -- --test-threads=1
 
+# Removing a conversation, by Playwright in Chromium and WebKit (the engine of Safari and of
+# the Mac app's window), with a scripted model: no model needed.
+test-remove: build
+	cd tests/playwright && npm install --silent && npx playwright install chromium webkit && npx playwright test -c remove.config.js
+
 test-web: build
 	python3 scripts/web_test.py
 

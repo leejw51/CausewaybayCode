@@ -1378,8 +1378,11 @@ fn Sidebar() -> impl IntoView {
                                     <span class="confirm" title=move || tr_with(app.lang.get(), "remove_session_ask", &id.to_string())
                                         on:click=move |ev| ev.stop_propagation() on:keydown=move |ev| ev.stop_propagation()>
                                         <span class="ask">{t("remove_ask_short")}</span>
-                                        <button class="danger remove-yes" on:click=move |_| spawn_local(async move { app.remove_session(id).await })>{t("yes")}</button>
-                                        <button class="remove-no" on:click=move |_| app.removing.set(0)>{t("no")}</button>
+                                        // (Each stops its own click: the question is taken off the row
+                                        // as it is answered, and the click would go on to the row
+                                        // and open the conversation.)
+                                        <button class="danger remove-yes" on:click=move |ev| { ev.stop_propagation(); spawn_local(async move { app.remove_session(id).await }) }>{t("yes")}</button>
+                                        <button class="remove-no" on:click=move |ev| { ev.stop_propagation(); app.removing.set(0) }>{t("no")}</button>
                                     </span>
                                 </Show>
                             </div>
