@@ -144,27 +144,33 @@ e2e: build
 	scripts/e2e.sh
 
 # The Mac app. The backend (with the web client inside it) is copied in as the app's sidecar,
-# and MLX's Metal library beside it (MLX looks there first; otherwise it would need the path
-# this machine's build wrote it to). `cargo tauri` comes from `cargo install tauri-cli`.
+# and MLX's Metal library into the app's Resources (the backend tells MLX to load it from
+# there; otherwise it would need the path this machine's build wrote it to). The bundle is
+# signed ad hoc (tauri.conf.json: signingIdentity "-"), and the signature is checked.
+# `cargo tauri` comes from `cargo install tauri-cli`.
 package: build
 	@command -v cargo-tauri >/dev/null || { echo "cargo-tauri is missing: cargo install tauri-cli --version '^2'"; exit 1; }
+	@test -n "$(TRIPLE)" || { echo "cannot tell this machine's target triple (is rustc on PATH? rustc -vV)"; exit 1; }
 	@mkdir -p desktop/binaries
 	cp target/release/cwbcode desktop/binaries/cwbcode-$(TRIPLE)
 	@metallib=$$(strings target/release/cwbcode | grep -m1 '/mlx\.metallib$$'); \
 	  test -f "$$metallib" || { echo "MLX's Metal library was not found ($$metallib)"; exit 1; }; \
 	  cp "$$metallib" desktop/binaries/mlx.metallib
 	cd desktop && cargo tauri build --bundles app
+	codesign --verify --deep --strict "$(APP_BUNDLE)"
 	@echo "built: $(CURDIR)/$(APP_BUNDLE)"
 	@echo "open it with: make app   (or drag it to /Applications)"
 
 # The disk image too. (Making it drives the Finder, which needs a logged-in desktop.)
 package-dmg: package
 	cd desktop && cargo tauri build --bundles dmg
+	codesign --verify --deep --strict "$(APP_BUNDLE)"
 	@ls desktop/target/release/bundle/dmg/*.dmg
 
+# Opened with the app's port: a backend it starts serves its window there.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
-	open "$(APP_BUNDLE)"
+	open --env CWBCODE_APP_PORT=$(APP_PORT) "$(APP_BUNDLE)"
 
 clean:
 	cargo clean

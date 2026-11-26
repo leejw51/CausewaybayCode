@@ -31,8 +31,9 @@
     "externalBin": ["binaries/cwbcode"],
     "macOS": {
       "minimumSystemVersion": "14.0",
+      "signingIdentity": "-",
       "files": {
-        "MacOS/mlx.metallib": "binaries/mlx.metallib"
+        "Resources/mlx.metallib": "binaries/mlx.metallib"
       }
     }
   }

@@ -18,11 +18,29 @@
 </head>
 <body>
   <!-- Shown while the app starts the backend (or finds one already running); then the window
-       goes to the backend's own page. The app writes into #state if something goes wrong. -->
+       goes to the backend's own page. When something is wrong (or the backend stops), the app
+       comes back here with a message in the address: #bad=... (an error) or #wait=... -->
   <div class="card">
     <img src="icon.png" alt="">
     <h1>Causewaybay Code</h1>
     <div id="state"><span class="dots">Starting the backend</span></div>
   </div>
+  <script>
+    function said() {
+      const m = location.hash.match(/^#(bad|wait)=(.*)$/s);
+      if (!m) return;
+      const state = document.getElementById('state');
+      let text = m[2];
+      try { text = decodeURIComponent(text); } catch (e) {}
+      state.className = m[1] === 'bad' ? 'bad' : '';
+      state.textContent = '';
+      const line = document.createElement('span');
+      if (m[1] === 'wait') line.className = 'dots';
+      line.textContent = text;
+      state.appendChild(line);
+    }
+    said();
+    addEventListener('hashchange', said);
+  </script>
 </body>
 </html>
