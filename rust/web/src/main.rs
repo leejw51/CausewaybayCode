@@ -397,13 +397,23 @@ impl App {
     }
 
     async fn call(&self, request: Request) -> Option<cwbcode_proto::Response> {
-        match api::call(&self.token.get_untracked(), &request).await {
+        let sent = self.token.get_untracked();
+        match api::call(&sent, &request).await {
             Ok(response) => Some(response),
             Err(e) => {
-                self.fail(e);
+                self.fail_with(e, &sent);
                 None
             }
         }
+    }
+
+    /// `fail`, for a request made with the token `sent`: a refusal of a token that has been
+    /// replaced since (a link's code exchanged meanwhile) does not send the user back.
+    fn fail_with(&self, error: String, sent: &str) {
+        if error == "unauthorized" && sent != self.token.get_untracked() {
+            return;
+        }
+        self.fail(error);
     }
 
     /// Edits and commands waiting for the user's answer in this conversation.
@@ -501,9 +511,10 @@ impl App {
         if !self.ready_untracked() {
             return;
         }
-        match api::call(&self.token.get_untracked(), &Request::new(Method::Status)).await {
+        let sent = self.token.get_untracked();
+        match api::call(&sent, &Request::new(Method::Status)).await {
             Ok(response) => self.status.set(response.status),
-            Err(e) if e == "unauthorized" => self.fail(e),
+            Err(e) if e == "unauthorized" => self.fail_with(e, &sent),
             // The server may be restarting: the page keeps asking.
             Err(_) => self.status.set(None),
         }

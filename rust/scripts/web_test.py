@@ -515,6 +515,14 @@ def main():
         time.sleep(1)
         assert page.js("location.hash") == "" and page.js("!!document.querySelector('.side')"), "a bad link signed the page out"
         assert page.js("localStorage.getItem('cwbcode-token')") == local_token, "a bad link replaced the token kept"
+        # A fresh link opened where a token that no longer works is kept: the code's token
+        # replaces it (the old one's refusal, arriving after, does not undo that).
+        page.js("localStorage.setItem('cwbcode-token', 'an-old-token')")
+        page.send("Page.navigate", url="about:blank"); time.sleep(0.3)
+        page.send("Page.navigate", url=open_link())
+        page.wait("!!document.querySelector('.side') && localStorage.getItem('cwbcode-token') === " + json.dumps(local_token), "the app from a new link over an old token")
+        time.sleep(1)
+        assert page.js("!!document.querySelector('.side')") and page.js("localStorage.getItem('cwbcode-token')") == local_token, "the old token's refusal signed the page out"
         # A token typed into the address by hand still works.
         page.js("localStorage.removeItem('cwbcode-token')")
         page.send("Page.navigate", url="about:blank"); time.sleep(0.3)

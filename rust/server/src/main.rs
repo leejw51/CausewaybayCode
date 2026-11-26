@@ -8,7 +8,8 @@
 //!                                  (reachable from other machines, with the token) when
 //!                                  CWBCODE_WALLET is set in .env
 //!   cwbcode serve --bind ADDR      listen there, whatever .env says
-//!   cwbcode url                    where the web client is, and the token to give it
+//!   cwbcode url                    where the web client is, and how to get in (in local
+//!                                  mode a link with a one-time code for the token)
 
 mod agent;
 mod api;
@@ -59,7 +60,8 @@ enum Cmd {
     Serve(Serve),
     /// Print the token clients must present.
     Token,
-    /// Print the web client's address, the token and the certificate's fingerprint.
+    /// Print the web client's address, how to get in (in local mode a link with a one-time
+    /// code), and the certificates' fingerprints. Writes no certificate.
     Url(Serve),
 }
 

@@ -100,8 +100,9 @@ make stop       # stop it
 The implementation is in `rust/`; other languages will get folders of their own beside it.
 The `make` targets work from the repository root (which passes them on) or from `rust/`.
 
-`make start` prints the mode, the web address, the token where one is needed and the
-certificate's fingerprint; `make url` prints them again, `make status` and `make logs` show
+`make start` prints the mode, the web address, the token where one is needed (in local mode
+a one-time link instead) and the certificate's fingerprint; `make url` prints them again
+(with a new link), `make status` and `make logs` show
 how it is doing. The first build compiles MLX from source and takes a few minutes. The
 weights are read where they are, in Ollama's store or in `~/.cwbcode/models`; Ollama does not
 need to be running (and if it has the model loaded, stop it first: two copies do not fit).
