@@ -90,6 +90,18 @@ struct Serve {
     #[arg(long)]
     no_h3: bool,
 
+    /// Also serve plain HTTP on 127.0.0.1 at this port, for the desktop app's window (a web
+    /// view that will not take the backend's certificate). This machine only, whatever the
+    /// mode; the token or a session is asked for as over HTTPS.
+    #[arg(long, env = "CWBCODE_HTTP_PORT")]
+    http_port: Option<u16>,
+
+    /// Stop (as on a terminate signal) when standard input reaches its end: the desktop app
+    /// holds the other end of a pipe, so that the backend it started goes when it does, also
+    /// when it is killed or crashes.
+    #[arg(long)]
+    exit_with_stdin: bool,
+
     /// The model, by its name in Ollama's store.
     #[arg(long, default_value = llm::DEFAULT_MODEL, env = "CWBCODE_MODEL")]
     model: String,
@@ -251,10 +263,20 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         h3: !options.no_h3,
     };
 
+    // MLX's Metal library: in the Mac app it is in Contents/Resources, beside the folder of
+    // this program (MLX itself looks only beside the program, and then at the path this
+    // machine's build wrote it to). Set before anything starts MLX.
+    if let Some(metallib) = bundled_metallib() {
+        match mlx_rs::metal::set_metallib_path(metallib.to_string_lossy()) {
+            Ok(()) => eprintln!("cwbcode: MLX's Metal library: {}", metallib.display()),
+            Err(e) => eprintln!("cwbcode: cannot use MLX's Metal library at {}: {e}", metallib.display()),
+        }
+    }
+
     // Bind both ports before anything slow, so that a port in use fails at once.
     let mut endpoint = if options.no_h3 { None } else { Some(net::bind_udp(bind, &identity)?) };
     let shared = worker::start(config, roots)?;
-    let auth = Arc::new(auth::Auth::new(control::mode(&wallet, bind, options.require_token), token, identity.fingerprint.clone(), &home));
+    let auth = Arc::new(auth::Auth::new(control::mode(&wallet, bind, options.require_token), token.clone(), identity.fingerprint.clone(), &home));
     let (rebind, mut moves) = tokio::sync::watch::channel(bind);
     let control = Arc::new(control::Control {
         home: home.clone(),
@@ -268,6 +290,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     });
     let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
     let router = api::router(app.clone());
+    let local_app = app.clone();
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 
     eprintln!("cwbcode {} · {}", env!("CARGO_PKG_VERSION"), shared.sandbox_label());
@@ -275,6 +298,27 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         eprintln!("cwbcode: {line}");
     }
     eprintln!("cwbcode: home {}", home.display());
+
+    // The desktop app's window: plain HTTP, on this machine's loopback address only, never
+    // moved with remote mode, and only for requests addressed to it there. A port held by
+    // something else is not fatal: the backend serves on without it (the app sees that the
+    // port's holder cannot show it has the token, says so, and does not give it the token).
+    if let Some(port) = options.http_port {
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        match tokio::net::TcpListener::bind(address).await {
+            Ok(listener) => {
+                eprintln!("cwbcode: listening on http://{address} (the desktop app; this machine only)");
+                let router = api::local_router(local_app, token.clone(), port);
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await {
+                        eprintln!("cwbcode: http://{address}: {e}");
+                    }
+                });
+            }
+            Err(e) => eprintln!("cwbcode: warning: cannot listen on {address} (--http-port): {e}; serving on without it (the desktop app will not use this backend)"),
+        }
+    }
+    let stdin_closed = options.exit_with_stdin.then(watch_stdin);
 
     // Serve at `bind` until told to stop, or to listen somewhere else (remote mode turned on
     // or off while running), and then serve there.
@@ -296,7 +340,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         tokio::pin!(tcp);
         tokio::select! {
             result = &mut tcp => return result,
-            _ = shutdown() => {
+            _ = shutdown(stdin_closed.clone()) => {
                 eprintln!("cwbcode: stopping");
                 // Stop what the model or a command is doing, and wait for it to be gone: a
                 // command runs in a process group of its own and would otherwise outlive us.
@@ -323,13 +367,50 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     }
 }
 
-/// Resolves on Ctrl-C or a terminate signal (what a supervisor sends).
-async fn shutdown() {
+/// Resolves on Ctrl-C or a terminate signal (what a supervisor sends), or, with
+/// --exit-with-stdin, when standard input has ended.
+async fn shutdown(stdin_closed: Option<tokio::sync::watch::Receiver<bool>>) {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("installing the signal handler");
+    let stdin = async move {
+        match stdin_closed {
+            Some(mut closed) => {
+                let _ = closed.wait_for(|closed| *closed).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
+        _ = stdin => eprintln!("cwbcode: standard input ended (--exit-with-stdin)"),
     }
+}
+
+/// Read standard input to its end on a thread of its own (not the runtime's blocking pool,
+/// which the runtime would wait for when it ends), and say when it has ended.
+fn watch_stdin() -> tokio::sync::watch::Receiver<bool> {
+    let (tell, closed) = tokio::sync::watch::channel(false);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match std::io::Read::read(&mut std::io::stdin(), &mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = tell.send(true);
+    });
+    closed
+}
+
+/// MLX's Metal library in the Mac app: Contents/Resources/mlx.metallib, for this program in
+/// Contents/MacOS.
+fn bundled_metallib() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.parent()?.join("Resources").join("mlx.metallib");
+    path.is_file().then_some(path)
 }
 
 fn main() {

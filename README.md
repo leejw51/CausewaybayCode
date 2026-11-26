@@ -93,6 +93,8 @@ Fixed the typo in greet.py: `"helo "` → `"hello "`.
 make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
 make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
+make package    # the Mac app: a window on the web client, with the backend inside (see below)
+make app        # open it
 make start      # start the backend under supervisor (0.0.0.0 when a wallet is set, else 127.0.0.1)
 make stop       # stop it
 ```
@@ -303,6 +305,46 @@ Movement is Motion's: what travels (a view arriving, a card appearing, a number 
 eases in and out exponentially; what answers a touch (a pressed button, the selection
 sliding to the chosen view) follows a spring, as on iOS. It is switched off for "reduce
 motion".
+
+### The Mac app
+
+`make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`), at
+`rust/desktop/target/release/bundle/macos/`; `make app` opens it, or drag it to
+/Applications. It is a window on the web client with the backend inside it: the app shows a
+starting page, uses a backend already running (`make start` serves the app's port too), or
+else starts the one it carries and stops it again on quit. Either way there is one backend
+and one copy of the model. Then the window opens the backend's page with its token, as the
+`open` link does. The model is not inside the app: download it first (`make download`).
+
+- The window reaches the backend over plain HTTP on `127.0.0.1:7480` (`cwbcode serve
+  --http-port`), because a web view will not take the backend's certificate. That port
+  answers this machine only, only for requests addressed to `127.0.0.1` or `localhost` at
+  that port (so a site that points its name at 127.0.0.1 cannot reach it), and asks for the
+  token like the HTTPS one; the page gets no commands of the app's. If the port is taken,
+  the backend says so in its log and serves on without it.
+- Whatever answers on that port must first show that it holds the backend's token: the app
+  sends a fresh nonce to `/app-proof` and checks the answer (an HMAC of it keyed with the
+  token in `~/.cwbcode/token`, bound to the port). Another program there gets no token; the
+  starting page says what is on the port (also an older backend, which has no `/app-proof`:
+  restart it from this version).
+- A backend the app starts goes with it: on quit, on a terminate signal, and also when the
+  app is killed or crashes (`--exit-with-stdin`: the app holds its standard input). If the
+  backend stops while the window is open, the window goes back to the starting page with the
+  end of its log; one started with `make start` is waited for, and the page comes back with
+  it. One app at a time (`~/.cwbcode/app.lock`).
+- MLX's Metal library (`mlx.metallib`) goes in the app's `Contents/Resources`, and the
+  backend tells MLX to load it from there.
+- Opened from the Finder (or with only the system's PATH), the app takes the PATH of an
+  interactive login shell (`printenv PATH`, so fish works too), so the agent's commands find
+  cargo and Homebrew's tools as in a terminal. A shell that takes more than 3 s is stopped,
+  and the backend gets the PATH the app has.
+- A backend it starts writes to `~/.cwbcode/app-backend.log`, and reads a wallet from
+  `~/.cwbcode/app.env` if there is one (`CWBCODE_WALLET=0x...`, remote mode).
+  `CWBCODE_APP_PORT` and `CWBCODE_APP_ARGS` change its port and add arguments; `make app
+  APP_PORT=...` passes the port on.
+- `make package-dmg` also makes a disk image. The app is signed ad hoc only (`codesign
+  --verify --deep --strict` passes), not with a Developer ID: the first time, open it with
+  Control-click → Open.
 
 ## Plan first, your own commands, hooks
 

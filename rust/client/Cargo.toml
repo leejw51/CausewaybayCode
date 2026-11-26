@@ -33,3 +33,5 @@ serde_json = "1"
 rpassword = "7"
 
 [dev-dependencies]
+# The desktop app's proof (HMAC-SHA256), worked out by hand in the integration test.
+sha2 = "0.10"

@@ -36,3 +36,7 @@ test-results/
 .run.json
 # Worktrees Claude Code makes for a branch of its own
 .claude/worktrees/
+# The Mac app's build output, its copied sidecar, and what Tauri generates
+/rust/desktop/target/
+/rust/desktop/binaries/
+/rust/desktop/gen/

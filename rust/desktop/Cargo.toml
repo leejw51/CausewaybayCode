@@ -1,0 +1,22 @@
+# Causewaybay Code as a Mac app (Tauri): a window on the web client, and the backend beside it.
+# Built with `make package` (which copies the backend in as the app's sidecar); not part of the
+# workspace, so `make build` and the tests do not compile Tauri.
+[package]
+name = "cwbcode-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+libc = "0.2"
+# To check the backend's proof that it holds the token before the window is given it.
+hmac = "0.12"
+sha2 = "0.10"
+
+[profile.release]
+debug = false

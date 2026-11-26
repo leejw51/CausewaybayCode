@@ -3,9 +3,10 @@
 #   server  cwbcode: the backend (model, agent, tools, SQLite, HTTP/3 + HTTP/2)
 #   client  cwbcodeclient: the terminal client
 #   web     the web dashboard and client (Leptos, WebAssembly; built with trunk)
+#   desktop the Mac app (Tauri): a window on the web client, the backend inside (make package)
 [workspace]
 members = ["proto", "server", "client"]
-exclude = ["web"]
+exclude = ["web", "desktop"]
 resolver = "3"
 
 [profile.release]

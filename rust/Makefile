@@ -14,14 +14,20 @@ MODEL ?= inkling-2-mini:26b-a5b-nvfp4
 # BIND=addr:port overrides that either way.
 BIND  ?=
 ENV_FILE ?= $(abspath ../.env)
-SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND))
+# The desktop app's port: plain HTTP on 127.0.0.1 only (the app's window will not take the
+# backend's certificate). `make start` serves it too, so the app uses that backend.
+APP_PORT ?= 7480
+SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT)
+# The Mac app (Tauri, in desktop/): the backend goes in as its sidecar, named for this machine.
+TRIPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+APP_BUNDLE := desktop/target/release/bundle/macos/Causewaybay Code.app
 # Where `make install` copies the programs.
 BINDIR ?= $(HOME)/bin
 SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean
+.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg app
 
 help:
 	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
@@ -34,6 +40,9 @@ help:
 	@echo "make stop        - stop the backend"
 	@echo "make status      - is it running;  make logs - follow its log;  make url - address and a one-time link"
 	@echo "make test        - unit and integration tests (a scripted model, no 20 GB)"
+	@echo "make package     - the Mac app (Tauri): a window on the web client, with the backend inside"
+	@echo "make app         - open the app: it uses a running backend, or starts its own and stops it on quit"
+	@echo "make package-dmg - the app, and a disk image of it"
 	@echo "make test-web    - the web client in headless Chrome"
 	@echo "make test-playwright - Playwright: the agent writes a Rust crate through the web client (real model)"
 	@echo "make test-model  - tests that load the model (semantic search)"
@@ -134,5 +143,35 @@ test-model:
 e2e: build
 	scripts/e2e.sh
 
+# The Mac app. The backend (with the web client inside it) is copied in as the app's sidecar,
+# and MLX's Metal library into the app's Resources (the backend tells MLX to load it from
+# there; otherwise it would need the path this machine's build wrote it to). The bundle is
+# signed ad hoc (tauri.conf.json: signingIdentity "-"), and the signature is checked.
+# `cargo tauri` comes from `cargo install tauri-cli`.
+package: build
+	@command -v cargo-tauri >/dev/null || { echo "cargo-tauri is missing: cargo install tauri-cli --version '^2'"; exit 1; }
+	@test -n "$(TRIPLE)" || { echo "cannot tell this machine's target triple (is rustc on PATH? rustc -vV)"; exit 1; }
+	@mkdir -p desktop/binaries
+	cp target/release/cwbcode desktop/binaries/cwbcode-$(TRIPLE)
+	@metallib=$$(strings target/release/cwbcode | grep -m1 '/mlx\.metallib$$'); \
+	  test -f "$$metallib" || { echo "MLX's Metal library was not found ($$metallib)"; exit 1; }; \
+	  cp "$$metallib" desktop/binaries/mlx.metallib
+	cd desktop && cargo tauri build --bundles app
+	codesign --verify --deep --strict "$(APP_BUNDLE)"
+	@echo "built: $(CURDIR)/$(APP_BUNDLE)"
+	@echo "open it with: make app   (or drag it to /Applications)"
+
+# The disk image too. (Making it drives the Finder, which needs a logged-in desktop.)
+package-dmg: package
+	cd desktop && cargo tauri build --bundles dmg
+	codesign --verify --deep --strict "$(APP_BUNDLE)"
+	@ls desktop/target/release/bundle/dmg/*.dmg
+
+# Opened with the app's port: a backend it starts serves its window there.
+app:
+	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
+	open --env CWBCODE_APP_PORT=$(APP_PORT) "$(APP_BUNDLE)"
+
 clean:
 	cargo clean
+	rm -rf desktop/target desktop/binaries desktop/gen
