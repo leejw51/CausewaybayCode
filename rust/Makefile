@@ -40,9 +40,9 @@ help:
 	@echo "make stop        - stop the backend"
 	@echo "make status      - is it running;  make logs - follow its log;  make url - address and a one-time link"
 	@echo "make test        - unit and integration tests (a scripted model, no 20 GB)"
-	@echo "make package     - the Mac app (Tauri): a window on the web client, with the backend inside"
+	@echo "make package     - the Mac app (Tauri) and its disk image, copied to dist/"
 	@echo "make app         - open the app: it uses a running backend, or starts its own and stops it on quit"
-	@echo "make package-dmg - the app, and a disk image of it"
+	@echo "make package-dmg - the same as make package"
 	@echo "make release     - everything built, in dist/: the app zipped, its disk image, SHA-256 sums"
 	@echo "make test-web    - the web client in headless Chrome"
 	@echo "make test-app    - the Mac app, run for real twice (its page, its backend, quitting)"
@@ -165,6 +165,10 @@ e2e: build
 # there; otherwise it would need the path this machine's build wrote it to). The bundle is
 # signed ad hoc (tauri.conf.json: signingIdentity "-"), and the signature is checked.
 # `cargo tauri` comes from `cargo install tauri-cli`.
+# The version and the names of what is made, from the app's own configuration.
+VERSION := $(shell sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/tauri.conf.json)
+RELEASE_NAME := Causewaybay-Code-$(VERSION)-macos-arm64
+CLI_NAME := cwbcode-$(VERSION)-macos-arm64
 package: build
 	@command -v cargo-tauri >/dev/null || { echo "cargo-tauri is missing: cargo install tauri-cli --version '^2'"; exit 1; }
 	@test -n "$(TRIPLE)" || { echo "cannot tell this machine's target triple (is rustc on PATH? rustc -vV)"; exit 1; }
@@ -173,19 +177,20 @@ package: build
 	@metallib=$$(strings target/release/cwbcode | grep -m1 '/mlx\.metallib$$'); \
 	  test -f "$$metallib" || { echo "MLX's Metal library was not found ($$metallib)"; exit 1; }; \
 	  cp "$$metallib" desktop/binaries/mlx.metallib
-	cd desktop && cargo tauri build --bundles app
-	codesign --verify --deep --strict "$(APP_BUNDLE)"
-	@echo "built: $(CURDIR)/$(APP_BUNDLE)"
-	@echo "open it with: make app   (or drag it to /Applications)"
-
-# The disk image too. (Making it drives the Finder, which needs a logged-in desktop.)
-# (CI=true: Tauri's disk-image script then skips laying out the Finder window by AppleScript,
-# which times out with no desktop session to drive, in CI or a background shell.)
-package-dmg: package
-	@# (Both bundles: asked for the disk image alone, Tauri removes the app it made it from.)
+	@# The app and its disk image, together: asked for the disk image alone, Tauri removes the
+	@# app it made it from. (CI=true: Tauri's disk-image script then skips laying out the
+	@# Finder window by AppleScript, which times out with no desktop session to drive.)
 	cd desktop && CI=true cargo tauri build --bundles app,dmg
 	codesign --verify --deep --strict "$(APP_BUNDLE)"
-	@ls desktop/target/release/bundle/dmg/*.dmg
+	@# Both are copied to dist/: the app (ditto keeps its signature) and the disk image.
+	@mkdir -p dist && rm -rf "dist/Causewaybay Code.app" dist/Causewaybay-Code-*-macos-arm64.dmg
+	ditto "$(APP_BUNDLE)" "dist/Causewaybay Code.app"
+	cp desktop/target/release/bundle/dmg/*.dmg "dist/$(RELEASE_NAME).dmg"
+	@echo "packaged $(VERSION) in $(CURDIR)/dist:"; ls -ld dist/*.app dist/*.dmg
+	@echo "open it with: make app   (or drag dist/Causewaybay Code.app to /Applications)"
+
+# (The disk image is part of make package now; kept so older habits and scripts still work.)
+package-dmg: package
 
 # A release: everything built and signed, in dist/:
 #   Causewaybay-Code-<version>-macos-arm64.dmg      the Mac app (backend inside), on a disk image
@@ -198,11 +203,8 @@ package-dmg: package
 # APPLE_PASSWORD and APPLE_TEAM_ID too (or APPLE_NOTARY_PROFILE), Apple notarizes it and the app
 # and the disk image get their tickets stapled. Without a Developer ID, everything is signed ad
 # hoc. The same command on a Mac and in CI (.github/workflows/release-macos.yml).
-VERSION := $(shell sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/tauri.conf.json)
-RELEASE_NAME := Causewaybay-Code-$(VERSION)-macos-arm64
-CLI_NAME := cwbcode-$(VERSION)-macos-arm64
 release: export APPLE_SIGNING_IDENTITY ?= $(shell scripts/apple-identity.sh)
-release: package-dmg
+release: package
 	@echo "signing identity: $$APPLE_SIGNING_IDENTITY"
 	@rm -rf dist && mkdir -p dist/$(CLI_NAME)
 	@# The disk image: Tauri signed and notarized the app in it; the image itself is signed,

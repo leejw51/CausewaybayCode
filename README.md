@@ -94,7 +94,7 @@ Fixed the typo in greet.py: `"helo "` → `"hello "`.
 make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
 make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
-make package    # the Mac app: a window on the web client, with the backend inside (see below)
+make package    # the Mac app and its disk image, copied to rust/dist (see below)
 make app        # open it
 make release    # everything built, in rust/dist: the app zipped, its disk image, SHA-256 sums
 make start      # start the backend under supervisor (0.0.0.0 when a wallet is set, else 127.0.0.1)
@@ -349,8 +349,9 @@ motion".
 
 ### The Mac app
 
-`make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`), at
-`rust/desktop/target/release/bundle/macos/`; `make app` opens it, or drag it to
+`make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`) and its disk image,
+and copies both to `rust/dist` (`Causewaybay Code.app`, and
+`Causewaybay-Code-<version>-macos-arm64.dmg`); `make app` opens it, or drag it to
 /Applications. It is built as desktop apps with a local server usually are: the page is the
 app's own (the web client, built into the app, on the app's fixed origin `tauri://localhost`),
 and the backend is the program it carries, which the app always starts and stops again on
@@ -404,7 +405,7 @@ store or `~/.cwbcode/models` (`make download`) is used as it is.
   `~/.cwbcode/app.env` if there is one (`CWBCODE_WALLET=0x...`, remote mode).
   `CWBCODE_APP_PORT` and `CWBCODE_APP_ARGS` change its port and add arguments; `make app
   APP_PORT=...` passes the port on.
-- `make package-dmg` also makes a disk image. `make release` puts in `rust/dist` the app on a
+- `make release` empties `rust/dist` and puts in it the app on a
   disk image and zipped, `cwbcode-<version>-macos-arm64.zip` (cwbcode and cwbcodeclient on
   their own, with MLX's Metal library beside them), and their SHA-256 sums.
 - Signing, as in FruitNationMessenger (`rust/scripts/codesign-binary.sh`, `sign-dmg.sh`):
