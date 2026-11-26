@@ -3,7 +3,7 @@
 # workspace, so `make build` and the tests do not compile Tauri.
 [package]
 name = "cwbcode-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
