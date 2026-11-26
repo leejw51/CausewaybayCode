@@ -20,6 +20,13 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # A pull request that changes how the app is built builds it too (unsigned: a pull request
+  # gets no secrets), so a broken release is found before it is merged.
+  pull_request:
+    paths:
+      - ".github/workflows/release-macos.yml"
+      - "rust/Makefile"
+      - "rust/desktop/**"
 
 permissions:
   contents: read
