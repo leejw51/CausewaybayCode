@@ -539,20 +539,25 @@ make test         # unit tests, and the backend started for real with a scripted
                   # requests from other sites' pages, certificate pinning, folders
                   # outside home, approvals (answered, abandoned, interrupted), the event
                   # log, file versions and undo, the knowledge base, tools made at runtime,
-                  # plan mode, hooks, the user's own commands, taking a project off the list
+                  # plan mode, hooks, the user's own commands, taking a project off the list,
+                  # and the model's download from a fake Hugging Face (progress, a stop
+                  # and a resume, every file Ollama's, the token never sent to the CDN)
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
                   # wrong ones refused), that the phrase is never stored, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
                   # dashboard, knowledge base, sign-out, and local mode with the one-time link,
-                  # and remote mode turned on and off from the dashboard
+                  # and remote mode turned on and off from the dashboard, and a backend
+                  # without the model: the download button, and the retry
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own
                   # tests and pass tests it has never seen (needs Node and Google Chrome)
                   # and, in a second test, the web client's own features: projects under
                   # ~/, the conversation's typeface, the context bar, copying, plan mode,
                   # your own commands and hooks
-make test-model   # semantic search with the model: paraphrases, Korean against English
+make test-model   # semantic search with the model: paraphrases, Korean against English;
+                  # and the download's plan against the real Hugging Face and Ollama's
+                  # registry (all 1250 files, a few MB read)
 make e2e          # real tasks with the real model through the backend and the client
 ```
 
