@@ -97,10 +97,13 @@ start: .venv/bin/supervisord
 	@if $(RUNNING); then \
 		echo "already running (make stop to stop it)"; \
 	else \
-		python3 scripts/model.py ensure --model $(MODEL) || exit 1; \
 		bin/cwbcode url $(SERVE_ARGS) >/dev/null || exit 1; \
-		CWBCODE_SERVE_ARGS="$(SERVE_ARGS)" $(SUPERVISORD) && echo "started the backend; log: $(HOME)/.cwbcode/server.log"; \
+		CWBCODE_SERVE_ARGS="$(SERVE_ARGS) --download-model" $(SUPERVISORD) && echo "started the backend; log: $(HOME)/.cwbcode/server.log"; \
 	fi
+	@# The backend runs at once; a model it does not find it downloads itself (from Hugging
+	@# Face, with your token when there is one), showing the progress in the web client, and
+	@# loads when done. (make download fetches it beforehand instead, Ollama or Hugging Face.)
+	@python3 scripts/model.py status --model $(MODEL) >/dev/null 2>&1 || echo "The model is not here yet: the backend is downloading it (about 20 GB); open the web client to watch, it loads by itself when done."
 	@sleep 1; bin/cwbcode url $(SERVE_ARGS)
 	@if bin/cwbcode url $(SERVE_ARGS) | grep "^bind  *0\.0\.0\.0" >/dev/null; then \
 		echo "Reachable from other machines: whoever holds the wallet's recovery phrase can run commands here as you."; \

@@ -111,11 +111,13 @@ how it is doing. The first build compiles MLX from source and takes a few minute
 weights are read where they are, in Ollama's store or in `~/.cwbcode/models`; Ollama does not
 need to be running (and if it has the model loaded, stop it first: two copies do not fit).
 
-**The model** (`rust/scripts/model.py`). `make start` checks for it first and, when it is
-missing, downloads it: with Ollama when Ollama is installed, from Hugging Face otherwise.
-`make download` asks which; `make pull` takes Ollama without asking; `make model` prints
-where it is and what it is. Either way a progress bar shows the speed and the time left, and
-a stopped download picks up where it left off.
+**The model.** `make start` starts the backend at once; when the model is not there, the
+backend downloads it itself (from Hugging Face, with your token when there is one), the web
+client shows the progress, and it loads by itself when done. To fetch it beforehand instead
+(`rust/scripts/model.py`): `make download` asks whether with Ollama or from Hugging Face;
+`make pull` takes Ollama without asking; `make model` prints where it is and what it is.
+Either way the progress shows the speed and the time left, and a stopped download picks up
+where it left off.
 
 | | from Ollama | from Hugging Face |
 |---|---|---|
