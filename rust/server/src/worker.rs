@@ -43,6 +43,8 @@ pub struct Config {
     pub script: Option<PathBuf>,
     /// Start without a model: everything works but chat and semantic search.
     pub no_model: bool,
+    /// Download the model at start when it is missing (download.rs), then load it.
+    pub download_model: bool,
     /// HTTP/3 is offered.
     pub h3: bool,
 }
@@ -50,6 +52,8 @@ pub struct Config {
 pub enum Job {
     Chat { request: Request, events: tokio::sync::mpsc::UnboundedSender<Event> },
     Call { request: Request, reply: tokio::sync::oneshot::Sender<Response> },
+    /// Load the model (after it has been downloaded).
+    Load,
 }
 
 /// What the request handlers and the model thread share.
@@ -57,8 +61,11 @@ pub struct Shared {
     pub config: Config,
     pub roots: Roots,
     pub started: Instant,
-    /// loading | ready | none | scripted | failed: ...
+    /// loading | ready | none | scripted | missing (in no store; it can be downloaded) |
+    /// downloading | failed: ...
     pub model_state: Mutex<String>,
+    /// The model's download, when one runs (or ran): how far it is.
+    pub download: crate::download::Download,
     pub busy: AtomicBool,
     pub busy_project: Mutex<String>,
     pub queued: AtomicU32,
@@ -108,6 +115,7 @@ pub fn start(config: Config, roots: Roots) -> Result<Arc<Shared>> {
         roots,
         started: Instant::now(),
         model_state: Mutex::new(state.to_string()),
+        download: crate::download::Download::default(),
         busy: AtomicBool::new(false),
         busy_project: Mutex::new(String::new()),
         queued: AtomicU32::new(0),
@@ -182,7 +190,9 @@ impl Worker {
         *self.shared.model_state.lock().unwrap() = state.to_string();
     }
 
-    fn load(&mut self) {
+    /// Load the model. One that is in no store and can be downloaded is "missing" (and, with
+    /// `download`, downloaded: the download thread asks for this again when it is done).
+    fn load(&mut self, download: bool) {
         let config = &self.shared.config;
         if let Some(script) = &config.script {
             match std::fs::read_to_string(script).map_err(anyhow::Error::from).and_then(|json| Brain::script(&json)) {
@@ -194,6 +204,20 @@ impl Worker {
         if config.no_model {
             return;
         }
+        if crate::inkling::ollama::manifest_path(&config.model).is_none() && crate::download::source_for(&config.model).is_some() {
+            eprintln!("cwbcode: the model {} is in neither Ollama's store nor {}", config.model, crate::inkling::ollama::own_store().display());
+            self.set_state("missing");
+            if download {
+                eprintln!("cwbcode: downloading it (--download-model)");
+                if let Err(e) = crate::download::start(&self.shared) {
+                    eprintln!("cwbcode: cannot download it: {e:#}");
+                }
+            } else {
+                eprintln!("cwbcode: run `make download`, start with --download-model, or download it from the web client");
+            }
+            return;
+        }
+        self.set_state("loading");
         let t = Instant::now();
         eprintln!("cwbcode: loading {} ...", config.model);
         match Engine::load(&config.model, Sampler { temp: config.temp, top_k: config.top_k }) {
@@ -220,9 +244,14 @@ impl Worker {
     }
 
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
-        self.load();
+        self.load(self.shared.config.download_model);
         for job in jobs {
             self.shared.queued.fetch_sub(1, Ordering::Relaxed);
+            // (Not "busy": the page would show "working" instead of "loading".)
+            if let Job::Load = job {
+                self.load(false);
+                continue;
+            }
             self.shared.busy.store(true, Ordering::Relaxed);
             agent::clear_interrupt();
             match job {
@@ -238,6 +267,7 @@ impl Worker {
                     let response = self.call(&request).unwrap_or_else(|e| Response::error(format!("{e:#}")));
                     let _ = reply.send(response);
                 }
+                Job::Load => unreachable!("handled above"),
             }
             self.measure();
             self.shared.busy_project.lock().unwrap().clear();
@@ -248,7 +278,14 @@ impl Worker {
     fn brain(&self) -> Result<&Brain> {
         match &self.brain {
             Some(brain) => Ok(brain),
-            None => bail!("no model is loaded ({})", self.shared.model_state.lock().unwrap()),
+            None => {
+                let state = self.shared.model_state.lock().unwrap().clone();
+                match state.as_str() {
+                    "missing" => bail!("the model is not downloaded yet: download it from the chat view or the dashboard (about 20 GB)"),
+                    "downloading" => bail!("the model is still downloading; it loads by itself when it is done"),
+                    _ => bail!("no model is loaded ({state})"),
+                }
+            }
         }
     }
 

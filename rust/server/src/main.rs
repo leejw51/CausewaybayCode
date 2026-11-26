@@ -15,6 +15,7 @@ mod agent;
 mod api;
 mod auth;
 mod control;
+mod download;
 mod dyntool;
 mod env;
 mod inkling;
@@ -41,7 +42,12 @@ use clap::{Args, Parser, Subcommand};
 pub const DEFAULT_PORT: u16 = 7443;
 
 #[derive(Parser)]
-#[command(name = "cwbcode", version, about = "Causewaybay Code backend: a local AI coding agent (Inkling 2 Mini on Apple MLX) served over HTTP/3 and HTTP/2")]
+#[command(
+    name = "cwbcode",
+    version,
+    about = "Causewaybay Code backend: a local AI coding agent (Inkling 2 Mini on Apple MLX) served over HTTP/3 and HTTP/2",
+    after_help = "The model is looked for in Ollama's store ($OLLAMA_MODELS, ~/.ollama/models), then in ~/.cwbcode/models ($CWBCODE_MODELS). One that is in neither is \"missing\": `serve --download-model` (or CWBCODE_DOWNLOAD_MODEL=1) downloads it at start, about 20 GB from Hugging Face (thinkingmachines/Inkling-2-Mini, with $HF_TOKEN or the token `hf auth login` saved when there is one, sent to huggingface.co only, and without one otherwise), into ~/.cwbcode/models, checks every tensor file against Ollama's registry, and loads it without a restart; the web client can start the same download. A stopped download goes on where it stopped."
+)]
 struct Cli {
     /// Where the server keeps its database, certificate, token and compiled tools [default: ~/.cwbcode].
     #[arg(long, value_name = "DIR", env = "CWBCODE_HOME", global = true)]
@@ -109,6 +115,14 @@ struct Serve {
     /// Start without loading a model: projects, conversations and keyword search work, chat does not.
     #[arg(long)]
     no_model: bool,
+
+    /// When the model is in neither Ollama's store nor ~/.cwbcode/models, download it at
+    /// start (about 20 GB, from Hugging Face; with the token in $HF_TOKEN or the one `hf auth
+    /// login` saved when there is one, without one otherwise) and load it when it is done,
+    /// without a restart. The Mac app starts its backend with this. Without it a missing
+    /// model is "missing", and the web client offers to download it.
+    #[arg(long, env = "CWBCODE_DOWNLOAD_MODEL", value_parser = clap::builder::BoolishValueParser::new())]
+    download_model: bool,
 
     /// Take the model's turns from a JSON script instead of a model (for tests).
     #[arg(long, value_name = "FILE")]
@@ -260,6 +274,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         network: options.allow_network,
         script: options.script.clone(),
         no_model: options.no_model,
+        download_model: options.download_model,
         h3: !options.no_h3,
     };
 

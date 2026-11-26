@@ -577,6 +577,34 @@ def main():
         assert not [e for e in page.errors if "401" not in e and "ERR_" not in e], f"the page reported errors: {page.errors}"
         page.errors.clear()
         assert not page.errors, f"the page reported errors: {page.errors}"
+
+        print("11. a backend without the model offers to download it, and says why a download stopped")
+        local.terminate(); local.wait(5)
+        port3 = free_port()
+        closed = free_port()  # nothing listens there: the "Hugging Face" this download asks
+        bare = dict(env, CWBCODE_HOME=f"{home}/.cwbcode-bare", CWBCODE_MODELS=f"{home}/models", OLLAMA_MODELS=f"{home}/no-ollama",
+                    HF_HOME=f"{home}/no-hf", CWBCODE_HF_ENDPOINT=f"http://127.0.0.1:{closed}", CWBCODE_OLLAMA_REGISTRY=f"http://127.0.0.1:{closed}")
+        for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "CWBCODE_DOWNLOAD_MODEL"): bare.pop(k, None)
+        local = subprocess.Popen([f"{ROOT}/target/release/cwbcode", "serve", "--port", str(port3), "--no-h3", "--env-file", "/dev/null"], env=bare, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if os.path.exists(f"{home}/.cwbcode-bare/token"): break
+            time.sleep(0.1)
+        bare_token = open(f"{home}/.cwbcode-bare/token").read().strip()
+        page.send("Page.navigate", url=f"https://127.0.0.1:{port3}/#token={bare_token}")
+        page.wait("!!document.querySelector('.side')", "the app of the backend without a model")
+        page.click("#nav-chat")
+        page.wait("!!document.querySelector('#model-download #dl-start')", "the button that downloads the model, in the chat view")
+        assert "20 GB" in page.text("#dl-start"), page.text("#dl-start")
+        assert page.js("!document.querySelector('#empty-chat')"), "the empty page beside the download"
+        page.shot(f"{shots}/9-model-missing.png")
+        page.click("#dl-start")
+        page.wait("!!document.querySelector('#model-download #dl-retry')", "the retry after a download that could not start", seconds=30)
+        assert str(closed) in page.text("#dl-error") or "error" in page.text("#dl-error").lower(), page.text("#dl-error")
+        page.shot(f"{shots}/9-model-download-failed.png")
+        page.click("#nav-dashboard")
+        page.wait("!!document.querySelector('#model-download-card #dl-retry')", "the retry on the model's card")
+        assert page.text("#model-state") == "missing", page.text("#model-state")
+        assert not [e for e in page.errors if "ERR_" not in e], f"the page reported errors: {page.errors}"
         print(f"All passed (the browser used {protocol}). Screenshots: {shots}")
     finally:
         chrome.terminate(); server.terminate()

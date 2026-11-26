@@ -197,6 +197,14 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         app.auth.logout(&headers);
         return capnp(Response::default().encode());
     }
+    if request.method == Method::DownloadModel {
+        // By whoever may use the backend, as for any call: the model, into its store.
+        let response = match crate::download::start(&app.shared) {
+            Ok(()) => Response::text("downloading the model"),
+            Err(e) => Response::error(format!("{e:#}")),
+        };
+        return capnp(response.encode());
+    }
     if request.method == Method::Setup {
         // Remote mode on or off: by whoever may use the backend now (in local mode, a client
         // on this machine with the backend's token; in remote mode, the wallet's owner).
@@ -322,10 +330,12 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
             // would wait for it forever.
             let (model_path, model_bytes, model_info) = shared.model_about.lock().unwrap().clone();
             let (gen_tps, prompt_tps) = *shared.speed.lock().unwrap();
+            let (download_done, download) = shared.download.snapshot();
+            let model_state = shared.model_state.lock().unwrap().clone();
             out.status = Some(Status {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 model: config.model.clone(),
-                model_state: shared.model_state.lock().unwrap().clone(),
+                model_state,
                 protocol: protocol.to_string(),
                 busy: shared.busy.load(Ordering::Relaxed),
                 busy_project: shared.busy_project.lock().unwrap().clone(),
@@ -350,6 +360,12 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 model_info,
                 gen_tps,
                 prompt_tps,
+                download_done,
+                download_total: download.total,
+                download_speed: download.speed,
+                download_source: download.source,
+                download_error: download.error,
+                download_note: download.note,
             });
         }
         Method::Projects => {
@@ -471,7 +487,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 out.changes = store.changes(request.session)?;
             }
         }
-        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem => bail!("{:?} is not answered here", request.method),
+        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem | Method::DownloadModel => bail!("{:?} is not answered here", request.method),
     }
     Ok(out)
 }

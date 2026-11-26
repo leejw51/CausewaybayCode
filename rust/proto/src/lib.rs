@@ -188,6 +188,15 @@ pub struct Status {
     pub gen_tps: f64,
     /// Tokens per second while reading the prompt, in the last turn.
     pub prompt_tps: f64,
+    /// The model's download: bytes here, bytes in all (0: not known yet), bytes per second
+    /// over the last few seconds, where it comes from, why it stopped ("" if it did not), and
+    /// what it is doing (or, when it is done, what the check against Ollama's registry found).
+    pub download_done: u64,
+    pub download_total: u64,
+    pub download_speed: f64,
+    pub download_source: String,
+    pub download_error: String,
+    pub download_note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -452,6 +461,12 @@ impl Response {
             t.set_model_info(&s.model_info[..]);
             t.set_gen_tps(s.gen_tps);
             t.set_prompt_tps(s.prompt_tps);
+            t.set_download_done(s.download_done);
+            t.set_download_total(s.download_total);
+            t.set_download_speed(s.download_speed);
+            t.set_download_source(&s.download_source[..]);
+            t.set_download_error(&s.download_error[..]);
+            t.set_download_note(&s.download_note[..]);
         }
         let mut list = b.reborrow().init_projects(self.projects.len() as u32);
         for (i, p) in self.projects.iter().enumerate() {
@@ -554,6 +569,12 @@ impl Response {
                 model_info: text(s.get_model_info())?,
                 gen_tps: s.get_gen_tps(),
                 prompt_tps: s.get_prompt_tps(),
+                download_done: s.get_download_done(),
+                download_total: s.get_download_total(),
+                download_speed: s.get_download_speed(),
+                download_source: text(s.get_download_source())?,
+                download_error: text(s.get_download_error())?,
+                download_note: text(s.get_download_note())?,
             })
         } else {
             None
@@ -688,7 +709,7 @@ mod tests {
 
         let response = Response {
             error: String::new(),
-            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25 }),
+            status: Some(Status { version: "0.1.0".into(), model: "inkling".into(), model_state: "ready".into(), protocol: "h3".into(), busy: true, busy_project: "/p".into(), context_tokens: 1, context_limit: 2, memory_active: 3 << 33, memory_peak: 4 << 33, uptime_seconds: 5, sandbox: "on".into(), home: "/h".into(), h3: true, queued: 2, auth: "wallet".into(), wallet: "0xabc".into(), fingerprint: "ff00".into(), bind: "0.0.0.0:7443".into(), wallet_source: "settings".into(), user_home: "/Users/someone".into(), ca_fingerprint: "aa11".into(), model_path: "/m".into(), model_bytes: 20 << 30, model_info: "inkling2".into(), gen_tps: 81.5, prompt_tps: 1250.25, download_done: 7 << 30, download_total: 19 << 30, download_speed: 24.5e6, download_source: "Hugging Face, without a token".into(), download_error: "e".into(), download_note: "412 of 1250 files".into() }),
             projects: vec![Project { path: "/p".into(), name: "p".into(), sessions: 2, updated: "now".into() }],
             sessions: vec![Session { id: 1, name: "demo".into(), updated: "now".into(), messages: 8, first: "hi".into() }],
             events: events(),
