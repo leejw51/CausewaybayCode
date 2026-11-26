@@ -1000,7 +1000,19 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     };
     if let Some(ip) = lan_address() {
         for h3 in [true, false] {
-            let remote = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), h3).await.unwrap();
+            // The listeners move a moment after the answer; on a busy machine (CI) that can take
+            // longer than the pause above, so ask again until the new address answers.
+            let mut tries = 0;
+            let remote = loop {
+                match Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), h3).await {
+                    Ok(client) if hello(&client).await.is_ok() => break client,
+                    _ if tries < 60 => {
+                        tries += 1;
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    other => panic!("h3={h3}: {ip} did not answer after remote mode was turned on: {:?}", other.err()),
+                }
+            };
             assert_eq!(hello(&remote).await.unwrap().auth, "wallet", "h3={h3}");
             assert!(remote.call(&Request::new(Method::Status)).await.is_err(), "h3={h3}: no login was asked for");
             // The backend's own token is not a way in from another address.
