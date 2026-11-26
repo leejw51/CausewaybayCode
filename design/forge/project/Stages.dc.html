@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Forge, the six stages</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&amp;family=Press+Start+2P&amp;display=swap">
+<style>
+body{margin:0}
+.mid{background:url("/_blob/771030bdcaafce2c4d5bc5190e1e0c55") center/cover no-repeat}
+.ready{background:url("/_blob/107581107595bf5e7f1720f262a4b098") center/cover no-repeat}
+</style>
+</helmet>
+<div style="width: 1440px; height: 660px; box-sizing: border-box; padding: 36px; background: #0a0d24; font-family: 'VT323', monospace; color: #fcecc8; display: flex; flex-direction: column; gap: 22px">
+<h2 style="margin: 0; font-family: 'Press Start 2P', monospace; font-size: 18px; font-weight: normal; color: #e9c94b">Six stages, one robot</h2>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; flex: 1">
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid rgba(255,181,71,.45); border-radius: 12px">
+<div class="mid" style="height: 110px; border-radius: 8px; filter: brightness(.55) saturate(.8)"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #ffb547">1 · HEATING THE FORGE</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Planning the pieces, checking disk space. The furnace glows up from cold; no robot yet. Bar: an indeterminate ember shimmer.</p>
+</article>
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid #ff8a3d; border-radius: 12px">
+<div class="mid" style="height: 110px; border-radius: 8px"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #ff8a3d">2 · HAMMERING THE WEIGHTS</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Downloading. Parts appear with the percent: feet, legs, torso, arms, head, face plate. Each arrives red-hot, the hammer strikes with sparks, it cools to steel.</p>
+</article>
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid #50d8f8; border-radius: 12px">
+<div class="mid" style="height: 110px; border-radius: 8px; filter: hue-rotate(160deg) saturate(.7)"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #50d8f8">3 · TEMPERING</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Verifying every piece against its fingerprint. A cyan scanning beam sweeps the robot top to bottom; the hammer rests.</p>
+</article>
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid #9aeaff; border-radius: 12px">
+<div class="ready" style="height: 110px; border-radius: 8px; filter: brightness(.7)"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #9aeaff">4 · WAKING IT UP</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Loading into memory. The core pulses, the eyes flicker on and brighten. No numbers to wait on: a calm pulse, about ten seconds.</p>
+</article>
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid #5ce08c; border-radius: 12px">
+<div class="ready" style="height: 110px; border-radius: 8px"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #5ce08c">5 · READY</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Eyes full cyan, it waves, one burst of sparks. After 1.5 s the scene fades and the chat composer takes focus.</p>
+</article>
+<article style="display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #10173e; border: 1px solid #ff8a7a; border-radius: 12px">
+<div class="mid" style="height: 110px; border-radius: 8px; filter: grayscale(.85) brightness(.45)"></div>
+<div style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #ff8a7a">THE FORGE WENT COLD</div>
+<p style="margin: 0; font-size: 20px; color: #d7d2f0">Failed. The robot sags, embers dim. The error in plain words and a Try again button; what is done is kept.</p>
+<button style="align-self: flex-start; min-height: 44px; padding: 0 18px; border-radius: 10px; border: 1px solid #f6e08a; background: linear-gradient(#f6e08a,#e9c94b); color: #281810; font: inherit; font-size: 20px">Try again</button>
+</article>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":660}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

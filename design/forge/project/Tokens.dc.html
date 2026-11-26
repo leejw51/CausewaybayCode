@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Forge, tokens, bar and motion</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&amp;family=Press+Start+2P&amp;display=swap">
+<style>
+body{margin:0}
+.fill{background:linear-gradient(90deg,#ff7a2f,#ffb547 70%,#ffe08a)}
+</style>
+</helmet>
+<div style="width: 880px; height: 660px; box-sizing: border-box; padding: 32px; background: #0a0d24; font-family: 'VT323', monospace; color: #fcecc8; display: flex; flex-direction: column; gap: 20px">
+<h2 style="margin: 0; font-family: 'Press Start 2P', monospace; font-size: 16px; font-weight: normal; color: #e9c94b">Tokens, bar and motion</h2>
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #ff8a3d"></div><span style="font-size: 19px">Forge #ff8a3d</span><span style="font-size: 17px; color: #9c97c2">hot metal, active stage</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #ffb547"></div><span style="font-size: 19px">Ember #ffb547</span><span style="font-size: 17px; color: #9c97c2">percent, bar head</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #50d8f8"></div><span style="font-size: 19px">Eye #50d8f8</span><span style="font-size: 17px; color: #9c97c2">speed, scan beam, eyes</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #8a96b8"></div><span style="font-size: 19px">Steel #8a96b8</span><span style="font-size: 17px; color: #9c97c2">cooled parts</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #0a0d24; border: 1px solid rgba(255,255,255,.2)"></div><span style="font-size: 19px">Night #0a0d24</span><span style="font-size: 17px; color: #9c97c2">scene background</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #10173e"></div><span style="font-size: 19px">Panel #10173e</span><span style="font-size: 17px; color: #9c97c2">the app's panels</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #5ce08c"></div><span style="font-size: 19px">Ready #5ce08c</span><span style="font-size: 17px; color: #9c97c2">token in use, ready</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><div style="height: 48px; border-radius: 8px; background: #ff8a7a"></div><span style="font-size: 19px">Cold #ff8a7a</span><span style="font-size: 17px; color: #9c97c2">failed</span></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 19px; color: #9c97c2">The bar: an 18 px track, an ember-gradient fill that glides to each update (300 ms ease-out), a sheen sweeping every 2.4 s, and a white-hot head that sparks when a piece lands.</span>
+<div style="position: relative; height: 18px; background: #050716; border: 1px solid rgba(255,181,71,.35); border-radius: 99px; overflow: hidden">
+<div class="fill" style="width: 62%; height: 100%; border-radius: 99px; box-shadow: 0 0 16px rgba(255,138,61,.8)"></div>
+<div style="position: absolute; left: calc(62% - 9px); top: -3px; width: 18px; height: 22px; border-radius: 50%; background: #fff2c8; box-shadow: 0 0 14px 4px rgba(255,200,120,.85)"></div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; font-size: 19px">
+<span><span style="color: #ffb547">Type</span> · Press Start 2P for the percent and stage names, VT323 for the rest (the app's own faces)</span>
+<span><span style="color: #ffb547">Percent</span> · counts up with Motion, 600 ms per update, never backwards</span>
+<span><span style="color: #ffb547">A part lands</span> · flies in 500 ms, glows 1.2 s, hammer strike plus 40 sparks, cools 1.5 s</span>
+<span><span style="color: #ffb547">Embers</span> · 60 rising particles, more when it downloads faster</span>
+<span><span style="color: #ffb547">Camera</span> · a slow 20 s orbit, ±12°; stops for Ready</span>
+<span><span style="color: #ffb547">Reduced motion</span> · one still render, the bar and the numbers only</span>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":660}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
