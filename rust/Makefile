@@ -67,6 +67,14 @@ web:
 
 build: web
 	cargo build --release
+	@# MLX's Metal library is written by mlx-sys's build script outside target/ (~/.mlx/lib/...,
+	@# the path the binary names). A cached target/ (CI, or a cleared ~/.mlx) skips that script:
+	@# then build mlx-sys again, which writes it.
+	@metallib=$$(strings target/release/cwbcode | grep -m1 '/mlx\.metallib$$'); \
+	  if [ -n "$$metallib" ] && [ ! -f "$$metallib" ]; then \
+	    echo "MLX's Metal library is missing ($$metallib): building mlx-sys again"; \
+	    cargo clean --release -p mlx-sys && cargo build --release; \
+	  fi
 	@mkdir -p bin
 	@# Copied beside, then moved into place: a backend running from ./bin is not written over.
 	@for p in cwbcode cwbcodeclient; do cp target/release/$$p bin/.$$p.new && mv -f bin/.$$p.new bin/$$p; done

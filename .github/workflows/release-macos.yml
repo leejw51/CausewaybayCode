@@ -53,6 +53,8 @@ jobs:
             rust -> target
             rust/web -> target
             rust/desktop -> target
+          # MLX's Metal library, which its build writes outside target/ (rust/Makefile build).
+          cache-directories: ~/.mlx
 
       # capnp, trunk and cmake as for CI; the Tauri CLI for the app.
       - name: Install build tools

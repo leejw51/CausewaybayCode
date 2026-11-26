@@ -44,6 +44,8 @@ jobs:
           workspaces: |
             rust -> target
             rust/web -> target
+          # MLX's Metal library, which its build writes outside target/ (rust/Makefile build).
+          cache-directories: ~/.mlx
 
       # capnp for the messages' schema, trunk for the web client, cmake for MLX.
       - name: Install build tools
