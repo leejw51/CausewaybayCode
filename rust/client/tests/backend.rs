@@ -1054,9 +1054,20 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     let owner = sign_in(Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap()).await;
     let off = owner.call(&Request::new(Method::Setup).text("")).await.unwrap();
     assert!(off.text.contains("Remote mode is off"), "{}", off.text);
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let fresh = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
-    let finally = hello(&fresh).await.unwrap();
+    // (It moves back to this machine's address: waited for, not a fixed pause, which a busy
+    // machine can outlast.)
+    let start = Instant::now();
+    let (fresh, finally) = loop {
+        if let Ok(fresh) = Client::connect(&server.url, "", server.trust.clone(), true).await {
+            if let Ok(said) = hello(&fresh).await {
+                if said.auth == "open" {
+                    break (fresh, said);
+                }
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "the backend did not come back in local mode");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
     assert_eq!((finally.auth.as_str(), finally.bind.as_str(), finally.wallet_source.as_str()), ("open", local.as_str(), ""));
     assert!(fresh.call(&Request::new(Method::Status)).await.is_err(), "local mode answered without the token");
     fresh.set_token(&server.token);
