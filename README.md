@@ -70,7 +70,7 @@ the place of the C compiler on your PATH.
 | web | a **dashboard and client** in the browser (Rust, Leptos, WebAssembly; movement by [Motion](https://motion.dev)), served by the backend |
 
 They talk in Cap'n Proto messages over **HTTP/3**, or **HTTP/2** where QUIC is not available,
-with a self-signed certificate and a token.
+with a certificate from the machine's own certificate authority, and a token.
 
 ```
 › Read greet.py, then fix the typo in its greeting word using edit_file.
@@ -216,8 +216,8 @@ With `-p`, nobody is there to approve anything: edits and commands are refused u
 ### The web client
 
 Open the address `make start` printed (`https://127.0.0.1:7443` in local mode,
-`https://localhost:7443` and the machine's other addresses in remote mode) and accept the self-signed
-certificate. In local mode open the `open` link instead: it carries the backend's token,
+`https://localhost:7443` and the machine's other addresses in remote mode) and accept the
+certificate, or trust its authority once (below). In local mode open the `open` link instead: it carries the backend's token,
 which the page keeps and takes out of the address (or type the token from
 `~/.cwbcode/token`); with a wallet, sign in with its recovery phrase.
 
@@ -263,8 +263,20 @@ the left of the bar), so the work has the whole window; panels reach the edges.
 Chrome: Install): it has a manifest, icons and a service worker, and then opens in a window
 of its own. The service worker asks the backend first, every time, so nothing is served
 stale; it keeps a copy only for when the backend cannot be reached, so that the app still
-opens and says it is offline. A browser registers a service worker only where it trusts the
-certificate: with the self-signed one it may not, and the page then works as before.
+opens and says it is offline. A browser registers a service worker, and installs the page
+with its icon, only where it trusts the certificate, so trust the backend's certificate
+authority once on each device first.
+
+**Trusting the backend on a device.** The backend makes its own certificate authority on
+first start (`~/.cwbcode/ca.pem`, its key `ca-key.pem` readable only by you) and signs its
+certificate with it. Install that authority once on a phone, tablet or another computer and
+every certificate the backend makes after is trusted there: no warning, and the page installs
+as an app. The dashboard (**Trust this backend on this device**) and the sign-in page link to
+it at `/ca.crt`, and `make url` prints where. On an iPhone or iPad: open the download in
+Safari, then Settings → Profile Downloaded → Install, then Settings → General → About →
+Certificate Trust Settings → turn it on. On a Mac: open it in Keychain Access and set it to
+Always Trust. Whoever has `ca-key.pem` could make certificates those devices trust, for any
+site: it never leaves the machine, and the sandbox keeps commands from reading it.
 
 These, and where you are (view, project, conversation), are kept in the browser, so a
 refresh comes back to the same place. The typefaces and the pictures are in the program:
@@ -342,16 +354,19 @@ and, compiled to WebAssembly, by the web client.
 
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for
 HTTP/2 over TLS (7443) and on the next UDP port for HTTP/3 over QUIC (7444), with one
-self-signed certificate. It is made on first start, good for 397 days, for serving only, and
-names every address of the machine (localhost, LAN, Tailscale); it is made again, with a new
-fingerprint, when the machine has an address it does not name or 30 days before it ends.
+certificate, signed by the machine's own certificate authority (good for ten years, allowed
+to sign server certificates only, and kept). The certificate is made on first start, good
+for 397 days, for serving only, and names every address of the machine (localhost, LAN,
+Tailscale); it is made again, with a new fingerprint but the same authority, when the machine
+has an address it does not name or 30 days before it ends. (A backend from before there was
+an authority makes a new certificate once, so its fingerprint changes once.)
 (Safari takes the first page from a certificate that breaks Apple's rules, a longer life,
 no serving purpose, an address not named, and then refuses everything after it.) HTTP/3 is deliberately not on the HTTPS port
-and not advertised: a browser that expects it there tries it, refuses the self-signed
-certificate over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
+and not advertised: a browser that expects it there tries it, refuses a certificate it does
+not trust over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
 falls back to HTTP/2; it trusts exactly the backend's certificate (pinned), whatever name
-the backend is reached by. A browser decides for itself: with a self-signed certificate
-browsers do not use QUIC, so **the web client runs over HTTP/2** (the dashboard shows which).
+the backend is reached by. A browser decides for itself, and uses QUIC only with a
+certificate it trusts, so **the web client mostly runs over HTTP/2** (the dashboard shows which).
 
 **Agent** (`agent.rs`, `prompt.rs`). The model's own chat format, as Ollama's `inkling2`
 renderer writes it; the model's turn is read token by token into thinking, answer and tool
@@ -419,8 +434,9 @@ What it does **not** do:
 - Typing a recovery phrase into a web page is only as safe as the page: use it on the
   backend you run yourself, over its own address, and check the certificate fingerprint. The
   page does not store the phrase; it keeps only the session. Use a wallet with nothing in it.
-- A browser cannot pin the self-signed certificate: on first visit compare the fingerprint
-  it shows with the one `cwbcode url` prints.
+- A browser cannot pin the certificate: on first visit compare the fingerprint it shows with
+  the one `cwbcode url` prints, or trust the backend's authority on the device, comparing
+  its fingerprint (the `ca` line) once.
 
 ## Tests
 

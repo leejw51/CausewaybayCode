@@ -213,9 +213,10 @@ impl Policy {
         }
     }
 
-    /// The server's own secrets: its database, its token and its TLS key.
+    /// The server's own secrets: its database, its token, its TLS key, and its certificate
+    /// authority's key (devices trust what that signs).
     fn own_secrets(&self) -> Vec<PathBuf> {
-        ["cwbcode.db", "cwbcode.db-wal", "cwbcode.db-shm", "token", "key.pem", "sessions"].iter().map(|f| self.home.join(f)).collect()
+        ["cwbcode.db", "cwbcode.db-wal", "cwbcode.db-shm", "token", "key.pem", "ca-key.pem", "sessions"].iter().map(|f| self.home.join(f)).collect()
     }
 
     /// The project's own `.cwbcode` folder: cwbcode's records, which tools neither read nor write.
@@ -541,7 +542,7 @@ mod tests {
         assert!(p.check_write(".cwbcode/x", "write").is_err());
         assert!(p.check_write("src/.cwbcode", "write").is_err());
         assert!(p.check_write("src/cwbcode.txt", "write").is_ok());
-        for secret in ["token", "key.pem", "cwbcode.db"] {
+        for secret in ["token", "key.pem", "ca-key.pem", "cwbcode.db"] {
             assert!(p.check_read(&p.home.join(secret).to_string_lossy()).is_err(), "{secret}");
         }
         let profile = p.profile();

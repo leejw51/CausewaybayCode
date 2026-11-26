@@ -19,6 +19,61 @@ pub struct Identity {
     pub key: PrivateKeyDer<'static>,
     /// SHA-256 of the certificate, in hex: what a remote client can compare.
     pub fingerprint: String,
+    /// The certificate authority that issued it (this machine's own), sent after it.
+    pub ca: CertificateDer<'static>,
+    /// The authority's certificate as PEM, for a device to install and trust.
+    pub ca_pem: String,
+    /// SHA-256 of the authority's certificate, in hex.
+    pub ca_fingerprint: String,
+}
+
+/// How long this machine's certificate authority is good for. A device trusts it once; the
+/// server's own certificate, which it signs, is made again far more often.
+const CA_DAYS: i64 = 3650;
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The authority's parameters: rebuilt from its name whenever it signs, so that what it
+/// issues names it exactly as the certificate devices installed does.
+fn ca_params(name: &str, now: time::OffsetDateTime) -> Result<rcgen::CertificateParams> {
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new())?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params.distinguished_name.push(rcgen::DnType::CommonName, name);
+    params.distinguished_name.push(rcgen::DnType::OrganizationName, "Causewaybay Code");
+    // It may sign server certificates and nothing below them.
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(0));
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign, rcgen::KeyUsagePurpose::CrlSign, rcgen::KeyUsagePurpose::DigitalSignature];
+    params.not_before = now - time::Duration::days(1);
+    params.not_after = now + time::Duration::days(CA_DAYS);
+    Ok(params)
+}
+
+/// This machine's certificate authority (`ca.pem`, `ca-key.pem` readable by its owner only,
+/// `ca.json` its name), made on first use and kept: devices that trust it keep trusting the
+/// server through every new certificate. Returns its key, a certificate to sign with, and
+/// whether it was just made.
+fn authority(home: &Path, now: time::OffsetDateTime) -> Result<(rcgen::KeyPair, rcgen::Certificate, bool)> {
+    let (pem_path, key_path, note_path) = (home.join("ca.pem"), home.join("ca-key.pem"), home.join("ca.json"));
+    let note: serde_json::Value = std::fs::read_to_string(&note_path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    if let (Some(name), Ok(key_pem), true) = (note["name"].as_str(), std::fs::read_to_string(&key_path), pem_path.exists()) {
+        let key = rcgen::KeyPair::from_pem(&key_pem)?;
+        let signer = ca_params(name, now)?.self_signed(&key)?;
+        return Ok((key, signer, false));
+    }
+    // A name of its own, so that two machines' authorities are told apart on a device.
+    let host = std::process::Command::new("/bin/hostname").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let mut id = [0u8; 4];
+    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut id)?;
+    let name = format!("Causewaybay Code CA {}{}", if host.is_empty() { String::new() } else { format!("{host} ") }, id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let key = rcgen::KeyPair::generate()?;
+    let cert = ca_params(&name, now)?.self_signed(&key)?;
+    write_private(&key_path, &key.serialize_pem())?;
+    std::fs::write(&pem_path, cert.pem())?;
+    std::fs::write(&note_path, serde_json::json!({ "name": name }).to_string())?;
+    Ok((key, cert, true))
 }
 
 /// Names and addresses this machine answers to, for the certificate.
@@ -79,18 +134,30 @@ const CERT_DAYS: i64 = 397;
 const CERT_RENEW_DAYS: i64 = 30;
 
 /// The server's certificate and key, kept in its folder (`cert.pem`, `key.pem`, and
-/// `cert.json`: the names it was made for and when it ends). It is made on first use, and
-/// made again when the machine has an address it does not name (a network joined since) or
-/// it is about to end; the names it had are kept. Clients on this machine trust exactly this
-/// certificate by reading `cert.pem`; others see a new fingerprint when it is remade.
+/// `cert.json`: the names it was made for, when it ends, and which authority signed it). It
+/// is signed by this machine's own certificate authority (see `authority`), so a device that
+/// trusts that once trusts every certificate after. It is made on first use, and made again
+/// when the machine has an address it does not name (a network joined since), it is about to
+/// end, or another authority signed it; the names it had are kept. Clients on this machine
+/// trust exactly this certificate by reading `cert.pem`; others see a new fingerprint when
+/// it is remade.
 pub fn identity(home: &Path) -> Result<Identity> {
     let (cert_path, key_path, note_path) = (home.join("cert.pem"), home.join("key.pem"), home.join("cert.json"));
     let now = time::OffsetDateTime::now_utc();
+    let (ca_key, ca_cert, _) = authority(home, now)?;
+    let ca_pem = std::fs::read_to_string(home.join("ca.pem"))?;
+    let ca = rustls_pemfile::certs(&mut ca_pem.as_bytes()).next().context("ca.pem holds no certificate")??;
+    let ca_fingerprint = sha256_hex(&ca);
     let note: serde_json::Value = std::fs::read_to_string(&note_path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
     let had: Vec<String> = note["names"].as_array().map(|list| list.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default();
     let ends = note["ends"].as_i64().unwrap_or(0);
     let wanted = names();
-    let good = cert_path.exists() && key_path.exists() && wanted.iter().all(|name| had.contains(name)) && ends - now.unix_timestamp() > CERT_RENEW_DAYS * 86_400;
+    // (A certificate from before there was an authority, self-signed, is made again once.)
+    let good = cert_path.exists()
+        && key_path.exists()
+        && note["ca"].as_str() == Some(ca_fingerprint.as_str())
+        && wanted.iter().all(|name| had.contains(name))
+        && ends - now.unix_timestamp() > CERT_RENEW_DAYS * 86_400;
     if !good {
         let mut all = had;
         for name in wanted {
@@ -106,19 +173,17 @@ pub fn identity(home: &Path) -> Result<Identity> {
         params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         let ends = params.not_after.unix_timestamp();
+        params.use_authority_key_identifier_extension = true;
         let key = rcgen::KeyPair::generate()?;
-        let cert = params.self_signed(&key)?;
+        let cert = params.signed_by(&key, &ca_cert, &ca_key)?;
         write_private(&key_path, &key.serialize_pem())?;
         std::fs::write(&cert_path, cert.pem())?;
-        std::fs::write(&note_path, serde_json::json!({ "names": all, "ends": ends }).to_string())?;
+        std::fs::write(&note_path, serde_json::json!({ "names": all, "ends": ends, "ca": ca_fingerprint }).to_string())?;
     }
     let cert = rustls_pemfile::certs(&mut std::fs::read(&cert_path)?.as_slice()).next().context("cert.pem holds no certificate")??;
     let key = rustls_pemfile::private_key(&mut std::fs::read(&key_path)?.as_slice())?.context("key.pem holds no key")?;
-    let fingerprint = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(&cert).iter().map(|b| format!("{b:02x}")).collect()
-    };
-    Ok(Identity { cert, key, fingerprint })
+    let fingerprint = sha256_hex(&cert);
+    Ok(Identity { cert, key, fingerprint, ca, ca_pem, ca_fingerprint })
 }
 
 /// The token every request must carry, made on first use and kept in the server's folder.
@@ -137,7 +202,8 @@ pub fn token(home: &Path) -> Result<String> {
 }
 
 fn tls(identity: &Identity, alpn: &[&[u8]]) -> Result<rustls::ServerConfig> {
-    let mut config = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![identity.cert.clone()], identity.key.clone_key())?;
+    // The certificate, then the authority that signed it.
+    let mut config = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![identity.cert.clone(), identity.ca.clone()], identity.key.clone_key())?;
     config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(config)
 }
@@ -261,6 +327,20 @@ mod tests {
         assert_eq!(std::fs::metadata(home.join("token")).unwrap().permissions().mode() & 0o777, 0o600);
         assert!(names().contains(&"localhost".to_string()));
 
+        // The certificate is signed by this machine's authority, whose key is private too.
+        assert_eq!(std::fs::metadata(home.join("ca-key.pem")).unwrap().permissions().mode() & 0o777, 0o600);
+        let issued_by = |id: &Identity| {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(id.ca.clone()).unwrap();
+            let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots)).build().unwrap();
+            let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+            verifier.verify_server_cert(&id.cert, &[], &name, &[], rustls::pki_types::UnixTime::now()).is_ok()
+        };
+        use rustls::client::danger::ServerCertVerifier;
+        assert!(issued_by(&first), "the certificate does not chain to the authority");
+        assert_ne!(first.ca_fingerprint, first.fingerprint);
+        assert!(first.ca_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+
         // A certificate that does not name an address the machine now has, or is near its end,
         // or was made before these were recorded, is made again; the names it had are kept.
         let note = home.join("cert.json");
@@ -270,6 +350,9 @@ mod tests {
         std::fs::write(&note, serde_json::json!({ "names": ["old.example"], "ends": recorded["ends"] }).to_string()).unwrap();
         let widened = identity(&home).unwrap();
         assert_ne!(widened.fingerprint, first.fingerprint);
+        // A new certificate, the same authority: a device that trusts it still trusts the server.
+        assert_eq!(widened.ca_fingerprint, first.ca_fingerprint);
+        assert!(issued_by(&widened), "the new certificate does not chain to the same authority");
         let recorded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&note).unwrap()).unwrap();
         let kept: Vec<&str> = recorded["names"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect();
         assert!(kept.contains(&"old.example") && kept.contains(&"localhost"), "{kept:?}");
@@ -278,8 +361,10 @@ mod tests {
         std::fs::write(&note, serde_json::json!({ "names": kept, "ends": soon }).to_string()).unwrap();
         assert_ne!(identity(&home).unwrap().fingerprint, widened.fingerprint);
         std::fs::remove_file(&note).unwrap();
-        let before = identity(&home).unwrap().fingerprint;
-        assert_eq!(identity(&home).unwrap().fingerprint, before);
+        let before = identity(&home).unwrap();
+        assert_eq!(identity(&home).unwrap().fingerprint, before.fingerprint);
+        assert_eq!(before.ca_fingerprint, first.ca_fingerprint);
+        assert!(issued_by(&before));
         assert_eq!(std::fs::metadata(home.join("key.pem")).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

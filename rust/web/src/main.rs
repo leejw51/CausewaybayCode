@@ -1001,6 +1001,7 @@ fn Login() -> impl IntoView {
                         <Show when=move || !problem.get().is_empty()><div class="note bad" id="login-problem" style="text-align:left">{move || problem.get()}</div></Show>
                         <button class="primary" id="signin" disabled=move || working.get() on:click=move |_| enter_phrase()>{move || if working.get() { tr(app.lang.get(), "signing_in") } else { tr(app.lang.get(), "sign_in") }}</button>
                         <p class="sub fine">{t("cert_note")}" "<span style="word-break:break-all">{move || app.fingerprint.get()}</span></p>
+                        <details class="trust"><summary class="sub">{t("trust_title")}</summary><TrustDevice/></details>
                     }.into_any(),
                     _ => view! {
                         {brand(app)}
@@ -1011,6 +1012,22 @@ fn Login() -> impl IntoView {
                     }.into_any(),
                 }}
             </div>
+        </div>
+    }
+}
+
+/// How to make this device trust the backend: install its certificate authority once. Then
+/// the browser shows no warning, and the page installs as an app with its icon.
+#[component]
+fn TrustDevice() -> impl IntoView {
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    view! {
+        <div class="sub trust-steps">
+            <p>{t("trust_why")}</p>
+            <a class="button ghost" id="trust-download" href="/ca.crt" download="causewaybay-code-ca.crt">{t("trust_download")}</a>
+            <p>{t("trust_ios")}</p>
+            <p>{t("trust_mac")}</p>
         </div>
     }
 }
@@ -1146,6 +1163,7 @@ fn Dashboard() -> impl IntoView {
                         <div class="sub">{move || format!("cwbcode {} · {}", s().version, tr_with(app.lang.get(), "waiting", &s().queued.to_string()))}</div></div>
                 </div>
                 <RemoteAccess/>
+                <div class="card glass" id="trust"><h5>{t("trust_title")}</h5><TrustDevice/></div>
                 <div class="card glass">
                     <h5>{t("projects")}</h5>
                     <Show when=move || !app.projects.get().is_empty() fallback=move || view! { <div class="empty">{t("no_projects")}</div> }>

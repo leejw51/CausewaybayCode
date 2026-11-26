@@ -204,6 +204,10 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
         }
     }
     println!("{:<9} {} (sha256 {})", "cert", home.join("cert.pem").display(), identity.fingerprint);
+    // Installed and trusted once on a phone, tablet or another computer, it makes every
+    // certificate this backend makes trusted there: no warning, and the page installs as an app.
+    let download = addresses(bind).into_iter().find(|(what, _)| *what == "lan" || *what == "tailscale").or_else(|| addresses(bind).into_iter().next()).map(|(_, web)| format!("{web}{}", api::CA_PATH)).unwrap_or_default();
+    println!("{:<9} {} (sha256 {}): trust it once on each device, from {download}", "ca", home.join("ca.pem").display(), identity.ca_fingerprint);
     Ok(())
 }
 
@@ -246,7 +250,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         source: std::sync::Mutex::new(wallet.as_ref().map_or(String::new(), |w| w.source.clone())),
         rebind,
     });
-    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()) };
+    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()) };
     let router = api::router(app.clone());
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 

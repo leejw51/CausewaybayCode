@@ -31,9 +31,11 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
   sign-ins are limited to ten a minute.
 - A backend bound beyond this machine without a wallet (`BIND=...`) asks for its token,
   as `cwbcode serve --require-token` always does.
-- Traffic is HTTPS (HTTP/2 over TLS, or HTTP/3 over QUIC) with a self-signed certificate.
-  The terminal client pins it; a browser cannot, so compare the fingerprint it shows with
-  the one `make url` prints.
+- Traffic is HTTPS (HTTP/2 over TLS, or HTTP/3 over QUIC) with a certificate signed by the
+  machine's own certificate authority (`~/.cwbcode/ca.pem`; its key `ca-key.pem` is
+  readable only by you and denied to commands). The terminal client pins the certificate; a
+  browser cannot, so compare the fingerprint it shows with the one `make url` prints, or
+  install the authority on the device once (compare its `ca` fingerprint) and trust it.
 
 **What the agent can do.**
 

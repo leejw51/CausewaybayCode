@@ -577,6 +577,18 @@ async fn a_request_without_the_token_is_turned_away_before_its_body_is_read() {
 async fn the_page_forbids_framing_and_foreign_scripts_and_the_stores_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let server = Server::start("headers", HELLO, &[]);
+    // A device that trusts this machine's certificate authority, and nothing else, reaches the
+    // page with no warning, and can download the authority from it.
+    let ca = std::fs::read(server.home.join(".cwbcode/ca.pem")).unwrap();
+    let trusting = reqwest::Client::builder().tls_built_in_root_certs(false).add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap()).build().unwrap();
+    let base = format!("https://localhost:{}", server.port);
+    assert_eq!(trusting.get(&base).send().await.unwrap().status(), 200);
+    let download = trusting.get(format!("{base}/ca.crt")).send().await.unwrap();
+    assert_eq!(download.headers()["content-type"], "application/x-x509-ca-cert");
+    assert_eq!(download.bytes().await.unwrap().as_ref(), ca.as_slice());
+    assert_eq!(std::fs::metadata(server.home.join(".cwbcode/ca-key.pem")).unwrap().permissions().mode() & 0o777, 0o600);
+    // One that trusts nothing is refused.
+    assert!(reqwest::Client::builder().tls_built_in_root_certs(false).build().unwrap().get(&base).send().await.is_err());
     let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
     let page = http.get(&server.url).send().await.unwrap();
     let header = |name: &str| page.headers().get(name).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
@@ -863,7 +875,8 @@ async fn the_web_client_is_served_whole_over_http3_as_over_http2() {
     let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
     assert_eq!((status, manifest["display"].as_str(), manifest["start_url"].as_str()), (200, Some("standalone"), Some("/")));
     let mut icons: Vec<String> = manifest["icons"].as_array().unwrap().iter().map(|icon| icon["src"].as_str().unwrap().to_string()).collect();
-    icons.extend(["/apple-touch-icon.png".to_string(), "/favicon-32.png".to_string()]);
+    // (Also as the page names it, with a version to make a device ask again.)
+    icons.extend(["/apple-touch-icon.png".to_string(), "/apple-touch-icon.png?v=3".to_string(), "/favicon-32.png".to_string()]);
     for icon in &icons {
         let (status, bytes) = quic.get(icon).await.unwrap();
         assert!(status == 200 && bytes.starts_with(b"\x89PNG"), "{icon} is not a picture");

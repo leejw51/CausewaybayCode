@@ -8,7 +8,7 @@ checks what the page shows and what happened on disk. Screenshots go to the fold
 as the first argument (default: a temporary one).
 
 Needs Google Chrome and the Python package `websockets`. Run `make build` first."""
-import base64, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request
+import base64, json, os, shutil, socket, ssl, subprocess, sys, tempfile, time, urllib.request
 from websockets.sync.client import connect
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -351,6 +351,11 @@ def main():
         protocol = page.text("#protocol")
         assert page.text("#model-state") == "scripted", page.text("#model-state")
         assert "proj" in page.text("table"), "the project is not listed"
+        # How to trust this backend on a device: its certificate authority, from the page.
+        assert page.js("document.querySelector('#trust-download').getAttribute('href')") == "/ca.crt"
+        trusting = ssl.create_default_context(cafile=f"{home}/.cwbcode/ca.pem")
+        ca = urllib.request.urlopen(f"https://localhost:{port}/ca.crt", context=trusting).read().decode()
+        assert ca == open(f"{home}/.cwbcode/ca.pem").read(), "the downloaded authority is not the backend's"
         page.shot(f"{shots}/4-dashboard.png")
 
         print("6. the knowledge base saves and finds a note")

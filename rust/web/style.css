@@ -136,6 +136,13 @@ button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; min-height: 2.3rem; padding: 0 .85rem; border-radius: var(--r); border: 1px solid var(--line2); color: var(--text);
   background: linear-gradient(var(--btn1), var(--btn2)); box-shadow: 0 2px 0 var(--drop); white-space: nowrap; will-change: transform; }
 button:hover { border-color: var(--accent); }
+/* A link that looks like a button (the certificate download). */
+a.button { display: inline-flex; align-items: center; min-height: 2.3rem; padding: 0 .85rem; border-radius: var(--r); border: 1px solid var(--line2);
+  color: var(--text); text-decoration: none; background: linear-gradient(var(--btn1), var(--btn2)); box-shadow: 0 2px 0 var(--drop); }
+a.button:hover { border-color: var(--accent); }
+.trust-steps p { margin: .4rem 0; line-height: 1.45; }
+details.trust { text-align: left; margin-top: .4rem; }
+details.trust summary { cursor: pointer; }
 button.primary { background: linear-gradient(#f6e08a, #e9c94b); color: #281810; border-color: #f6e08a; box-shadow: 0 2px 0 #7a6410; }
 button.danger { color: var(--bad); }
 button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--dim); }

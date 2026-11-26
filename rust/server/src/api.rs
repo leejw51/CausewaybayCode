@@ -30,12 +30,19 @@ pub struct App {
     pub control: Arc<crate::control::Control>,
     /// The port, for the Alt-Svc header that tells browsers about HTTP/3 (None: no HTTP/3).
     pub h3_port: Option<u16>,
+    /// This machine's certificate authority, as PEM: given to whoever asks, to install.
+    pub ca_pem: Arc<String>,
 }
+
+/// Where a device downloads the certificate authority to trust (no sign-in needed: it is
+/// public, and is what makes the sign-in page trustworthy).
+pub const CA_PATH: &str = "/ca.crt";
 
 pub fn router(app: App) -> Router {
     Router::new()
         .route(CALL_PATH, post(call))
         .route(CHAT_PATH, post(chat))
+        .route(CA_PATH, get(ca))
         .fallback(get(web))
         .layer(DefaultBodyLimit::max(cwbcode_proto::MAX_MESSAGE_BYTES))
         .layer(axum::middleware::from_fn_with_state(app.clone(), stamp))
@@ -455,6 +462,19 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// The certificate authority, as a file a phone or a computer offers to install.
+async fn ca(State(app): State<App>) -> HttpResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/x-x509-ca-cert"),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"causewaybay-code-ca.crt\""),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        app.ca_pem.as_str().to_owned(),
+    )
+        .into_response()
 }
 
 /// The web client: its files are built into the program. Any other path is the app itself.
