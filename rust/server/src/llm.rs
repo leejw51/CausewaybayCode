@@ -123,6 +123,10 @@ pub struct Engine {
     pub special: Special,
     pub sampler: Sampler,
     pub name: String,
+    /// Where its files are, how large they are, and what it is (for the dashboard).
+    pub location: String,
+    pub bytes: u64,
+    pub about: String,
 }
 
 impl Engine {
@@ -153,7 +157,8 @@ impl Engine {
             end_sampling: id("<|content_model_end_sampling|>")?,
         };
         let eos = vec![special.end_sampling, id("<|endoftext|>")?];
-        Ok(Self { model, tok, eos, special, sampler, name: manifest.name.clone() })
+        let (location, bytes, about) = (manifest.store().display().to_string(), manifest.size, manifest.about());
+        Ok(Self { model, tok, eos, special, sampler, name: manifest.name.clone(), location, bytes, about })
     }
 
     pub fn make_cache(&self) -> inkling::Cache {

@@ -95,6 +95,8 @@ pub struct Usage {
     pub generated: usize,
     pub gen_seconds: f64,
     pub read: usize,
+    /// Seconds spent reading prompts (what `read` took).
+    pub read_seconds: f64,
     pub seconds: f64,
 }
 
@@ -338,6 +340,7 @@ impl Agent {
             };
             usage.steps += 1;
             usage.read += stats.prompt_tokens;
+            usage.read_seconds += if stats.prompt_tps > 0.0 { stats.prompt_tokens as f64 / stats.prompt_tps } else { 0.0 };
             usage.generated += stats.gen_tokens;
             usage.gen_seconds += if stats.gen_tps > 0.0 { stats.gen_tokens.saturating_sub(1) as f64 / stats.gen_tps } else { 0.0 };
             let stopped = interrupted();

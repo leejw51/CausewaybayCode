@@ -99,4 +99,71 @@ impl Manifest {
     pub fn json(&self, name: &str) -> Result<Value> {
         Ok(serde_json::from_str(&std::fs::read_to_string(self.file(name)?)?)?)
     }
+
+    /// The store the model was found in (the folder holding `blobs/` and `manifests/`).
+    pub fn store(&self) -> PathBuf {
+        self.blobs.parent().map(Path::to_path_buf).unwrap_or_else(|| self.blobs.clone())
+    }
+
+    /// What the model is, in a line: architecture, layers, experts, how the experts are
+    /// quantized, and whether it reads images and has a draft network. From its config and the
+    /// expert tensors' own headers (a few hundred bytes each; nothing is loaded).
+    pub fn about(&self) -> String {
+        let mut parts = Vec::new();
+        if let Ok(cfg) = self.json("config.json") {
+            let text = &cfg["text_config"];
+            if let Some(arch) = cfg["architectures"][0].as_str() {
+                parts.push(arch.to_string());
+            }
+            if let Some(layers) = text["num_hidden_layers"].as_u64() {
+                parts.push(format!("{layers} layers"));
+            }
+            if let (Some(experts), Some(active)) = (text["n_routed_experts"].as_u64(), text["num_experts_per_tok"].as_u64()) {
+                parts.push(format!("{experts} experts, {active} per token"));
+            }
+        }
+        let mut quant: Vec<String> = self
+            .files
+            .iter()
+            .filter(|(name, _)| name.ends_with("experts.w13_weight"))
+            .filter_map(|(_, path)| {
+                use std::io::Read;
+                let mut file = std::fs::File::open(path).ok()?;
+                let mut len = [0u8; 8];
+                file.read_exact(&mut len).ok()?;
+                let mut head = vec![0u8; (u64::from_le_bytes(len) as usize).min(1 << 16)];
+                file.read_exact(&mut head).ok()?;
+                let head: Value = serde_json::from_slice(&head).ok()?;
+                head["__metadata__"]["quant_type"].as_str().map(str::to_uppercase)
+            })
+            .collect();
+        quant.sort();
+        quant.dedup();
+        if !quant.is_empty() {
+            parts.push(format!("experts in {}", quant.join(" + ")));
+        }
+        if self.files.keys().any(|name| name.starts_with("model.visual.")) {
+            parts.push("vision".to_string());
+        }
+        if self.files.contains_key("draft/config.json") {
+            parts.push("draft network".to_string());
+        }
+        parts.join(" · ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads only the model's config and a few tensor headers; skipped where it is not installed.
+    #[test]
+    fn the_model_is_described_without_loading_it() {
+        let Ok(manifest) = Manifest::load(crate::llm::DEFAULT_MODEL) else { return };
+        let about = manifest.about();
+        assert!(about.starts_with("Inkling2LoopForConditionalGeneration · "), "{about}");
+        assert!(about.contains("experts, ") && about.contains("experts in ") && about.contains("draft network"), "{about}");
+        assert!(manifest.store().join("blobs").is_dir());
+        assert!(manifest.size > 1 << 30);
+    }
 }
