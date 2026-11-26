@@ -46,8 +46,10 @@ make build      # the first build compiles MLX from source and takes a few minut
 make start      # starts the backend and prints its web address and certificate
 ```
 
-Open the `web` address `make start` printed (`https://127.0.0.1:7443` in local mode), accept
-the self-signed certificate (its fingerprint is on the `cert` line), and pick a folder under
+Open the `open` link `make start` printed (`https://127.0.0.1:7443/#code=...` in local mode:
+a one-time code the page exchanges for the backend's token, which it keeps; the link works
+once, within five minutes, and `make url` prints a new one), accept the certificate (its
+fingerprint is on the `cert` line), and pick a folder under
 your home folder to work in. Or, in a project folder, run the terminal client:
 
 ```sh
@@ -69,7 +71,7 @@ the place of the C compiler on your PATH.
 | web | a **dashboard and client** in the browser (Rust, Leptos, WebAssembly; movement by [Motion](https://motion.dev)), served by the backend |
 
 They talk in Cap'n Proto messages over **HTTP/3**, or **HTTP/2** where QUIC is not available,
-with a self-signed certificate and a token.
+with a certificate from the machine's own certificate authority, and a token.
 
 ```
 › Read greet.py, then fix the typo in its greeting word using edit_file.
@@ -98,8 +100,9 @@ make stop       # stop it
 The implementation is in `rust/`; other languages will get folders of their own beside it.
 The `make` targets work from the repository root (which passes them on) or from `rust/`.
 
-`make start` prints the mode, the web address, the token where one is needed and the
-certificate's fingerprint; `make url` prints them again, `make status` and `make logs` show
+`make start` prints the mode, the web address, the token where one is needed (in local mode
+a one-time link instead) and the certificate's fingerprint; `make url` prints them again
+(with a new link), `make status` and `make logs` show
 how it is doing. The first build compiles MLX from source and takes a few minutes. The
 weights are read where they are, in Ollama's store or in `~/.cwbcode/models`; Ollama does not
 need to be running (and if it has the model loaded, stop it first: two copies do not fit).
@@ -127,8 +130,8 @@ owns it turns remote mode on:
 | | local mode (no wallet) | remote mode (a wallet is set) |
 |---|---|---|
 | listens on | `127.0.0.1:7443`: this machine only | `0.0.0.0:7443`: your network and tailnet too |
-| login | none | required: sign in with that wallet |
-| web client | opens straight into the app | asks for the wallet's recovery phrase |
+| login | the backend's token, from this machine only | required: sign in with that wallet |
+| web client | opens from the `open` link `make url` prints (a one-time code for the token) | asks for the wallet's recovery phrase |
 | terminal client | just works | on this Mac just works; elsewhere `cwbcodeclient login` |
 
 Turn it on from the web client's **Dashboard → Remote access** (type the wallet's address,
@@ -137,7 +140,7 @@ or its recovery phrase to have the address worked out in the browser), or from t
 ```sh
 cwbcodeclient remote                  # which mode, and where the backend listens
 cwbcodeclient remote on 0x5290…9EE7   # or `remote on` alone, to type the recovery phrase
-cwbcodeclient remote off              # back to this machine only, no login
+cwbcodeclient remote off              # back to this machine only, with its token
 ```
 
 It takes effect at once, without a restart: the backend moves its listeners to the new
@@ -149,7 +152,7 @@ address and starts (or stops) asking for the wallet. The setting is kept in
 {"time":"2026-11-26 09:02:51","set":"wallet","value":""}
 ```
 
-Turning it on needs no login (in local mode whoever is at this machine may); turning it off
+Turning it on needs the backend's token (in local mode, whoever holds it on this machine); turning it off
 needs the wallet's owner to be signed in, or the terminal client on this machine. A
 conversation in progress is cut short when the listeners move.
 
@@ -165,11 +168,14 @@ challenge from the backend (EIP-191, naming the wallet and the backend's certifi
 for five minutes, once), and the backend checks that the signature is the wallet's. The
 phrase is never sent. A phrase of another wallet is told so before anything is sent.
 
-With **remember on this device** ticked (it is by default), the phrase is kept in the
-browser's storage beside the session, so that a refresh, or a session that has ended (they
-last 30 days), signs in again without typing it. **Sign out** removes both. Anyone who can
-use that browser profile can read what it stores: untick the box on a device that is not
-yours alone.
+The phrase is never stored: it controls the whole wallet, not only this backend. With **stay
+signed in on this device** ticked (it is by default), the session is kept in the browser's
+storage, so a refresh comes straight back in; when it ends (sessions last 30 days) the page
+asks for the phrase again. **Sign out** ends it. Untick the box on a device that is not yours
+alone. A phrase that earlier versions kept is deleted when the page loads.
+
+Use a wallet made for this, with nothing in it: whoever has its phrase has this backend, and
+anything the wallet holds.
 
 Only the wallet's public address is ever saved or put in `.env`: a private key or recovery
 phrase there is refused (and never echoed). `.env` is git-ignored. `make start
@@ -212,9 +218,14 @@ With `-p`, nobody is there to approve anything: edits and commands are refused u
 ### The web client
 
 Open the address `make start` printed (`https://127.0.0.1:7443` in local mode,
-`https://localhost:7443` and the machine's other addresses in remote mode) and accept the self-signed
-certificate. In local mode the app opens at once; with a wallet, sign in with its recovery
-phrase.
+`https://localhost:7443` and the machine's other addresses in remote mode) and accept the
+certificate, or trust its authority once (below). In local mode open the `open` link instead:
+its one-time code, taken out of the address at once, is exchanged for the backend's token,
+which the page keeps. The exchange works only from this machine, once, within five minutes,
+so the token itself never stands in an address the browser's history keeps. A link that no
+longer works leaves a token the page already has alone. (Or type the token from
+`~/.cwbcode/token`, or open `https://127.0.0.1:7443/#token=<token>`.) With a wallet, sign in
+with its recovery phrase.
 
 - **Dashboard**: model state, memory, context in use, protocol, projects, remote access.
 - **Chat**: open any folder under `~` (one that does not exist is created, with the folders
@@ -259,7 +270,30 @@ Chrome: Install): it has a manifest, icons and a service worker, and then opens 
 of its own. The service worker asks the backend first, every time, so nothing is served
 stale; it keeps a copy only for when the backend cannot be reached, so that the app still
 opens and says it is offline. A browser registers a service worker only where it trusts the
-certificate: with the self-signed one it may not, and the page then works as before.
+certificate, so trust the backend's certificate authority once on each device first. (An iPad
+that showed a letter instead of the icon on its home screen probably did so for the same
+reason; that is not yet confirmed.)
+
+**Trusting the backend on a device.** The backend makes its own certificate authority on
+first start (`~/.cwbcode/ca.pem`, its key `ca-key.pem` readable only by you) and signs its
+certificate with it. Install that authority once on a phone, tablet or another computer and
+every certificate the backend makes after is trusted there: no warning, and the page can be
+installed as an app. The dashboard (**Trust this backend on this device**) and the sign-in page link to
+it at `/ca.crt`, and `make url` prints where. Beside the download the page shows the
+authority's SHA-256: before turning trust on, check that it is the one on the `ca` line
+`cwbcode url` prints on the backend's machine (the device shows it too, in the certificate's
+details); a page that is not your backend's could offer another. On an iPhone or iPad: open the download in
+Safari, then Settings → Profile Downloaded → Install, then Settings → General → About →
+Certificate Trust Settings → turn it on. On a Mac: open it in Keychain Access and set it to
+Always Trust. The authority is limited, with critical name constraints, to this machine's
+names and addresses: `localhost`, names under `.local` and `.ts.net`, the machine's host
+name, the loopback addresses, and the private (10/8, 172.16/12, 192.168/16) and Tailscale
+(100.64/10) ranges. A device that trusts it trusts it for nothing else, so even whoever had
+`ca-key.pem` could not use it to pass for another website; the key still never leaves the
+machine, and the sandbox keeps commands from reading it. (An address outside those ranges, a
+public one, is left out of the certificate.) An authority made by an earlier version, without
+these limits, is replaced once when the backend starts (it says so); trust the new one on each
+device then, and remove the old one. Install it only on your own devices.
 
 These, and where you are (view, project, conversation), are kept in the browser, so a
 refresh comes back to the same place. The typefaces and the pictures are in the program:
@@ -337,16 +371,24 @@ and, compiled to WebAssembly, by the web client.
 
 **Transport** (`net.rs`, `rust/client/src/net.rs`). The backend listens on a TCP port for
 HTTP/2 over TLS (7443) and on the next UDP port for HTTP/3 over QUIC (7444), with one
-self-signed certificate. It is made on first start, good for 397 days, for serving only, and
-names every address of the machine (localhost, LAN, Tailscale); it is made again, with a new
-fingerprint, when the machine has an address it does not name or 30 days before it ends.
+certificate, signed by the machine's own certificate authority (good for ten years, allowed
+to sign server certificates only, for this machine's names and addresses only, and kept). The
+certificate is made on first start, good for 397 days, for serving only, and names every
+address of the machine the authority may sign for (localhost, LAN, Tailscale); it is made
+again, with a new fingerprint but the same authority, when the machine has an address it does
+not name or 30 days before it ends. Only the backend makes it, when it starts: `cwbcode url`
+reads the files and says when the next start will make a new one. (A backend from before there
+was an authority makes a new certificate once, so its fingerprint changes once.) An authority
+that is there but cannot be used (its key or `ca.json` missing, or not its own) stops the
+backend with a message rather than being replaced, since devices trust it; its files are
+written whole (to a temporary file, then moved into place).
 (Safari takes the first page from a certificate that breaks Apple's rules, a longer life,
 no serving purpose, an address not named, and then refuses everything after it.) HTTP/3 is deliberately not on the HTTPS port
-and not advertised: a browser that expects it there tries it, refuses the self-signed
-certificate over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
+and not advertised: a browser that expects it there tries it, refuses a certificate it does
+not trust over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
 falls back to HTTP/2; it trusts exactly the backend's certificate (pinned), whatever name
-the backend is reached by. A browser decides for itself: with a self-signed certificate
-browsers do not use QUIC, so **the web client runs over HTTP/2** (the dashboard shows which).
+the backend is reached by. A browser decides for itself, and uses QUIC only with a
+certificate it trusts, so **the web client mostly runs over HTTP/2** (the dashboard shows which).
 
 **Agent** (`agent.rs`, `prompt.rs`). The model's own chat format, as Ollama's `inkling2`
 renderer writes it; the model's turn is read token by token into thinking, answer and tool
@@ -375,9 +417,11 @@ question finds an English note.
 
 **Safety** (`sandbox.rs`, `projects.rs`, `api.rs`).
 
-- In local mode (no wallet) the backend listens on this machine only and asks for no
-  login, but answers only its own page and clients that are not pages: a page of another
-  website open in your browser is refused. With a wallet, every request needs a session
+- In local mode (no wallet) the backend listens on this machine only and asks for its token
+  (`~/.cwbcode/token`, readable only by you), from this machine only: another user of the
+  Mac, a program of someone else's, or anything behind a port forward (`ssh -L`, `tailscale
+  serve`) gets nothing without it. It answers only its own page and clients that are not
+  pages: a page of another website open in your browser is refused. With a wallet, every request needs a session
   obtained by signing in with it; the backend's own token (`~/.cwbcode/token`, readable
   only by you) is accepted from this machine only. Without credentials nothing beyond a
   small sign-in message is read, and failed sign-ins are limited to ten a minute.
@@ -409,11 +453,12 @@ What it does **not** do:
 - Whoever can sign in is you, as far as the backend is concerned: they can choose `auto`
   mode and any folder under your home folder. With a wallet that means whoever holds its
   recovery phrase.
-- Typing a recovery phrase into a web page is only as safe as the page, and keeping it in
-  the browser ("remember on this device") only as safe as the browser profile: use it on the
-  backend you run yourself, over its own address, and check the certificate fingerprint.
-- A browser cannot pin the self-signed certificate: on first visit compare the fingerprint
-  it shows with the one `cwbcode url` prints.
+- Typing a recovery phrase into a web page is only as safe as the page: use it on the
+  backend you run yourself, over its own address, and check the certificate fingerprint. The
+  page does not store the phrase; it keeps only the session. Use a wallet with nothing in it.
+- A browser cannot pin the certificate: on first visit compare the fingerprint it shows with
+  the one `cwbcode url` prints, or trust the backend's authority on the device, comparing
+  its fingerprint (the `ca` line) once.
 
 ## Tests
 
@@ -425,10 +470,10 @@ make test         # unit tests, and the backend started for real with a scripted
                   # log, file versions and undo, the knowledge base, tools made at runtime,
                   # plan mode, hooks, the user's own commands, taking a project off the list
 make test-web     # the web client in headless Chrome: sign-in with a recovery phrase (and
-                  # wrong ones refused), the remembered phrase, a folder created on opening,
+                  # wrong ones refused), that the phrase is never stored, a folder created on opening,
                   # themes, layouts, typefaces, sizes, languages and a refresh that comes back to the same
                   # place, a project, chat, approval, undo, history,
-                  # dashboard, knowledge base, sign-out, and local mode without a login,
+                  # dashboard, knowledge base, sign-out, and local mode with the one-time link,
                   # and remote mode turned on and off from the dashboard
 make test-playwright   # Playwright drives the web client with the real model: the agent
                   # writes a Rust crate and extends it; the crate must build, pass its own
@@ -465,9 +510,10 @@ and `make e2e` the model, with the backend stopped (two copies do not fit).
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). `rust/server/src/inkling` is derived from Ollama's MLX
-runner, and the web client ships Motion and typefaces under their own licences (mostly the
-SIL Open Font License); see [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). The pictures were
+Apache License 2.0, see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). `rust/server/src/inkling`
+is derived from Ollama's MLX runner (MIT License, kept with its notice), and the web client
+ships Motion and typefaces under their own licences (mostly the SIL Open Font License); see
+[`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). The pictures were
 made for this project with an image model.
 
 Contributions are welcome: see [`CONTRIBUTING.md`](CONTRIBUTING.md). To report a security

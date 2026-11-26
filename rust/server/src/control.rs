@@ -1,6 +1,7 @@
 //! Local mode and remote mode, and switching between them while the backend runs.
 //!
-//!   local    no wallet: the backend listens on this machine only and asks for no login.
+//!   local    no wallet: the backend listens on this machine only and asks for its token
+//!            (~/.cwbcode/token), from this machine only.
 //!   remote   a wallet is set: it listens on every interface and its owner signs in.
 //!
 //! Setting a wallet up (from the web client's dashboard or `cwbcodeclient remote on`) writes
@@ -66,7 +67,7 @@ impl Control {
         }
         Ok(match &wallet {
             Some(w) => format!("Remote mode is on: wallet {}, listening on {bind}. Sign in with the wallet's recovery phrase.", w.address),
-            None => format!("Remote mode is off: listening on {bind}, no login."),
+            None => format!("Remote mode is off: listening on {bind}, with the backend's token from this machine."),
         })
     }
 }

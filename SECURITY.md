@@ -19,8 +19,11 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
 **Who can reach it.**
 
 - **Local mode** (no wallet set, the default): the backend listens on `127.0.0.1:7443` and
-  asks for no login. It answers only its own page and clients that are not web pages: a page
-  of another website open in your browser is refused.
+  asks for its token (`~/.cwbcode/token`, readable only by you), from this machine only. The
+  `open` link `cwbcode url` (or `make url`) prints carries a one-time code, not the token: the
+  page exchanges it for the token, from this machine only, once, within five minutes, so the
+  token never stands in an address the browser's history keeps. It answers only its own page and
+  clients that are not web pages: a page of another website open in your browser is refused.
 - **Remote mode** (a wallet set, with `CWBCODE_WALLET` in `.env` or the environment, from
   the dashboard, or with `cwbcodeclient remote on`): the backend listens on `0.0.0.0:7443`,
   and every request needs a session obtained by signing a one-time challenge with that
@@ -30,9 +33,15 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
   sign-ins are limited to ten a minute.
 - A backend bound beyond this machine without a wallet (`BIND=...`) asks for its token,
   as `cwbcode serve --require-token` always does.
-- Traffic is HTTPS (HTTP/2 over TLS, or HTTP/3 over QUIC) with a self-signed certificate.
-  The terminal client pins it; a browser cannot, so compare the fingerprint it shows with
-  the one `make url` prints.
+- Traffic is HTTPS (HTTP/2 over TLS, or HTTP/3 over QUIC) with a certificate signed by the
+  machine's own certificate authority (`~/.cwbcode/ca.pem`; its key `ca-key.pem` is
+  readable only by you and denied to commands). The authority may sign only for this
+  machine's names and addresses (`localhost`, names under `.local` and `.ts.net`, the host
+  name, loopback, private and Tailscale ranges): a device that trusts it does not trust it for
+  any other site, even if its key leaked. The terminal client pins the certificate; a browser
+  cannot, so compare the fingerprint it shows with the one `cwbcode url` prints, or install
+  the authority on the device once (compare its `ca` fingerprint, which the page shows beside
+  the download, with the `ca` line of `cwbcode url`) and trust it.
 
 **What the agent can do.**
 
@@ -51,8 +60,8 @@ promises is described in full under [Safety](README.md#how-it-works) in the READ
 above: a command can read the rest of your home folder and the backend's environment, and
 what it reads becomes part of the conversation. The model can be steered by text it reads.
 Whoever can sign in is you as far as the backend is concerned; in remote mode, that is
-whoever holds the wallet's recovery phrase. Keeping the phrase in a browser ("remember on
-this device") is only as safe as that browser profile.
+whoever holds the wallet's recovery phrase. The web client never stores the phrase, only the
+session it signs in to; use a wallet made for this, with nothing in it.
 
 A report is most useful when it shows one of the promises above broken: a tool or a command
 reaching the network, writing outside the project, reading a credential or a `.cwbcode`

@@ -69,8 +69,8 @@ pub struct Cli {
     #[arg(long, default_value = "https://127.0.0.1:7443", env = "CWBCODE_SERVER", global = true)]
     server: String,
 
-    /// A token for the backend [default: none in local mode; otherwise the session saved by
-    /// `cwbcodeclient login`, or this machine's ~/.cwbcode/token].
+    /// A token for the backend [default: this machine's ~/.cwbcode/token in local mode;
+    /// otherwise the session saved by `cwbcodeclient login`, or that token file].
     #[arg(long, env = "CWBCODE_TOKEN", hide_env_values = true, global = true)]
     token: Option<String>,
 
@@ -110,7 +110,7 @@ enum Cmd {
     /// End the saved session.
     Logout,
     /// Remote mode: show it, or turn it on (the backend then listens on every interface and
-    /// the wallet's owner signs in) or off (this machine only, no login). Takes effect at
+    /// the wallet's owner signs in) or off (this machine only, with its token). Takes effect at
     /// once and is remembered in ~/.cwbcode/settings.jsonl.
     Remote {
         #[command(subcommand)]
@@ -153,7 +153,7 @@ enum RemoteCmd {
         #[arg(long, default_value_t = 0)]
         index: u32,
     },
-    /// Turn remote mode off: this machine only, no login.
+    /// Turn remote mode off: this machine only, with its token.
     Off,
 }
 
@@ -251,8 +251,6 @@ async fn connect(cli: &Cli) -> Result<Session> {
     let saved = || std::fs::read_to_string(session_file(cli)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let own = || std::fs::read_to_string(home(cli).join("token")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     match hello.auth.as_str() {
-        // Local mode: no login.
-        "open" => {}
         "wallet" => {
             // A session from `login`; on the backend's own machine, its token works too.
             let mut candidates: Vec<String> = cli.token.clone().into_iter().chain(saved()).chain(own()).collect();
@@ -269,6 +267,7 @@ async fn connect(cli: &Cli) -> Result<Session> {
                 bail!("this backend belongs to wallet {}: sign in first with `cwbcodeclient login`", hello.wallet);
             }
         }
+        // Local mode, or a backend that asks for its token: this machine's token file.
         _ => {
             let token = cli.token.clone().or_else(own).with_context(|| format!("no token: pass --token (the backend prints it with `cwbcode url`), or run on its machine (read {})", home(cli).join("token").display()))?;
             client.set_token(&token);
@@ -287,7 +286,7 @@ async fn login(cli: &Cli, index: u32) -> Result<()> {
     use cwbcode_proto::wallet;
     let (client, hello) = reach(cli).await?;
     if hello.auth != "wallet" {
-        println!("{}", if hello.auth == "open" { "This backend is in local mode: no login is needed." } else { "This backend signs in with its token, not a wallet (pass --token)." });
+        println!("{}", if hello.auth == "open" { "This backend is in local mode: there is no wallet to sign in with; the client uses this machine's token file." } else { "This backend signs in with its token, not a wallet (pass --token)." });
         return Ok(());
     }
     let phrase = match std::env::var("CWBCODE_PHRASE") {

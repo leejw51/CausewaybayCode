@@ -20,7 +20,7 @@ async function ask(page, text) {
 }
 
 test('projects, typefaces, the context bar, copying, plan mode, commands and hooks', async ({ page, context }) => {
-  const { url, run: runDir } = run();
+  const { url, token, run: runDir } = run();
   const home = os.homedir();
   const folder = path.join(runDir, 'ui');
   const under = '~' + folder.slice(home.length);
@@ -29,7 +29,9 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 
   await test.step('the model is ready', async () => {
-    await page.goto(url);
+    // Local mode: a link with the backend's token, as one types it (`make url` prints a
+    // one-time code instead, which works once).
+    await page.goto(`${url}/#token=${token}`);
     await expect(page.locator('.side')).toBeVisible();
     await expect(page.locator('#status-pill')).toContainText('ready', { timeout: 3 * 60 * 1000 });
   });

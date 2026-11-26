@@ -30,12 +30,21 @@ pub struct App {
     pub control: Arc<crate::control::Control>,
     /// The port, for the Alt-Svc header that tells browsers about HTTP/3 (None: no HTTP/3).
     pub h3_port: Option<u16>,
+    /// This machine's certificate authority, as PEM: given to whoever asks, to install.
+    pub ca_pem: Arc<String>,
+    /// Its SHA-256, in hex.
+    pub ca_fingerprint: Arc<String>,
 }
+
+/// Where a device downloads the certificate authority to trust (no sign-in needed: it is
+/// public, and is what makes the sign-in page trustworthy).
+pub const CA_PATH: &str = "/ca.crt";
 
 pub fn router(app: App) -> Router {
     Router::new()
         .route(CALL_PATH, post(call))
         .route(CHAT_PATH, post(chat))
+        .route(CA_PATH, get(ca))
         .fallback(get(web))
         .layer(DefaultBodyLimit::max(cwbcode_proto::MAX_MESSAGE_BYTES))
         .layer(axum::middleware::from_fn_with_state(app.clone(), stamp))
@@ -107,7 +116,8 @@ fn capnp(bytes: Vec<u8>) -> HttpResponse {
 }
 
 async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
-    let allowed = app.allowed(request.headers(), request.uri(), peer(&request));
+    let from = peer(&request);
+    let allowed = app.allowed(request.headers(), request.uri(), from);
     let version = request.version();
     let headers = request.headers().clone();
     // The host the request names: over HTTP/2 and HTTP/3 it is in the address, not a header.
@@ -123,11 +133,11 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         Err(e) => return (StatusCode::BAD_REQUEST, format!("the request is not a cwbcode message: {e}")).into_response(),
     };
     // Signing in needs no credentials, but still comes from the backend's own page or a client.
-    if matches!(request.method, Method::Hello | Method::Challenge | Method::Login) {
+    if matches!(request.method, Method::Hello | Method::Challenge | Method::Login | Method::Redeem) {
         if !crate::auth::same_origin(&headers, authority.as_deref()) {
             return refused();
         }
-        return capnp(sign_in(&app, &request).unwrap_or_else(|e| Response::error(format!("{e:#}"))).encode());
+        return capnp(sign_in(&app, &request, from).unwrap_or_else(|e| Response::error(format!("{e:#}"))).encode());
     }
     if !allowed {
         return refused();
@@ -137,8 +147,8 @@ async fn call(State(app): State<App>, request: HttpRequest) -> HttpResponse {
         return capnp(Response::default().encode());
     }
     if request.method == Method::Setup {
-        // Remote mode on or off: by whoever may use the backend now (in local mode, anyone
-        // on this machine; in remote mode, the wallet's owner).
+        // Remote mode on or off: by whoever may use the backend now (in local mode, a client
+        // on this machine with the backend's token; in remote mode, the wallet's owner).
         let response = match app.control.setup(&app.auth, &request.text) {
             Ok(said) => Response { text: said, status: Some(hello(&app)), ..Response::default() },
             Err(e) => Response::error(format!("{e:#}")),
@@ -171,17 +181,21 @@ fn hello(app: &App) -> Status {
         fingerprint: app.auth.fingerprint.clone(),
         bind: app.control.bind.lock().unwrap().to_string(),
         wallet_source: app.control.source.lock().unwrap().clone(),
+        // (Before signing in too: a device compares it before it trusts the authority.)
+        ca_fingerprint: app.ca_fingerprint.as_str().to_owned(),
         ..Status::default()
     }
 }
 
-/// Hello, challenge and login: what a client does before it has credentials.
-fn sign_in(app: &App, request: &Request) -> Result<Response> {
+/// Hello, challenge, login, and a link's code: what a client does before it has credentials.
+/// `from` is where the request came from.
+fn sign_in(app: &App, request: &Request, from: Option<std::net::IpAddr>) -> Result<Response> {
     let auth = &app.auth;
     Ok(match request.method {
         Method::Hello => Response { status: Some(hello(app)), ..Response::default() },
         Method::Challenge => Response::text(auth.challenge()?),
         Method::Login => Response::text(auth.login(&request.text, &request.name)?),
+        Method::Redeem => Response::text(auth.redeem(&request.text, from)?),
         _ => bail!("not a sign-in call"),
     })
 }
@@ -274,6 +288,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 bind: known.bind.clone(),
                 wallet_source: known.wallet_source.clone(),
                 user_home: shared.roots.home().display().to_string(),
+                ca_fingerprint: known.ca_fingerprint.clone(),
             });
         }
         Method::Projects => {
@@ -395,7 +410,7 @@ fn direct(shared: &Shared, known: &Status, request: &Request, protocol: &str) ->
                 out.changes = store.changes(request.session)?;
             }
         }
-        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup => bail!("{:?} is not answered here", request.method),
+        Method::KbAdd | Method::Compact | Method::Undo | Method::Chat | Method::Hello | Method::Challenge | Method::Login | Method::Logout | Method::Setup | Method::Redeem => bail!("{:?} is not answered here", request.method),
     }
     Ok(out)
 }
@@ -416,6 +431,56 @@ fn cache_rule(name: &str) -> &'static str {
     } else {
         "no-cache"
     }
+}
+
+/// The page loads nothing but its own files, and runs no inline script but the page's own two
+/// (the loader Trunk writes and the error reporter), allowed by their SHA-256: a script
+/// injected into the page would not run.
+static CSP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use sha2::Digest;
+    let page = Web::get("index.html").map(|f| String::from_utf8_lossy(&f.data).into_owned()).unwrap_or_default();
+    let hashes: String = inline_scripts(&page).iter().map(|s| format!(" 'sha256-{}'", base64(&sha2::Sha256::digest(s.as_bytes())))).collect();
+    format!("default-src 'self'; script-src 'self'{hashes} 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
+});
+
+/// The bodies of a page's inline scripts (those without a `src`), as the browser hashes them.
+fn inline_scripts(page: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = page;
+    while let Some(start) = rest.find("<script") {
+        rest = &rest[start..];
+        let Some(open_end) = rest.find('>') else { break };
+        let attributes = &rest[..open_end];
+        let Some(close) = rest[open_end..].find("</script>") else { break };
+        if !attributes.contains("src=") {
+            out.push(&rest[open_end + 1..open_end + close]);
+        }
+        rest = &rest[open_end + close..];
+    }
+    out
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// The certificate authority, as a file a phone or a computer offers to install. (By its type
+/// alone: Safari on an iPhone or iPad then offers it as a profile, which an attachment might
+/// only save to Files.)
+async fn ca(State(app): State<App>) -> HttpResponse {
+    (
+        [(header::CONTENT_TYPE, "application/x-x509-ca-cert"), (header::CACHE_CONTROL, "no-cache")],
+        app.ca_pem.as_str().to_owned(),
+    )
+        .into_response()
 }
 
 /// The web client: its files are built into the program. Any other path is the app itself.
@@ -439,7 +504,7 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
                     // The page is not to be framed by another site, nor to load anything but its own files.
                     (header::X_FRAME_OPTIONS, "DENY".to_string()),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                    (header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'".to_string()),
+                    (header::CONTENT_SECURITY_POLICY, CSP.clone()),
                 ],
                 file.data.into_owned(),
             )
@@ -451,7 +516,19 @@ async fn web(uri: axum::http::Uri) -> HttpResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::cache_rule;
+    use super::{base64, cache_rule, inline_scripts};
+
+    #[test]
+    fn only_the_pages_own_inline_scripts_are_allowed_by_their_hash() {
+        let page = "<head><script>\n  one();\n</script><script type=\"module\">two()</script><script src=\"/x.js\"></script></head>";
+        assert_eq!(inline_scripts(page), vec!["\n  one();\n", "two()"]);
+        // The digest as a browser writes it in a policy.
+        use sha2::Digest;
+        assert_eq!(base64(&sha2::Sha256::digest(b"two()")), "iMrPAWirDC2X0OhZzLsM2MRIWSmepJGI4r7D8ZlwBOw=");
+        assert_eq!((base64(b"a"), base64(b"ab"), base64(b"abc")), ("YQ==".into(), "YWI=".into(), "YWJj".into()));
+        let csp = super::CSP.as_str();
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'") && csp.contains("'sha256-"), "{csp}");
+    }
 
     #[test]
     fn only_files_named_after_their_contents_are_kept_for_good() {

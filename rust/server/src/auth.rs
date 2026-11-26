@@ -1,7 +1,12 @@
 //! Who may use the backend.
 //!
-//!   open     local mode (no wallet, listening on this machine only): no login. Requests are
-//!            still refused when they come from another website's page in the user's browser.
+//!   open     local mode (no wallet, listening on this machine only): no wallet sign-in, but
+//!            the backend's token is still needed, and only from this machine. It is in
+//!            ~/.cwbcode/token, readable by this user alone; the web client gets it with the
+//!            one-time code in the link `cwbcode url` prints (or it is typed in). Without
+//!            it any program on the machine, another
+//!            user's or one behind a port forward (ssh -L, tailscale serve), could run
+//!            commands. Requests from another website's page are refused as well.
 //!   wallet   CWBCODE_WALLET is set: sign in by signing a one-time challenge with that
 //!            wallet's key (the web client derives it from the recovery phrase, in the
 //!            browser). A session token is given in return. The backend's own token file
@@ -48,6 +53,34 @@ pub struct Auth {
     failures: Mutex<(u64, u32)>,
     /// Where sessions are kept across restarts.
     file: PathBuf,
+    /// Where the one-time codes of the links `cwbcode url` prints are kept (see `issue_code`).
+    codes: PathBuf,
+}
+
+/// How long the one-time code in a link from `cwbcode url` is good for.
+pub const CODE_SECONDS: u64 = 300;
+
+/// A one-time code for the link `cwbcode url` prints: the page exchanges it for the backend's
+/// token (`Auth::redeem`), so the long-lived token itself never stands in an address, where
+/// the browser's history would keep it. `cwbcode url` runs as a process of its own, beside the
+/// running backend, so the codes are files in `<home>/codes` (readable by this user only),
+/// each named by its code's SHA-256 and holding when it ends. Using one up is removing its
+/// file, which only one request can do.
+pub fn issue_code(home: &Path) -> Result<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.join("codes");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    // Codes that have ended are cleared away. (A name starting with a dot is one being written.)
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let ended = std::fs::read_to_string(entry.path()).ok().and_then(|t| t.trim().parse::<u64>().ok()).is_none_or(|ends| ends <= now());
+        if ended && !entry.file_name().to_string_lossy().starts_with('.') {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let code = random_hex(16)?;
+    crate::net::write_private(&dir.join(hash(&code)), &(now() + CODE_SECONDS).to_string())?;
+    Ok(code)
 }
 
 fn now() -> u64 {
@@ -103,7 +136,25 @@ impl Auth {
                 }
             }
         }
-        Self { mode: std::sync::RwLock::new(mode), token, fingerprint, sessions: Mutex::new(sessions), challenges: Mutex::new(HashMap::new()), failures: Mutex::new((0, 0)), file }
+        Self { mode: std::sync::RwLock::new(mode), token, fingerprint, sessions: Mutex::new(sessions), challenges: Mutex::new(HashMap::new()), failures: Mutex::new((0, 0)), file, codes: home.join("codes") }
+    }
+
+    /// Exchange a link's one-time code (see `issue_code`) for the backend's token: only from
+    /// this machine, where the link was printed and where the token works; once; and while it
+    /// is good. A request whose address is not known is not from this machine.
+    pub fn redeem(&self, code: &str, peer: Option<IpAddr>) -> Result<String> {
+        if !peer.is_some_and(|ip| ip.is_loopback()) {
+            bail!("a link from `cwbcode url` works only on the machine the backend runs on");
+        }
+        // (Named by its hash: whatever is sent, it names no file outside the folder.)
+        let file = self.codes.join(hash(code.trim()));
+        let ends = std::fs::read_to_string(&file).ok().and_then(|text| text.trim().parse::<u64>().ok());
+        // Used up whatever comes next; of two requests with the same code, one removes it.
+        let removed = std::fs::remove_file(&file).is_ok();
+        match ends {
+            Some(ends) if removed && ends > now() => Ok(self.token.clone()),
+            _ => bail!("that link has expired or was used already: run `cwbcode url` for a new one"),
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -159,7 +210,7 @@ impl Auth {
         let local = peer.is_none_or(|ip| ip.is_loopback());
         let own = |given: &str| same(given.as_bytes(), self.token.as_bytes());
         match &self.mode() {
-            Mode::Open => local,
+            Mode::Open => local && bearer(headers).is_some_and(own),
             Mode::Token => bearer(headers).is_some_and(own),
             Mode::Wallet(_) => bearer(headers).is_some_and(|given| self.session(given) || (local && own(given))),
         }
@@ -264,19 +315,23 @@ mod tests {
     const ELSEWHERE: Option<IpAddr> = Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)));
 
     #[test]
-    fn local_mode_needs_no_login_but_only_its_own_page_may_ask() {
+    fn local_mode_takes_the_token_from_this_machine_and_its_own_page_only() {
         let (auth, _) = auth(Mode::Open, "open");
         let host = Some("127.0.0.1:7443");
-        // The terminal client (no page), and the backend's own page.
-        assert!(auth.allowed(&headers(&[]), host, HERE));
-        assert!(auth.allowed(&headers(&[("origin", "https://127.0.0.1:7443")]), host, HERE));
-        assert!(auth.allowed(&headers(&[("sec-fetch-site", "same-origin")]), host, HERE));
+        let token = ("authorization", "Bearer the-file-token");
+        // The terminal client (no page), and the backend's own page, with the token.
+        assert!(auth.allowed(&headers(&[token]), host, HERE));
+        assert!(auth.allowed(&headers(&[token, ("origin", "https://127.0.0.1:7443")]), host, HERE));
+        assert!(auth.allowed(&headers(&[token, ("sec-fetch-site", "same-origin")]), host, HERE));
+        // Without it, or with a wrong one, nothing: any program on this machine could ask.
+        assert!(!auth.allowed(&headers(&[]), host, HERE));
+        assert!(!auth.allowed(&headers(&[("authorization", "Bearer a-guess")]), host, HERE));
         // A page of another site in the same browser, however it asks.
-        for foreign in [vec![("origin", "https://evil.example")], vec![("origin", "null")], vec![("origin", "https://127.0.0.1:9999")], vec![("sec-fetch-site", "cross-site")], vec![("sec-fetch-site", "same-site")]] {
+        for foreign in [vec![token, ("origin", "https://evil.example")], vec![token, ("origin", "null")], vec![token, ("origin", "https://127.0.0.1:9999")], vec![token, ("sec-fetch-site", "cross-site")], vec![token, ("sec-fetch-site", "same-site")]] {
             assert!(!auth.allowed(&headers(&foreign), host, HERE), "{foreign:?}");
         }
-        // Another machine, should the port ever be reachable from one.
-        assert!(!auth.allowed(&headers(&[]), host, ELSEWHERE));
+        // Another machine, should the port ever be reachable from one, even with the token.
+        assert!(!auth.allowed(&headers(&[token]), host, ELSEWHERE));
         assert!(auth.challenge().is_err());
     }
 
@@ -337,6 +392,35 @@ mod tests {
     }
 
     #[test]
+    fn a_links_code_gives_the_token_once_on_this_machine_while_it_is_good() {
+        use std::os::unix::fs::PermissionsExt;
+        let (auth, home) = auth(Mode::Open, "code");
+        let code = issue_code(&home).unwrap();
+        assert_eq!(code.len(), 32);
+        // Kept by its hash only, readable by this user only.
+        let names: Vec<String> = std::fs::read_dir(home.join("codes")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec![hash(&code)]);
+        assert_eq!(std::fs::metadata(home.join("codes")).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(home.join("codes").join(hash(&code))).unwrap().permissions().mode() & 0o777, 0o600);
+        // From another machine, or from nowhere known: nothing, and the code is not used up.
+        assert!(auth.redeem(&code, ELSEWHERE).is_err());
+        assert!(auth.redeem(&code, None).is_err());
+        // From this machine: the token, once.
+        assert_eq!(auth.redeem(&code, HERE).unwrap(), "the-file-token");
+        assert!(auth.redeem(&code, HERE).unwrap_err().to_string().contains("used already"));
+        assert!(auth.redeem("a-guess", HERE).is_err());
+        assert!(auth.redeem("../sessions", HERE).is_err());
+        // A code that has ended does not work, and is cleared away with the next one issued.
+        let old = "00112233445566778899aabbccddeeff";
+        std::fs::write(home.join("codes").join(hash(old)), (now() - 1).to_string()).unwrap();
+        assert!(auth.redeem(old, HERE).is_err());
+        std::fs::write(home.join("codes").join(hash(old)), (now() - 1).to_string()).unwrap();
+        let fresh = issue_code(&home).unwrap();
+        assert!(!home.join("codes").join(hash(old)).exists());
+        assert_eq!(auth.redeem(&fresh, HERE).unwrap(), "the-file-token");
+    }
+
+    #[test]
     fn the_token_mode_takes_the_token_from_anywhere() {
         let (auth, _) = auth(Mode::Token, "token");
         let with = |token: &str| headers(&[("authorization", &format!("Bearer {token}"))]);
@@ -352,10 +436,11 @@ mod tests {
         let with = |token: &str| headers(&[("authorization", &format!("Bearer {token}"))]);
         let session = sign_in(&auth, PHRASE, 0).unwrap();
         assert!(auth.allowed(&with(&session), None, ELSEWHERE));
-        // Remote mode off: local, no login; nobody from elsewhere.
+        // Remote mode off: local, with the token from this machine; nobody from elsewhere.
         auth.set_mode(Mode::Open);
         assert_eq!(auth.label(), "open");
-        assert!(auth.allowed(&headers(&[]), None, HERE));
+        assert!(auth.allowed(&with("the-file-token"), None, HERE));
+        assert!(!auth.allowed(&headers(&[]), None, HERE));
         assert!(!auth.allowed(&with(&session), None, ELSEWHERE));
         // On again, for another wallet: the old session is not a way in.
         auth.set_mode(Mode::Wallet("0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into()));

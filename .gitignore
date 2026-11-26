@@ -34,3 +34,5 @@ token
 playwright-report/
 test-results/
 .run.json
+# Worktrees Claude Code makes for a branch of its own
+.claude/worktrees/

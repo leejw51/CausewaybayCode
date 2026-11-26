@@ -8,7 +8,8 @@
 //!                                  (reachable from other machines, with the token) when
 //!                                  CWBCODE_WALLET is set in .env
 //!   cwbcode serve --bind ADDR      listen there, whatever .env says
-//!   cwbcode url                    where the web client is, and the token to give it
+//!   cwbcode url                    where the web client is, and how to get in (in local
+//!                                  mode a link with a one-time code for the token)
 
 mod agent;
 mod api;
@@ -59,7 +60,8 @@ enum Cmd {
     Serve(Serve),
     /// Print the token clients must present.
     Token,
-    /// Print the web client's address, the token and the certificate's fingerprint.
+    /// Print the web client's address, how to get in (in local mode a link with a one-time
+    /// code), and the certificates' fingerprints. Writes no certificate.
     Url(Serve),
 }
 
@@ -79,8 +81,8 @@ struct Serve {
     #[arg(long, value_name = "FILE")]
     env_file: Option<PathBuf>,
 
-    /// Ask for the backend's token even in local mode (no wallet, this machine only), where
-    /// no login is needed otherwise.
+    /// Take the backend's token from any address, not only from this machine, when there is
+    /// no wallet. (Local mode asks for the token anyway, from this machine only.)
     #[arg(long)]
     require_token: bool,
 
@@ -174,8 +176,8 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
         },
         format!("{:<9} {bind}  ({scope}, {why})", "bind"),
         match control::mode(wallet, bind, options.require_token) {
-            auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (it stays in your browser)", "login"),
-            auth::Mode::Open => format!("{:<9} none: local mode (turn remote mode on from the dashboard, or `cwbcodeclient remote on <wallet address>`)", "login"),
+            auth::Mode::Wallet(_) => format!("{:<9} required: sign in with the wallet's recovery phrase (only a signature leaves the browser; the phrase is not stored)", "login"),
+            auth::Mode::Open => format!("{:<9} the backend's token, from this machine only: open the `open` link below (its one-time code gets the page the token), or the terminal client reads it itself", "login"),
             auth::Mode::Token => format!("{:<9} the backend's token", "login"),
         },
     ]
@@ -183,7 +185,9 @@ fn exposure_lines(options: &Serve, home: &std::path::Path, wallet: &Option<env::
 
 fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     let (wallet, bind) = exposure(serve, home)?;
-    let identity = net::identity(home)?;
+    // Only read: a backend may be running on these files, and only it changes its certificate,
+    // when it starts. (`make start` runs this before and after starting it.)
+    let shown = net::current(home)?;
     let token = net::token(home)?;
     for line in exposure_lines(serve, home, &wallet, bind) {
         println!("{line}");
@@ -195,9 +199,31 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     match control::mode(&wallet, bind, serve.require_token) {
         auth::Mode::Token => println!("{:<9} {token}", "token"),
         auth::Mode::Wallet(_) => println!("{:<9} {} (for clients on this machine; others sign in with the wallet)", "token", home.join("token").display()),
-        auth::Mode::Open => {}
+        // Local mode: a link with a one-time code, which the page exchanges for the token and
+        // then takes out of the address. The token itself is not put in the link: the
+        // browser's history would keep it. (Printed here only, never into the log.)
+        auth::Mode::Open => {
+            if let Some((_, web)) = addresses(bind).first() {
+                let code = auth::issue_code(home)?;
+                println!("{:<9} {web}/#code={code}  (works once, within {} minutes)", "open", auth::CODE_SECONDS / 60);
+            }
+        }
     }
-    println!("{:<9} {} (sha256 {})", "cert", home.join("cert.pem").display(), identity.fingerprint);
+    let cert = home.join("cert.pem");
+    match &shown.fingerprint {
+        Some(fingerprint) if shown.reissue => println!("{:<9} {} (sha256 {fingerprint}; made again when the backend next starts)", "cert", cert.display()),
+        Some(fingerprint) => println!("{:<9} {} (sha256 {fingerprint})", "cert", cert.display()),
+        None => println!("{:<9} {} (made when the backend first starts)", "cert", cert.display()),
+    }
+    // Installed and trusted once on a phone, tablet or another computer, it makes every
+    // certificate this backend makes trusted there: no warning, and the page installs as an app.
+    let download = addresses(bind).into_iter().find(|(what, _)| *what == "lan" || *what == "tailscale").or_else(|| addresses(bind).into_iter().next()).map(|(_, web)| format!("{web}{}", api::CA_PATH)).unwrap_or_default();
+    let ca = home.join("ca.pem");
+    match &shown.ca_fingerprint {
+        Some(fingerprint) if shown.replace_ca => println!("{:<9} {} (sha256 {fingerprint}): made before authorities were limited to this machine's names, so it is replaced when the backend next starts; trust the new one then, from {download}", "ca", ca.display()),
+        Some(fingerprint) => println!("{:<9} {} (sha256 {fingerprint}): trust it once on each device, from {download}", "ca", ca.display()),
+        None => println!("{:<9} {} (made when the backend first starts; then trust it once on each device, from {download})", "ca", ca.display()),
+    }
     Ok(())
 }
 
@@ -240,7 +266,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         source: std::sync::Mutex::new(wallet.as_ref().map_or(String::new(), |w| w.source.clone())),
         rebind,
     });
-    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()) };
+    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
     let router = api::router(app.clone());
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 

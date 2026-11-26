@@ -577,6 +577,18 @@ async fn a_request_without_the_token_is_turned_away_before_its_body_is_read() {
 async fn the_page_forbids_framing_and_foreign_scripts_and_the_stores_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let server = Server::start("headers", HELLO, &[]);
+    // A device that trusts this machine's certificate authority, and nothing else, reaches the
+    // page with no warning, and can download the authority from it.
+    let ca = std::fs::read(server.home.join(".cwbcode/ca.pem")).unwrap();
+    let trusting = reqwest::Client::builder().tls_built_in_root_certs(false).add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap()).build().unwrap();
+    let base = format!("https://localhost:{}", server.port);
+    assert_eq!(trusting.get(&base).send().await.unwrap().status(), 200);
+    let download = trusting.get(format!("{base}/ca.crt")).send().await.unwrap();
+    assert_eq!(download.headers()["content-type"], "application/x-x509-ca-cert");
+    assert_eq!(download.bytes().await.unwrap().as_ref(), ca.as_slice());
+    assert_eq!(std::fs::metadata(server.home.join(".cwbcode/ca-key.pem")).unwrap().permissions().mode() & 0o777, 0o600);
+    // One that trusts nothing is refused.
+    assert!(reqwest::Client::builder().tls_built_in_root_certs(false).build().unwrap().get(&base).send().await.is_err());
     let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
     let page = http.get(&server.url).send().await.unwrap();
     let header = |name: &str| page.headers().get(name).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
@@ -630,7 +642,7 @@ const TEST_PHRASE: &str = "test test test test test test test test test test tes
 const TEST_WALLET: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
+async fn local_mode_takes_the_token_file_and_refuses_other_sites_pages() {
     // No wallet, this machine only.
     let server = Server::start("open", HELLO, &[]);
     for h3 in [true, false] {
@@ -638,7 +650,12 @@ async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
         let hello = client.call(&Request::new(Method::Hello)).await.unwrap().status.unwrap();
         assert_eq!((hello.auth.as_str(), hello.wallet.as_str()), ("open", ""));
         assert_eq!(hello.fingerprint.len(), 64);
-        // No token, and everything works.
+        // Without the token nothing but the greeting: any program on this machine could ask,
+        // and nobody may turn remote mode on with a wallet of their own.
+        assert!(client.call(&Request::new(Method::Status)).await.is_err(), "h3={h3}: answered without the token");
+        assert!(client.call(&Request::new(Method::Setup).text(TEST_WALLET)).await.is_err(), "h3={h3}: remote mode was set up without the token");
+        // With the token file's token, everything works.
+        client.set_token(&server.token);
         assert_eq!(client.call(&Request::new(Method::Status)).await.unwrap().status.unwrap().auth, "open");
         let events = read_all(&mut client.chat(&chat(&server, 0, "hi", "")).await.unwrap()).await;
         assert!(events.iter().any(|w| matches!(w, What::Text(_))), "h3={h3}: {events:?}");
@@ -647,17 +664,81 @@ async fn local_mode_needs_no_login_and_refuses_other_sites_pages() {
     // A page of another website, open in the same browser, is turned away: with its Origin,
     // without one but marked cross-site, and for the sign-in calls too.
     let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
-    let post = |header: (&'static str, &'static str), request: Request| http.post(format!("{}/api/call", server.url)).header(header.0, header.1).body(request.encode()).send();
+    // (With the token: the page is turned away for where it comes from, not for lacking it.)
+    let post = |header: (&'static str, &'static str), request: Request| http.post(format!("{}/api/call", server.url)).bearer_auth(&server.token).header(header.0, header.1).body(request.encode()).send();
     for foreign in [("origin", "https://evil.example"), ("origin", "null"), ("sec-fetch-site", "cross-site")] {
         assert_eq!(post(foreign, Request::new(Method::Projects)).await.unwrap().status(), 401, "{foreign:?}");
         assert_eq!(post(foreign, Request::new(Method::Hello)).await.unwrap().status(), 401, "{foreign:?}");
-        let chat = http.post(format!("{}/api/chat", server.url)).header(foreign.0, foreign.1).body(chat(&server, 0, "hi", "auto").encode()).send().await.unwrap();
+        let chat = http.post(format!("{}/api/chat", server.url)).bearer_auth(&server.token).header(foreign.0, foreign.1).body(chat(&server, 0, "hi", "auto").encode()).send().await.unwrap();
         assert_eq!(chat.status(), 401, "{foreign:?}");
     }
     // The backend's own page is not.
     let own = format!("https://127.0.0.1:{}", server.port);
-    let from_own_page = http.post(format!("{}/api/call", server.url)).header("origin", own).body(Request::new(Method::Projects).encode()).send().await.unwrap();
+    let from_own_page = http.post(format!("{}/api/call", server.url)).bearer_auth(&server.token).header("origin", own).body(Request::new(Method::Projects).encode()).send().await.unwrap();
     assert_eq!(from_own_page.status(), 200);
+}
+
+/// The one-time code in the `open` link `cwbcode url` prints for this server's home (or None,
+/// when it prints no such link). `bind`: as `--bind`, or the server's port in its own mode.
+fn link_code(server: &Server, bind: Option<&str>) -> Option<String> {
+    let mut command = Command::new(backend_binary());
+    command.args(["url", "--env-file", "/dev/null"]);
+    match bind {
+        Some(bind) => command.args(["--bind", bind]),
+        None => command.args(["--port", &server.port.to_string()]),
+    };
+    let out = command.env_remove("CWBCODE_WALLET").env("HOME", &server.home).env("CWBCODE_HOME", server.home.join(".cwbcode")).output().unwrap();
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "cwbcode url failed: {}", String::from_utf8_lossy(&out.stderr));
+    // The token itself is never in the link (the browser's history would keep it).
+    assert!(!printed.contains(server.token.trim()), "the token was printed: {printed}");
+    let link = printed.lines().find_map(|line| line.strip_prefix("open"))?.split_whitespace().next()?.to_string();
+    Some(link.split_once("/#code=").unwrap_or_else(|| panic!("not a code link: {link}")).1.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_links_code_gives_the_token_once_from_this_machine_and_expires() {
+    let server = Server::start("code", HELLO, &["movable"]);
+    async fn redeem(client: &Client, code: &str) -> anyhow::Result<String> {
+        Ok(client.call(&Request::new(Method::Redeem).text(code)).await?.text)
+    }
+    for h3 in [true, false] {
+        let client = Client::connect(&server.url, "", server.trust.clone(), h3).await.unwrap();
+        let code = link_code(&server, None).expect("local mode prints the open link");
+        // The code gets the backend's token, once.
+        assert_eq!(redeem(&client, &code).await.unwrap(), server.token.trim(), "h3={h3}");
+        let again = redeem(&client, &code).await.unwrap_err().to_string();
+        assert!(again.contains("used already"), "h3={h3}: {again}");
+        assert!(redeem(&client, "0123456789abcdef0123456789abcdef").await.is_err());
+        // A code past its time does not work. (Its file holds when it ends.)
+        let code = link_code(&server, None).unwrap();
+        let codes = server.home.join(".cwbcode/codes");
+        for entry in std::fs::read_dir(&codes).unwrap().flatten() {
+            std::fs::write(entry.path(), "1").unwrap();
+        }
+        assert!(redeem(&client, &code).await.is_err(), "h3={h3}: a code that has ended worked");
+    }
+    // Another website's page cannot use a code either.
+    let code = link_code(&server, None).unwrap();
+    let http = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let foreign = http.post(format!("{}/api/call", server.url)).header("origin", "https://evil.example").body(Request::new(Method::Redeem).text(&code).encode()).send().await.unwrap();
+    assert_eq!(foreign.status(), 401);
+
+    // From another machine a code is refused, even where the backend listens for one (remote
+    // mode: every interface), and is not used up by the attempt.
+    let wallet_env = format!("env:CWBCODE_WALLET={TEST_WALLET}");
+    let remote = Server::start("code-remote", HELLO, &["movable", &wallet_env]);
+    // (A code for this home, as `cwbcode url` for local mode issues it.)
+    let code = link_code(&remote, Some(&format!("127.0.0.1:{}", remote.port))).unwrap();
+    if let Some(ip) = lan_address() {
+        for h3 in [true, false] {
+            let outside = Client::connect(&format!("https://{ip}:{}", remote.port), "", remote.trust.clone(), h3).await.unwrap();
+            let refused = redeem(&outside, &code).await.unwrap_err().to_string();
+            assert!(refused.contains("only on the machine"), "h3={h3}: {refused}");
+        }
+    }
+    let here = Client::connect(&remote.url, "", remote.trust.clone(), true).await.unwrap();
+    assert_eq!(redeem(&here, &code).await.unwrap(), remote.token.trim());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -736,8 +817,8 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     let everywhere = format!("0.0.0.0:{}", server.port);
     let settings = server.home.join(".cwbcode/settings.jsonl");
 
-    // Local mode: this machine only, no login, nothing set up.
-    let client = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
+    // Local mode: this machine only, the token file's token, nothing set up.
+    let client = Client::connect(&server.url, &server.token, server.trust.clone(), true).await.unwrap();
     let before = hello(&client).await.unwrap();
     assert_eq!((before.auth.as_str(), before.bind.as_str(), before.wallet_source.as_str()), ("open", local.as_str(), ""));
     if let Some(ip) = lan_address() {
@@ -800,6 +881,8 @@ async fn remote_mode_is_set_up_from_local_mode_applied_at_once_and_remembered() 
     let fresh = Client::connect(&server.url, "", server.trust.clone(), true).await.unwrap();
     let finally = hello(&fresh).await.unwrap();
     assert_eq!((finally.auth.as_str(), finally.bind.as_str(), finally.wallet_source.as_str()), ("open", local.as_str(), ""));
+    assert!(fresh.call(&Request::new(Method::Status)).await.is_err(), "local mode answered without the token");
+    fresh.set_token(&server.token);
     assert!(fresh.call(&Request::new(Method::Status)).await.is_ok());
     if let Some(ip) = lan_address() {
         let from_outside = Client::connect(&format!("https://{ip}:{}", server.port), "", server.trust.clone(), false).await.unwrap();
@@ -855,7 +938,8 @@ async fn the_web_client_is_served_whole_over_http3_as_over_http2() {
     let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
     assert_eq!((status, manifest["display"].as_str(), manifest["start_url"].as_str()), (200, Some("standalone"), Some("/")));
     let mut icons: Vec<String> = manifest["icons"].as_array().unwrap().iter().map(|icon| icon["src"].as_str().unwrap().to_string()).collect();
-    icons.extend(["/apple-touch-icon.png".to_string(), "/favicon-32.png".to_string()]);
+    // (Also as the page names it, with a version to make a device ask again.)
+    icons.extend(["/apple-touch-icon.png".to_string(), "/apple-touch-icon.png?v=3".to_string(), "/favicon-32.png".to_string()]);
     for icon in &icons {
         let (status, bytes) = quic.get(icon).await.unwrap();
         assert!(status == 200 && bytes.starts_with(b"\x89PNG"), "{icon} is not a picture");

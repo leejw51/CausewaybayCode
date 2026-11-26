@@ -18,9 +18,11 @@ use wasm_bindgen::closure::Closure;
 const TOKEN_KEY: &str = "cwbcode-token";
 /// the preferences and where the user was: theme, layout, language, view, project, conversation,
 const PREFS_KEY: &str = "cwbcode-prefs";
-/// and, when "remember on this device" is ticked, the wallet's recovery phrase and account,
-/// with which the page signs in again by itself when the session has ended.
+/// Where earlier versions kept the wallet's recovery phrase. It is never stored now (it
+/// controls the whole wallet), and a phrase left there is deleted when the page loads.
 const PHRASE_KEY: &str = "cwbcode-phrase";
+/// The page's title, as index.html gives it.
+const TITLE: &str = "CC · Causewaybay Code";
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -83,9 +85,11 @@ struct App {
     /// How the backend wants clients to sign in: "" (not known yet), "open" (local mode: no
     /// login), "wallet" or "token".
     auth: RwSignal<String>,
-    /// The wallet the backend belongs to, and its certificate's fingerprint.
+    /// The wallet the backend belongs to, its certificate's fingerprint, and its certificate
+    /// authority's.
     wallet: RwSignal<String>,
     fingerprint: RwSignal<String>,
+    ca_fingerprint: RwSignal<String>,
     token: RwSignal<String>,
     /// Preferences: "dark" or "light"; "horizontal" (side by side) or "vertical" (stacked);
     /// the interface language.
@@ -156,35 +160,38 @@ fn stored_prefs() -> serde_json::Value {
     stored(PREFS_KEY).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| serde_json::json!({}))
 }
 
-/// The recovery phrase and account kept on this device, if any.
-fn stored_phrase() -> Option<(String, u32)> {
-    let saved: serde_json::Value = serde_json::from_str(&stored(PHRASE_KEY)?).ok()?;
-    Some((saved["phrase"].as_str().filter(|p| !p.trim().is_empty())?.to_string(), saved["index"].as_u64().unwrap_or(0) as u32))
-}
 
 /// Does the system ask for a light interface?
 fn system_prefers_light() -> bool {
     web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten()).is_some_and(|m| m.matches())
 }
 
-/// The token: from the address (`#token=...`, then removed from it) or from an earlier visit.
-fn initial_token() -> String {
-    let Some(window) = web_sys::window() else { return String::new() };
+/// What a link to the page may carry after its #: the one-time code `cwbcode url` prints, to
+/// exchange for the backend's token, or the token itself, typed by hand.
+enum Link {
+    Code(String),
+    Token(String),
+}
+
+/// The code or token in the address, if there is one. It is taken out of the address at once,
+/// before anything is asked of the backend: the address is kept in the browser's history.
+fn take_link() -> Option<Link> {
+    let window = web_sys::window()?;
     let hash = window.location().hash().unwrap_or_default();
-    if let Some(token) = hash.strip_prefix("#token=") {
-        if let Some(storage) = storage() {
-            let _ = storage.set_item(TOKEN_KEY, token);
-        }
-        if let Ok(history) = window.history() {
-            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
-        }
-        return token.to_string();
+    let link = if let Some(code) = hash.strip_prefix("#code=") {
+        Link::Code(code.to_string())
+    } else {
+        Link::Token(hash.strip_prefix("#token=")?.to_string())
+    };
+    if let Ok(history) = window.history() {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
     }
-    storage().and_then(|s| s.get_item(TOKEN_KEY).ok().flatten()).unwrap_or_default()
+    Some(link)
 }
 
 impl App {
     fn new() -> Self {
+        forget(PHRASE_KEY);
         // Preferences and place from the last visit; for a first visit, what the system says.
         let prefs = stored_prefs();
         let text = |key: &str, fallback: &str| prefs[key].as_str().unwrap_or(fallback).to_string();
@@ -193,7 +200,9 @@ impl App {
             auth: RwSignal::new(String::new()),
             wallet: RwSignal::new(String::new()),
             fingerprint: RwSignal::new(String::new()),
-            token: RwSignal::new(initial_token()),
+            ca_fingerprint: RwSignal::new(String::new()),
+            // (From an earlier visit; one in the address is taken once it has been checked.)
+            token: RwSignal::new(stored(TOKEN_KEY).unwrap_or_default()),
             theme: RwSignal::new(text("theme", if system_prefers_light() { "light" } else { "dark" })),
             layout: RwSignal::new(text("layout", "horizontal")),
             font: RwSignal::new(Some(text("font", "pixel")).filter(|f| FONTS.iter().any(|(code, ..)| code == f)).unwrap_or_else(|| "pixel".into())),
@@ -255,11 +264,11 @@ impl App {
         set_timeout(move || notice.set(String::new()), std::time::Duration::from_secs(5));
     }
 
-    /// May the app be shown: local mode, or signed in?
+    /// May the app be shown: is there a token (local mode too asks for the backend's), or a
+    /// session?
     fn ready(&self) -> bool {
         match self.auth.get().as_str() {
             "" => false,
-            "open" => true,
             _ => !self.token.get().is_empty(),
         }
     }
@@ -267,7 +276,6 @@ impl App {
     fn ready_untracked(&self) -> bool {
         match self.auth.get_untracked().as_str() {
             "" => false,
-            "open" => true,
             _ => !self.token.get_untracked().is_empty(),
         }
     }
@@ -279,40 +287,49 @@ impl App {
                 let status = response.status.unwrap_or_default();
                 self.wallet.set(status.wallet);
                 self.fingerprint.set(status.fingerprint);
-                let wallet_mode = status.auth == "wallet";
+                self.ca_fingerprint.set(status.ca_fingerprint);
                 self.auth.set(status.auth);
-                // A phrase remembered on this device signs in by itself.
-                if wallet_mode && self.token.get_untracked().is_empty() {
-                    self.sign_in_remembered().await;
-                }
             }
             Err(e) => self.fail(e),
         }
     }
 
-    /// Sign in with the phrase kept on this device, if there is one. A phrase that no longer
-    /// fits (the backend belongs to another wallet now) is forgotten.
-    async fn sign_in_remembered(&self) {
-        if let Some((phrase, index)) = stored_phrase() {
-            if self.sign_in(phrase, index, true).await.is_err() {
-                forget(PHRASE_KEY);
-            }
+    /// Take the code or token a link carried. A code is exchanged for the backend's token; a
+    /// token is tried first. Only one that works is kept: a link that does not (used already,
+    /// expired, or another backend's) leaves the token this browser has alone.
+    async fn adopt(&self, link: Link) {
+        let token = match link {
+            Link::Code(code) => api::call("", &Request::new(Method::Redeem).text(&code)).await.map(|response| response.text),
+            Link::Token(token) if token == self.token.get_untracked() => return,
+            // (Not through `call`: a refusal there forgets the token kept.)
+            Link::Token(token) => api::call(&token, &Request::new(Method::Status)).await.map(|_| token),
+        };
+        match token {
+            Ok(token) => self.remember(&token, true),
+            Err(e) if e.starts_with("cannot reach") => self.fail(e),
+            // Refused by the backend.
+            Err(_) => self.fail(tr(self.lang.get_untracked(), "link_refused").to_string()),
         }
     }
 
-    fn remember(&self, token: &str) {
-        store(TOKEN_KEY, token);
+    /// Use this token (the backend's, or a session from signing in); with `keep`, also after
+    /// a refresh, until it ends or the user signs out.
+    fn remember(&self, token: &str, keep: bool) {
+        if keep {
+            store(TOKEN_KEY, token);
+        } else {
+            forget(TOKEN_KEY);
+        }
         self.token.set(token.to_string());
     }
 
     /// Sign in with the wallet's recovery phrase. The key is derived here, in the browser;
-    /// the backend gets a signature of its one-time challenge and nothing else. With
-    /// `keep`, the phrase is kept in this browser's storage, so that a refresh, or a session
-    /// that has ended, signs in again without typing it.
+    /// the backend gets a signature of its one-time challenge and nothing else. The phrase
+    /// is never stored: it controls the whole wallet, not only this backend. With `keep`,
+    /// the session (good for 30 days, ended by signing out) is kept in this browser.
     async fn sign_in(&self, phrase: String, index: u32, keep: bool) -> Result<(), String> {
         use cwbcode_proto::wallet;
         let key = wallet::key_from_phrase(&phrase, index)?;
-        let normal = phrase.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>().join(" ");
         drop(phrase);
         let address = wallet::address(&key)?;
         let expected = self.wallet.get_untracked();
@@ -329,12 +346,7 @@ impl App {
         }
         let signature = wallet::sign(&key, &challenge)?;
         let session = api::call("", &Request::new(Method::Login).text(&challenge).name(&signature)).await?.text;
-        if keep {
-            store(PHRASE_KEY, &serde_json::json!({"phrase": normal, "index": index}).to_string());
-        } else {
-            forget(PHRASE_KEY);
-        }
-        self.remember(&session);
+        self.remember(&session, keep);
         Ok(())
     }
 
@@ -345,13 +357,11 @@ impl App {
         if let Some(status) = response.status {
             // The session of the mode before is over, either way.
             forget(TOKEN_KEY);
-            if status.auth != "wallet" {
-                forget(PHRASE_KEY);
-            }
             self.token.set(String::new());
             self.status.set(None);
             self.wallet.set(status.wallet);
             self.fingerprint.set(status.fingerprint);
+            self.ca_fingerprint.set(status.ca_fingerprint);
             self.auth.set(status.auth);
         }
         Ok(response.text)
@@ -359,9 +369,8 @@ impl App {
 
     async fn sign_out(&self) {
         let _ = api::call(&self.token.get_untracked(), &Request::new(Method::Logout)).await;
-        // Signing out forgets the session and the phrase kept on this device.
+        // Signing out forgets the session kept on this device.
         forget(TOKEN_KEY);
-        forget(PHRASE_KEY);
         self.resume.set((String::new(), 0));
         self.token.set(String::new());
         self.projects.set(Vec::new());
@@ -377,11 +386,9 @@ impl App {
     /// Show an error; a refused token sends the user back to the token page.
     fn fail(&self, error: String) {
         if error == "unauthorized" {
+            // The session has ended (or the token is wrong): back to the sign-in page.
             forget(TOKEN_KEY);
             self.token.set(String::new());
-            // The session has ended: with the phrase kept on this device, sign in again.
-            let app = *self;
-            spawn_local(async move { app.sign_in_remembered().await });
             return;
         }
         self.error.set(error);
@@ -390,12 +397,40 @@ impl App {
     }
 
     async fn call(&self, request: Request) -> Option<cwbcode_proto::Response> {
-        match api::call(&self.token.get_untracked(), &request).await {
+        let sent = self.token.get_untracked();
+        match api::call(&sent, &request).await {
             Ok(response) => Some(response),
             Err(e) => {
-                self.fail(e);
+                self.fail_with(e, &sent);
                 None
             }
+        }
+    }
+
+    /// `fail`, for a request made with the token `sent`: a refusal of a token that has been
+    /// replaced since (a link's code exchanged meanwhile) does not send the user back.
+    fn fail_with(&self, error: String, sent: &str) {
+        if error == "unauthorized" && sent != self.token.get_untracked() {
+            return;
+        }
+        self.fail(error);
+    }
+
+    /// Edits and commands waiting for the user's answer in this conversation.
+    fn waiting(&self) -> usize {
+        self.items.with(|items| items.iter().filter(|i| i.kind == Kind::Approval && !i.past && i.answered.with(String::is_empty)).count())
+    }
+
+    /// At this width and below the sidebar is a drawer over the view, closed after a choice in
+    /// it: the same width as the stylesheet's `max-width: 640px`.
+    fn narrow() -> bool {
+        web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|w| w.as_f64()).is_some_and(|w| w <= 640.0)
+    }
+
+    /// On a phone, close the drawer once something in it is chosen.
+    fn chosen(&self) {
+        if Self::narrow() {
+            self.side.set(false);
         }
     }
 
@@ -476,9 +511,10 @@ impl App {
         if !self.ready_untracked() {
             return;
         }
-        match api::call(&self.token.get_untracked(), &Request::new(Method::Status)).await {
+        let sent = self.token.get_untracked();
+        match api::call(&sent, &Request::new(Method::Status)).await {
             Ok(response) => self.status.set(response.status),
-            Err(e) if e == "unauthorized" => self.fail(e),
+            Err(e) if e == "unauthorized" => self.fail_with(e, &sent),
             // The server may be restarting: the page keeps asking.
             Err(_) => self.status.set(None),
         }
@@ -669,6 +705,11 @@ fn main() {
 }
 
 /// Run something once the page has drawn what was just changed.
+/// Does this key press open what has the focus, as a click would (Enter, or Space)?
+fn activates(ev: &web_sys::KeyboardEvent) -> bool {
+    ev.key() == "Enter" || ev.key() == " "
+}
+
 fn after_draw(f: impl FnOnce() + 'static) {
     set_timeout(f, std::time::Duration::from_millis(30));
 }
@@ -691,6 +732,53 @@ fn Root() -> impl IntoView {
                 app.refresh_status().await;
                 app.refresh_projects().await;
             });
+        }
+    });
+    // An edit or command waiting for an answer is in the tab's title, seen from another tab
+    // or another view: the page's own title, as index.html has it, with the count in front.
+    Effect::new(move |_| {
+        let waiting = app.waiting();
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.set_title(&if waiting > 0 { format!("({waiting}) {TITLE}") } else { TITLE.to_string() });
+        }
+    });
+    // On a phone the sidebar is a drawer: it starts closed, and closes when the window becomes
+    // that narrow from wider. Other changes of size leave it as it is: on a phone the height
+    // changes whenever the keyboard or the browser's bars come and go. Settings close with
+    // Escape, or a click outside them.
+    if App::narrow() {
+        app.side.set(false);
+    }
+    let was_narrow = StoredValue::new(App::narrow());
+    let _ = window_event_listener(leptos::ev::resize, move |_| {
+        let narrow = App::narrow();
+        if narrow && !was_narrow.get_value() && app.side.get_untracked() {
+            app.side.set(false);
+        }
+        was_narrow.set_value(narrow);
+    });
+    // A link with a code (or a token) in the address; pasted into this same tab it changes only
+    // what follows the #, so it is read then too, as a fresh load does.
+    if let Some(link) = take_link() {
+        spawn_local(async move { app.adopt(link).await });
+    }
+    let _ = window_event_listener(leptos::ev::hashchange, move |_| {
+        if let Some(link) = take_link() {
+            spawn_local(async move { app.adopt(link).await });
+        }
+    });
+    let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        if ev.key() == "Escape" && app.settings.get_untracked() {
+            app.settings.set(false);
+        }
+    });
+    let _ = window_event_listener(leptos::ev::click, move |ev| {
+        if !app.settings.get_untracked() {
+            return;
+        }
+        let inside = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).is_some_and(|el| el.closest("#settings-sheet, #settings").ok().flatten().is_some());
+        if !inside {
+            app.settings.set(false);
         }
     });
     // The theme and language are the page's; every change of a preference, or of where the
@@ -730,8 +818,12 @@ fn Root() -> impl IntoView {
                 <Sidebar/>
                 <div class="main"><ViewHost/></div>
                 <div class="sheet glass" id="settings-sheet" class:open=move || app.settings.get()>
-                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" on:click=move |_| app.settings.set(false)>"×"</button></div>
+                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" title=app.t("close") aria-label=app.t("close") on:click=move |_| app.settings.set(false)>"×"</button></div>
                     <Prefs/>
+                    // (On a phone the bar has no room for it: signing out is here.)
+                    <Show when=move || app.auth.get() != "open">
+                        <div class="sheet-signout"><button class="ghost" id="signout-sheet" on:click=move |_| { app.settings.set(false); spawn_local(async move { app.sign_out().await }) }>{app.t("sign_out")}</button></div>
+                    </Show>
                 </div>
             </div>
         </Show>
@@ -911,8 +1003,18 @@ fn step_size(app: App, by: i32) {
 fn AppBar() -> impl IntoView {
     let app = expect_context::<App>();
     let t = move |key: &'static str| app.t(key);
+    // (Named for screen readers and in a tip, also when the words are hidden on a narrow
+    // screen. Chat carries a badge while an edit or command waits for an answer.)
     let nav = move |view: View, id: &'static str, key: &'static str, shape: &'static str| {
-        view! { <button id=id class:on=move || app.view.get() == view on:click=move |_| app.view.set(view)>{icon(shape)}<span>{t(key)}</span></button> }
+        let badge = move || view == View::Chat && app.waiting() != 0 && app.view.get() != View::Chat;
+        view! {
+            <button id=id class:on=move || app.view.get() == view title=t(key) aria-label=t(key) on:click=move |_| app.view.set(view)>
+                {icon(shape)}<span>{t(key)}</span>
+                <Show when=badge>
+                    <b class="badge" id="waiting-badge">{move || app.waiting()}</b>
+                </Show>
+            </button>
+        }
     };
     // The selection slides to the chosen view, also when the words change size.
     Effect::new(move |_| {
@@ -940,10 +1042,13 @@ fn AppBar() -> impl IntoView {
                     {move || match app.status.get() {
                         None => view! { <span><span class="dot bad"></span>{t("offline")}</span> }.into_any(),
                         Some(s) => {
-                            let dot = if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
+                            // An answer the agent waits for comes before everything else.
+                            let waiting = app.waiting() > 0;
+                            let dot = if waiting { "dot ask" } else if s.busy { "dot busy" } else if s.model_state == "ready" || s.model_state == "scripted" { "dot ok" } else if s.model_state.starts_with("failed") { "dot bad" } else { "dot warn" };
                             let lang = app.lang.get();
+                            let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() };
                             view! {
-                                <span><span class=dot></span>{if s.busy { tr(lang, "working").to_string() } else { s.model_state.clone() }}" · "{s.protocol.clone()}</span>
+                                <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>
                                 <div id="login-state">{match s.auth.as_str() {
                                     "open" => tr(lang, "local_short").to_string(),
                                     "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
@@ -978,7 +1083,7 @@ fn Login() -> impl IntoView {
     let enter_token = move || {
         let token = typed.get_untracked().trim().to_string();
         if !token.is_empty() {
-            app.remember(&token);
+            app.remember(&token, true);
         }
     };
     let enter_phrase = move || {
@@ -1027,6 +1132,7 @@ fn Login() -> impl IntoView {
                         <Show when=move || !problem.get().is_empty()><div class="note bad" id="login-problem" style="text-align:left">{move || problem.get()}</div></Show>
                         <button class="primary" id="signin" disabled=move || working.get() on:click=move |_| enter_phrase()>{move || if working.get() { tr(app.lang.get(), "signing_in") } else { tr(app.lang.get(), "sign_in") }}</button>
                         <p class="sub fine">{t("cert_note")}" "<span style="word-break:break-all">{move || app.fingerprint.get()}</span></p>
+                        <details class="trust"><summary class="sub">{t("trust_title")}</summary><TrustDevice/></details>
                     }.into_any(),
                     _ => view! {
                         {brand(app)}
@@ -1037,6 +1143,26 @@ fn Login() -> impl IntoView {
                     }.into_any(),
                 }}
             </div>
+        </div>
+    }
+}
+
+/// How to make this device trust the backend: install its certificate authority once. Then
+/// the browser shows no warning, and the page can be installed as an app.
+#[component]
+fn TrustDevice() -> impl IntoView {
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    view! {
+        <div class="sub trust-steps">
+            <p>{t("trust_why")}</p>
+            <a class="button ghost" id="trust-download" href="/ca.crt">{t("trust_download")}</a>
+            // What it is, to compare before trusting it: this page could be another's, but the
+            // line `cwbcode url` prints on the backend's own machine is not.
+            <p>{t("trust_compare")}</p>
+            <code id="trust-fingerprint" style="word-break:break-all">{move || app.ca_fingerprint.get()}</code>
+            <p>{t("trust_ios")}</p>
+            <p>{t("trust_mac")}</p>
         </div>
     }
 }
@@ -1092,27 +1218,37 @@ fn Sidebar() -> impl IntoView {
                 </div>
                 <div class="list projects">
                     <For each=move || app.projects.get() key=|p| p.path.clone() children=move |p: Project| {
-                        let (path, gone) = (p.path.clone(), p.path.clone());
+                        let gone = p.path.clone();
                         let (selected, shown) = (p.path.clone(), p.path.clone());
+                        let target = StoredValue::new(p.path.clone());
+                        let pick = move || {
+                            let path = target.get_value();
+                            app.chosen();
+                            spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); })
+                        };
                         view! {
-                            <div class="row project" class:on=move || app.project.get() == selected
-                                on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
+                            // (Reached with Tab, and opened with Enter or Space too.)
+                            <div class="row project" class:on=move || app.project.get() == selected tabindex="0" role="button"
+                                on:click=move |_| pick() on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); pick() }>
                                 <span class="what">{p.name.clone()}<small>{move || app.tilde(&shown)}</small></span>
                                 <button class="ghost round remove" title=t("remove_project") aria-label=t("remove_project")
-                                    on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }>"×"</button>
+                                    on:click=move |ev| { ev.stop_propagation(); let path = gone.clone(); spawn_local(async move { app.remove_project(path).await }) }
+                                    on:keydown=move |ev| ev.stop_propagation()>"×"</button>
                             </div>
                         }
                     }/>
                 </div>
             </div>
             <div class="group grow">
-                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); }>{t("new")}</button></h4>
+                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); app.chosen(); }>{t("new")}</button></h4>
                 <div class="list sessions">
                     <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
                         let id = s.id;
                         let label = if s.name.is_empty() { s.first.clone() } else { s.name.clone() };
                         view! {
-                            <div class="row session" class:on=move || app.session.get() == id on:click=move |_| spawn_local(async move { app.select_session(id).await })>
+                            <div class="row session" class:on=move || app.session.get() == id tabindex="0" role="button"
+                                on:click=move |_| { app.chosen(); spawn_local(async move { app.select_session(id).await }) }
+                                on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); app.chosen(); spawn_local(async move { app.select_session(id).await }) }>
                                 {if label.is_empty() { format!("#{id}") } else { label }}
                                 <small>{format!("#{id} · {} · {}", s.updated.get(5..16).unwrap_or(""), s.messages)}</small>
                             </div>
@@ -1172,6 +1308,7 @@ fn Dashboard() -> impl IntoView {
                         <div class="sub">{move || format!("cwbcode {} · {}", s().version, tr_with(app.lang.get(), "waiting", &s().queued.to_string()))}</div></div>
                 </div>
                 <RemoteAccess/>
+                <div class="card glass" id="trust"><h5>{t("trust_title")}</h5><TrustDevice/></div>
                 <div class="card glass">
                     <h5>{t("projects")}</h5>
                     <Show when=move || !app.projects.get().is_empty() fallback=move || view! { <div class="empty">{t("no_projects")}</div> }>
@@ -1179,9 +1316,10 @@ fn Dashboard() -> impl IntoView {
                             <thead><tr><th>{t("th_project")}</th><th>{t("th_folder")}</th><th>{t("conversations")}</th><th>{t("th_opened")}</th></tr></thead>
                             <tbody>
                                 <For each=move || app.projects.get() key=|p| (p.path.clone(), p.sessions) children=move |p: Project| {
-                                    let path = p.path.clone();
+                                    let target = StoredValue::new(p.path.clone());
+                                    let pick = move || { let path = target.get_value(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) };
                                     view! {
-                                        <tr class="click" on:click=move |_| { let path = path.clone(); spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); }) }>
+                                        <tr class="click" tabindex="0" role="button" on:click=move |_| pick() on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); pick() }>
                                             <td>{p.name.clone()}</td><td class="dim">{let shown = p.path.clone(); move || app.tilde(&shown)}</td><td>{p.sessions}</td><td class="dim">{p.updated.clone()}</td>
                                         </tr>
                                     }
@@ -1337,8 +1475,19 @@ fn ItemView(item: Item) -> impl IntoView {
                     app.call(Request::new(Method::Approve).id(id).text(&text)).await;
                 });
             };
+            // A new question is scrolled into sight, Allow and No included, on a phone too; one
+            // answered already is not, when the conversation is shown again. (Read untracked:
+            // answering it is not a reason to scroll.)
+            let card = NodeRef::<leptos::html::Div>::new();
+            Effect::new(move |_| {
+                if let Some(el) = card.get() {
+                    if !past && answered.with_untracked(String::is_empty) {
+                        after_draw(move || el.scroll_into_view_with_bool(false));
+                    }
+                }
+            });
             view! {
-                <div class="approval" class:done=move || !answered.get().is_empty() || past>
+                <div class="approval" node_ref=card class:done=move || !answered.get().is_empty() || past>
                     <pre>{move || text.get()}</pre>
                     <Show when=move || answered.get().is_empty() && !past fallback=move || view! { <div class="note">{move || tr_with(app.lang.get(), "answered", &if answered.get().is_empty() { "—".to_string() } else { answered.get() })}</div> }>
                         <div class="acts">
@@ -1488,7 +1637,9 @@ fn Chat() -> impl IntoView {
                     <label class="chip">{t("image")}<input type="file" accept="image/*" multiple style="display:none" on:change=pick/></label>
                     <For each=move || attached.get() key=|u| (u.name.clone(), u.data.len()) children=move |u: Upload| view! { <span class="chip">{u.name.clone()}</span> }/>
                     <span class="sp"></span>
-                    <select id="mode" on:change=move |ev| app.mode.set(event_target_value(&ev)) prop:value=move || app.mode.get()>
+                    // (Auto, where nothing is asked first, is marked: it is the one to notice.)
+                    <select id="mode" class:auto=move || app.mode.get() == "auto" title=t("mode_label") aria-label=t("mode_label")
+                        on:change=move |ev| app.mode.set(event_target_value(&ev)) prop:value=move || app.mode.get()>
                         <option value="ask" selected=move || app.mode.get() == "ask">{t("mode_ask")}</option>
                         <option value="auto" selected=move || app.mode.get() == "auto">{t("mode_auto")}</option>
                         <option value="read-only" selected=move || app.mode.get() == "read-only">{t("mode_ro")}</option>
@@ -1669,7 +1820,7 @@ fn Knowledge() -> impl IntoView {
                     <table id="kb-list"><tbody>
                         <For each=move || docs.get() key=|d| d.id children=move |d: Doc| {
                             let id = d.id;
-                            view! { <tr class="click" on:click=move |_| open(id)><td class="dim">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td class="dim">{d.text.chars().take(80).collect::<String>()}</td></tr> }
+                            view! { <tr class="click" tabindex="0" role="button" on:click=move |_| open(id) on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); open(id) }><td class="dim">{format!("#{}", d.id)}</td><td><span class="chip">{d.kind.clone()}</span></td><td>{d.title.clone()}</td><td class="dim">{d.text.chars().take(80).collect::<String>()}</td></tr> }
                         }/>
                     </tbody></table>
                 </div>
