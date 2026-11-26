@@ -1,18 +1,22 @@
 //! Causewaybay Code as a Mac app: a window on the web client, and the backend beside it.
 //!
-//! On start the window shows a page of its own (splash/) while the app finds the backend:
-//! one already answering on the app's port (`make start` serves it there too) is used as it
-//! is; otherwise the app starts the backend that ships inside it (`cwbcode`, beside this
-//! program; MLX's `mlx.metallib` is in the app's Resources) and stops it again on quit. Once
-//! the backend answers, the window goes to its page with the backend's token in the address
-//! (the page keeps it and takes it out), as the `open` link `make url` prints does.
+//! On start the window shows a page of its own (splash/) while the app starts its own backend,
+//! the one that ships inside it (`cwbcode`, beside this program; MLX's `mlx.metallib` is in
+//! the app's Resources), and stops it again on quit, as Causewaybay Hacker's app runs its
+//! server. It never uses a backend it did not start: `make start` is for development, and
+//! runs beside the app on ports of its own (7443, 7480). The app's backend is on 127.0.0.1:7481
+//! for the window (HTTPS on 7453, HTTP/3 on 7454), on 127.0.0.1 only: never reachable from
+//! other machines (remote mode is for `make start`); when something else holds one of those,
+//! the next free port is taken (a new port is a new origin for the page: it signs in again).
+//! Once the backend answers, the window goes to its page with the backend's token in the
+//! address (the page keeps it and takes it out), as the `open` link `make url` prints does.
 //!
 //! The window reaches the backend over plain HTTP on 127.0.0.1 (`cwbcode serve --http-port`):
 //! a web view will not take the backend's own certificate. That port answers this machine
 //! only, for requests addressed to 127.0.0.1 or localhost, and asks for the token like the
 //! HTTPS one. The page gets no commands of the app's.
 //!
-//! Whatever answers on the port is given the token only once it has shown that it holds it:
+//! Even the backend it started is given the token only once it has shown that it holds it:
 //! the app asks `GET /app-proof?nonce=N` and checks the answer, HMAC-SHA256 keyed with the
 //! token (which the app reads from the backend's folder) of a label, the port and the nonce.
 //! Another program on the port cannot answer, and is not given the token; the starting page
@@ -22,14 +26,14 @@
 //! app is killed or crashes (the backend runs with --exit-with-stdin, and the app holds the
 //! other end of its standard input). One app at a time per backend folder ($CWBCODE_HOME/
 //! app.lock). If the backend stops while the window is open, the window goes back to the
-//! starting page and says why; a backend the app did not start is waited for to come back.
+//! starting page and says why.
 //!
 //! The backend the app starts downloads the model by itself when it is not there yet
 //! (as every backend does, no flag needed); the window shows the download's progress, and the model loads when
 //! it is done.
 //!
 //!   CWBCODE_HOME       the backend's folder [~/.cwbcode]
-//!   CWBCODE_APP_PORT   the app's port [7480]
+//!   CWBCODE_APP_PORT   the app's port for its window [7481]
 //!   CWBCODE_APP_ARGS   more arguments for a backend the app starts (e.g. `--no-model`)
 
 use std::io::{Read, Write};
@@ -43,7 +47,10 @@ use std::time::{Duration, Instant};
 use hmac::Mac;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow};
 
-const DEFAULT_PORT: u16 = 7480;
+/// The window's port (plain HTTP), one above `make start`'s 7480; and the HTTPS port of the
+/// app's backend (HTTP/3 on the one after), above `make start`'s 7443.
+const DEFAULT_PORT: u16 = 7481;
+const DEFAULT_HTTPS_PORT: u16 = 7453;
 /// How long a backend may take to answer: it starts listening before the model has loaded.
 const START_SECONDS: u64 = 120;
 /// How long the PATH a terminal would have may take to find out.
@@ -60,6 +67,16 @@ fn home() -> PathBuf {
 
 fn port() -> u16 {
     std::env::var("CWBCODE_APP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT)
+}
+
+/// Is this TCP port free on 127.0.0.1?
+fn tcp_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Are this HTTPS port and the HTTP/3 port after it free on 127.0.0.1?
+fn https_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()
 }
 
 /// What the app says on its terminal (if it has one), for whoever runs it from there.
@@ -222,7 +239,7 @@ fn login_path() -> Option<String> {
 
 /// Start the backend that ships beside this program. Its output goes to `app-backend.log` in
 /// its folder; its standard input is a pipe this app holds, so that it ends with the app.
-fn start_backend(port: u16) -> Result<Child, String> {
+fn start_backend(port: u16, https_port: u16) -> Result<Child, String> {
     let program = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("cwbcode");
     if !program.exists() {
         return Err(format!("the backend is not in the app ({} is missing)", program.display()));
@@ -235,8 +252,10 @@ fn start_backend(port: u16) -> Result<Child, String> {
     // A Mac that has never had the model gets it here: the backend downloads it (from Hugging
     // Face, about 20 GB) when it is in no store, the window shows how far it is, and it loads
     // when it is done. Nothing else (Python, Ollama, `make download`) is needed.
-    command.arg("serve").arg("--http-port").arg(port.to_string()).arg("--exit-with-stdin").arg("--download-model");
-    // (A wallet in this file turns remote mode on, as with `make start`.)
+    command.arg("serve").arg("--http-port").arg(port.to_string()).arg("--bind").arg(format!("127.0.0.1:{https_port}")).arg("--exit-with-stdin");
+    // This machine only, whatever is set up: the app's backend listens on 127.0.0.1 (--bind),
+    // never on other interfaces (remote mode is for `make start`). A wallet in this file
+    // makes the page ask for it, on this machine.
     let env_file = home.join("app.env");
     if env_file.exists() {
         command.arg("--env-file").arg(&env_file);
@@ -381,27 +400,22 @@ fn refused(port: u16, why: &str) -> String {
 
 /// Find the backend (or start it), open its page, and keep watching it.
 fn connect(window: Window, handle: AppHandle) {
-    let mut port = port();
-    // The usual port is held by something that cannot show it holds this backend's token (a
-    // backend whose folder was deleted while it ran, another program): the app does not give
-    // it the token, and runs its own backend on the next port that is free (or that one of
-    // its own already answers on). A port fixed with CWBCODE_APP_PORT is kept as it is.
-    if let Found::Other(why) = found(port) {
-        if std::env::var_os("CWBCODE_APP_PORT").is_none() {
-            if let Some(next) = (port + 1..port + 20).find(|p| !matches!(found(*p), Found::Other(_))) {
-                note(&format!("127.0.0.1:{port} is held by something else ({why}): using 127.0.0.1:{next}"));
-                port = next;
-            }
-        }
+    // Always a backend of the app's own, as Causewaybay Hacker's app runs its server: on its
+    // ports, or the next free ones when something else (a `make start` backend, another
+    // program) holds them.
+    let wanted = port();
+    let Some(port) = (wanted..wanted.saturating_add(50)).find(|p| tcp_free(*p)) else {
+        return window.show("bad", &format!("No free port from 127.0.0.1:{wanted} on for the backend."));
+    };
+    if port != wanted {
+        note(&format!("127.0.0.1:{wanted} is held by something else: the backend's window port is {port}"));
     }
-    // One backend at a time: two copies of the model do not fit in memory.
-    match found(port) {
-        Found::Ours => {}
-        Found::Other(why) => return window.show("bad", &refused(port, &why)),
-        Found::Nobody => match start_backend(port) {
-            Ok(child) => *handle.state::<Started>().0.lock().unwrap() = Some(child),
-            Err(e) => return window.show("bad", &format!("Could not start the backend: {e}")),
-        },
+    let Some(https_port) = (DEFAULT_HTTPS_PORT..DEFAULT_HTTPS_PORT + 100).step_by(2).find(|p| https_free(*p)) else {
+        return window.show("bad", &format!("No free port from {DEFAULT_HTTPS_PORT} on for the backend's HTTPS."));
+    };
+    match start_backend(port, https_port) {
+        Ok(child) => *handle.state::<Started>().0.lock().unwrap() = Some(child),
+        Err(e) => return window.show("bad", &format!("Could not start the backend: {e}")),
     }
     let mut connected = false;
     let mut began = Instant::now();
