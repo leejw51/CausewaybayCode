@@ -90,6 +90,12 @@ struct Serve {
     #[arg(long)]
     no_h3: bool,
 
+    /// Also serve plain HTTP on 127.0.0.1 at this port, for the desktop app's window (a web
+    /// view that will not take the backend's certificate). This machine only, whatever the
+    /// mode; the token or a session is asked for as over HTTPS.
+    #[arg(long, env = "CWBCODE_HTTP_PORT")]
+    http_port: Option<u16>,
+
     /// The model, by its name in Ollama's store.
     #[arg(long, default_value = llm::DEFAULT_MODEL, env = "CWBCODE_MODEL")]
     model: String,
@@ -275,6 +281,20 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         eprintln!("cwbcode: {line}");
     }
     eprintln!("cwbcode: home {}", home.display());
+
+    // The desktop app's window: plain HTTP, on this machine's loopback address only, and
+    // never moved with remote mode. (Bound now, so a port in use is an error at startup.)
+    if let Some(port) = options.http_port {
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let listener = tokio::net::TcpListener::bind(address).await.with_context(|| format!("cannot listen on {address} (--http-port)"))?;
+        eprintln!("cwbcode: listening on http://{address} (the desktop app; this machine only)");
+        let router = router.clone();
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await {
+                eprintln!("cwbcode: http://{address}: {e}");
+            }
+        });
+    }
 
     // Serve at `bind` until told to stop, or to listen somewhere else (remote mode turned on
     // or off while running), and then serve there.

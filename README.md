@@ -93,6 +93,8 @@ Fixed the typo in greet.py: `"helo "` → `"hello "`.
 make download   # the model (20 GB, once): asks whether from Ollama or Hugging Face
 make build      # web client, then both programs in release mode, copied to rust/bin
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
+make package    # the Mac app: a window on the web client, with the backend inside (see below)
+make app        # open it
 make start      # start the backend under supervisor (0.0.0.0 when a wallet is set, else 127.0.0.1)
 make stop       # stop it
 ```
@@ -303,6 +305,29 @@ Movement is Motion's: what travels (a view arriving, a card appearing, a number 
 eases in and out exponentially; what answers a touch (a pressed button, the selection
 sliding to the chosen view) follows a spring, as on iOS. It is switched off for "reduce
 motion".
+
+### The Mac app
+
+`make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`), at
+`rust/desktop/target/release/bundle/macos/`; `make app` opens it, or drag it to
+/Applications. It is a window on the web client with the backend inside it: the app shows a
+starting page, uses a backend already running (`make start` serves the app's port too), or
+else starts the one it carries and stops it again on quit. Either way there is one backend
+and one copy of the model. Then the window opens the backend's page with its token, as the
+`open` link does. The model is not inside the app: download it first (`make download`).
+
+- The window reaches the backend over plain HTTP on `127.0.0.1:7480` (`cwbcode serve
+  --http-port`), because a web view will not take the backend's certificate. That port
+  answers this machine only, and asks for the token like the HTTPS one; the page gets no
+  commands of the app's.
+- MLX's Metal library (`mlx.metallib`) goes in beside the backend, where MLX looks first.
+- Opened from the Finder, the app takes the PATH of an interactive login shell, so the
+  agent's commands find cargo and Homebrew's tools as in a terminal.
+- A backend it starts writes to `~/.cwbcode/app-backend.log`, and reads a wallet from
+  `~/.cwbcode/app.env` if there is one (`CWBCODE_WALLET=0x...`, remote mode).
+  `CWBCODE_APP_PORT` and `CWBCODE_APP_ARGS` change its port and add arguments.
+- `make package-dmg` also makes a disk image. The app is not signed: the first time, open it
+  with Control-click → Open.
 
 ## Plan first, your own commands, hooks
 

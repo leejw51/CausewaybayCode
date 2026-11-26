@@ -574,6 +574,38 @@ async fn a_request_without_the_token_is_turned_away_before_its_body_is_read() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_desktop_apps_plain_http_is_on_this_machine_only_and_asks_for_the_token() {
+    // The desktop app's window reaches the backend over plain HTTP on 127.0.0.1.
+    let port = free_port().to_string();
+    let server = Server::start("http", HELLO, &["--http-port", &port]);
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let page = http.get(&base).send().await.unwrap();
+    assert_eq!(page.status(), 200);
+    assert!(page.text().await.unwrap().contains("<html"), "not the web client");
+    // The API asks for the token there too, and takes it.
+    let call = |token: Option<&str>, request: Request| {
+        let mut post = http.post(format!("{base}/api/call")).body(request.encode());
+        if let Some(token) = token {
+            post = post.bearer_auth(token);
+        }
+        post.send()
+    };
+    assert_eq!(call(None, Request::new(Method::Status)).await.unwrap().status(), 401);
+    assert_eq!(call(Some("a-guess"), Request::new(Method::Status)).await.unwrap().status(), 401);
+    let answer = call(Some(&server.token), Request::new(Method::Status)).await.unwrap();
+    assert_eq!(answer.status(), 200);
+    assert_eq!(Response::decode(&answer.bytes().await.unwrap()).unwrap().status.unwrap().auth, "open");
+    // Another site's page in the same browser is turned away, token or not.
+    let foreign = http.post(format!("{base}/api/call")).bearer_auth(&server.token).header("origin", "http://evil.example").body(Request::new(Method::Status).encode()).send().await.unwrap();
+    assert_eq!(foreign.status(), 401);
+    // Not on the machine's other addresses.
+    if let Some(ip) = lan_address() {
+        assert!(std::net::TcpStream::connect_timeout(&std::net::SocketAddr::new(ip, port.parse().unwrap()), Duration::from_secs(1)).is_err(), "plain HTTP answered on {ip}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_page_forbids_framing_and_foreign_scripts_and_the_stores_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let server = Server::start("headers", HELLO, &[]);
