@@ -172,6 +172,32 @@ export function to_end(id) {
   const el = document.getElementById(id);
   if (el) el.scrollTop = el.scrollHeight;
 }
+// The "Remove?" capsule on a conversation's row, as a sheet on a phone arrives: it fades in
+// and grows from where the × was on a spring with a little bounce (low damping), and its
+// buttons follow one after the other.
+const EXPO_IN = [0.7, 0, 0.84, 0];
+const BOUNCE = { type: 'spring', stiffness: 460, damping: 20, mass: 0.8 };
+export function confirm_in(el) {
+  if (!M() || !el || calm()) return;
+  M().animate(el, { opacity: [0, 1], scale: [0.6, 1], x: [14, 0] }, BOUNCE);
+  const parts = el.children;
+  if (parts.length) M().animate(parts, { opacity: [0, 1], y: [6, 0] }, { duration: 0.42, delay: M().stagger(0.05, { startDelay: 0.04 }), ease: EXPO_OUT });
+}
+// It fades and shrinks away (exponential in), and then `done` takes it off the row.
+export function confirm_out(el, done) {
+  if (!M() || !el || calm()) { done(); return; }
+  M().animate(el, { opacity: [1, 0], scale: [1, 0.82], x: [0, 10] }, { duration: 0.2, ease: EXPO_IN }).then(done, done);
+}
+// A removed conversation's row fades, slides away and closes up (exponential in and out);
+// then `done` takes it off the list.
+export function row_out(el, done) {
+  if (!M() || !el || calm()) { done(); return; }
+  const h = el.getBoundingClientRect().height;
+  el.style.overflow = 'hidden';
+  M().animate(el, { opacity: [1, 0], x: [0, -28], scale: [1, 0.96] }, { duration: 0.28, ease: EXPO_IN })
+    .then(() => M().animate(el, { height: [h + 'px', '0px'], paddingTop: 0, paddingBottom: 0, marginTop: 0, marginBottom: 0, minHeight: 0 }, { duration: 0.32, ease: EXPO }))
+    .then(done, done);
+}
 // Bring an element of the conversation into view.
 export function go_to(id) {
   const el = document.getElementById(id);
@@ -193,6 +219,12 @@ extern "C" {
     pub fn count_to(el: &web_sys::Element, to: f64, decimals: u32, suffix: &str);
     /// Move the `.selection` mark of a segmented control to its `.on` item.
     pub fn slide_selection(container_selector: &str);
+    /// The "Remove?" capsule arriving on a row, on a spring with a little bounce.
+    pub fn confirm_in(el: &web_sys::Element);
+    /// It fades away; then `done` is called.
+    pub fn confirm_out(el: &web_sys::Element, done: &js_sys::Function);
+    /// A removed row fades, slides away and closes up; then `done` is called.
+    pub fn row_out(el: &web_sys::Element, done: &js_sys::Function);
     /// Run `apply` (which changes theme or layout) inside a dip of the page.
     pub fn retheme(apply: &js_sys::Function);
     /// Press feedback and the drifting background, once.

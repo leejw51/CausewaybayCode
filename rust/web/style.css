@@ -221,8 +221,17 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .row small { color: var(--dim); display: block; overflow: hidden; text-overflow: ellipsis; font-size: .85em; }
 .row.project, .row.session { display: flex; align-items: center; gap: .3rem; } .row.project .what, .row.session .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* "Remove?" with Yes and No, in place of the ×. */
-.row .confirm { display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto; } .row .confirm .ask { color: var(--bad); font-size: .92em; }
-.row .confirm button { min-height: 1.9rem; padding: 0 .55rem; }
+.row .confirm { display: inline-flex; align-items: center; gap: .25rem; flex: 0 0 auto; padding: 3px 3px 3px .65rem; border-radius: 99px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent); -webkit-backdrop-filter: blur(14px) saturate(1.6); backdrop-filter: blur(14px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent); box-shadow: 0 6px 20px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .08);
+  transform-origin: right center; will-change: transform, opacity; }
+.row .confirm .ask { color: var(--bad); font-size: .92em; padding-right: .15rem; }
+.row .confirm button { min-height: 1.75rem; padding: 0 .7rem; border-radius: 99px; box-shadow: none; }
+.row .confirm .remove-yes { background: var(--bad); border-color: var(--bad); color: #1a0704; }
+.row .confirm .remove-no { background: transparent; border-color: var(--line2); }
+:root[data-theme="light"] .row .confirm .remove-yes { color: #fff; }
+/* The row that asks is tinted, so it is plain which conversation the question is about. */
+.row.asking { background: color-mix(in srgb, var(--bad) 12%, var(--btn2)); transition: background .35s var(--expo); }
 .row .remove { min-height: 1.9rem; width: 1.9rem; opacity: .55; } .row .remove:hover { opacity: 1; color: var(--bad); }
 /* The folder to open: always under the home folder, which the field says. */
 .open { display: flex; gap: .3rem; align-items: center; padding: 0 .55rem .4rem; }

@@ -682,13 +682,26 @@ impl App {
     /// Delete a conversation (the user has said yes on its row): it cannot be brought back.
     async fn remove_session(&self, id: i64) {
         let lang = self.lang.get_untracked();
-        self.removing.set(0);
         if self.call(self.request(Method::RemoveSession).session(id)).await.is_some() {
             if self.session.get_untracked() == id {
                 self.new_conversation();
             }
-            self.refresh_sessions().await;
             self.tell(tr_with(lang, "removed_session", &id.to_string()));
+            // Its row fades and closes up; then the list is read again without it.
+            let app = *self;
+            let after = Closure::once_into_js(move || {
+                app.removing.set(0);
+                spawn_local(async move { app.refresh_sessions().await });
+            });
+            let row = web_sys::window().and_then(|w| w.document()).and_then(|d| d.query_selector(&format!(".row.session[data-session=\"{id}\"]")).ok().flatten());
+            match row {
+                Some(row) => motion::row_out(&row, after.unchecked_ref()),
+                None => {
+                    let _ = after.unchecked_ref::<js_sys::Function>().call0(&wasm_bindgen::JsValue::NULL);
+                }
+            }
+        } else {
+            self.removing.set(0);
         }
     }
 
@@ -1361,8 +1374,15 @@ fn Sidebar() -> impl IntoView {
                     <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
                         let id = s.id;
                         let label = if s.name.is_empty() { s.first.clone() } else { s.name.clone() };
+                        // The "Remove?" capsule: it springs in when it is put on the row.
+                        let capsule = NodeRef::<leptos::html::Span>::new();
+                        Effect::new(move |_| {
+                            if let Some(el) = capsule.get() {
+                                motion::confirm_in(&el);
+                            }
+                        });
                         view! {
-                            <div class="row session" class:on=move || app.session.get() == id tabindex="0" role="button"
+                            <div class="row session" class:on=move || app.session.get() == id class:asking=move || app.removing.get() == id data-session=id tabindex="0" role="button"
                                 on:click=move |_| { app.chosen(); spawn_local(async move { app.select_session(id).await }) }
                                 on:keydown=move |ev| if activates(&ev) { ev.prevent_default(); app.chosen(); spawn_local(async move { app.select_session(id).await }) }>
                                 <span class="what">{if label.is_empty() { format!("#{id}") } else { label }}
@@ -1375,14 +1395,22 @@ fn Sidebar() -> impl IntoView {
                                         on:click=move |ev| { ev.stop_propagation(); app.removing.set(id) }
                                         on:keydown=move |ev| ev.stop_propagation()>"×"</button>
                                 }>
-                                    <span class="confirm" title=move || tr_with(app.lang.get(), "remove_session_ask", &id.to_string())
+                                    <span class="confirm" node_ref=capsule title=move || tr_with(app.lang.get(), "remove_session_ask", &id.to_string())
                                         on:click=move |ev| ev.stop_propagation() on:keydown=move |ev| ev.stop_propagation()>
                                         <span class="ask">{t("remove_ask_short")}</span>
                                         // (Each stops its own click: the question is taken off the row
                                         // as it is answered, and the click would go on to the row
                                         // and open the conversation.)
                                         <button class="danger remove-yes" on:click=move |ev| { ev.stop_propagation(); spawn_local(async move { app.remove_session(id).await }) }>{t("yes")}</button>
-                                        <button class="remove-no" on:click=move |ev| { ev.stop_propagation(); app.removing.set(0) }>{t("no")}</button>
+                                        <button class="remove-no" on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            // It fades away first; then the × is back.
+                                            let back = Closure::once_into_js(move || app.removing.set(0));
+                                            match capsule.get_untracked() {
+                                                Some(el) => motion::confirm_out(&el, back.unchecked_ref()),
+                                                None => app.removing.set(0),
+                                            }
+                                        }>{t("no")}</button>
                                     </span>
                                 </Show>
                             </div>
