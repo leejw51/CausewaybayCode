@@ -95,6 +95,7 @@ make build      # web client, then both programs in release mode, copied to rust
 make install    # the same, and copies cwbcode and cwbcodeclient to ~/bin (prints where)
 make package    # the Mac app: a window on the web client, with the backend inside (see below)
 make app        # open it
+make release    # everything built, in rust/dist: the app zipped, its disk image, SHA-256 sums
 make start      # start the backend under supervisor (0.0.0.0 when a wallet is set, else 127.0.0.1)
 make stop       # stop it
 ```
@@ -342,9 +343,14 @@ and one copy of the model. Then the window opens the backend's page with its tok
   `~/.cwbcode/app.env` if there is one (`CWBCODE_WALLET=0x...`, remote mode).
   `CWBCODE_APP_PORT` and `CWBCODE_APP_ARGS` change its port and add arguments; `make app
   APP_PORT=...` passes the port on.
-- `make package-dmg` also makes a disk image. The app is signed ad hoc only (`codesign
-  --verify --deep --strict` passes), not with a Developer ID: the first time, open it with
-  Control-click → Open.
+- `make package-dmg` also makes a disk image; `make release` puts the app zipped, the disk
+  image and their SHA-256 sums in `rust/dist`. Built here, the app is signed ad hoc only
+  (`codesign --verify --deep --strict` passes), not with a Developer ID: the first time, open
+  it with Control-click → Open.
+- The **Release (macOS app)** workflow (`.github/workflows/release-macos.yml`, by hand or on a
+  `v*` tag) runs `make release` on GitHub and keeps `rust/dist` as an artifact. Given a
+  Developer ID certificate and Apple's notarization secrets (named in the workflow) it signs
+  and notarizes the app, so it opens like any other once downloaded.
 
 ## Plan first, your own commands, hooks
 

@@ -87,7 +87,9 @@ jobs:
 
       # Tauri takes APPLE_SIGNING_IDENTITY over tauri.conf.json's ad-hoc "-", and notarizes
       # when APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are set.
-      - name: Build the app and its disk image
+      # `make release`: the web client, the backend, and the Tauri app with the backend
+      # inside, in rust/dist (the same command as on a Mac).
+      - name: make release
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -95,13 +97,7 @@ jobs:
         run: |
           # An ad-hoc signature cannot be notarized.
           if [ "${APPLE_SIGNING_IDENTITY:--}" = "-" ]; then unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; fi
-          make package-dmg
-          mkdir -p dist
-          app="rust/desktop/target/release/bundle/macos/Causewaybay Code.app"
-          ditto -c -k --keepParent "$app" "dist/Causewaybay-Code-macos-arm64.app.zip"
-          cp rust/desktop/target/release/bundle/dmg/*.dmg dist/
-          (cd dist && shasum -a 256 * > SHA256SUMS)
-          ls -la dist
+          make release
 
       # What a person downloading it gets, printed either way.
       - name: Assess with Gatekeeper
@@ -109,12 +105,12 @@ jobs:
         run: |
           app="rust/desktop/target/release/bundle/macos/Causewaybay Code.app"
           [ -d "$app" ] && { codesign --verify --deep --strict -vv "$app" || true; spctl -a -t exec -vv "$app" || true; }
-          for f in dist/*.dmg; do [ -f "$f" ] && { spctl -a -t open --context context:primary-signature -vv "$f" || true; xcrun stapler validate "$f" || true; }; done
+          for f in rust/dist/*.dmg; do [ -f "$f" ] && { spctl -a -t open --context context:primary-signature -vv "$f" || true; xcrun stapler validate "$f" || true; }; done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: causewaybay-code-macos
-          path: dist/*
+          path: rust/dist/*
           if-no-files-found: error
 
       - name: Cleanup keychain

@@ -27,7 +27,7 @@ SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg app
+.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg release app
 
 help:
 	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
@@ -43,6 +43,7 @@ help:
 	@echo "make package     - the Mac app (Tauri): a window on the web client, with the backend inside"
 	@echo "make app         - open the app: it uses a running backend, or starts its own and stops it on quit"
 	@echo "make package-dmg - the app, and a disk image of it"
+	@echo "make release     - everything built, in dist/: the app zipped, its disk image, SHA-256 sums"
 	@echo "make test-web    - the web client in headless Chrome"
 	@echo "make test-playwright - Playwright: the agent writes a Rust crate through the web client (real model)"
 	@echo "make test-model  - tests that load the model (semantic search)"
@@ -162,11 +163,27 @@ package: build
 	@echo "open it with: make app   (or drag it to /Applications)"
 
 # The disk image too. (Making it drives the Finder, which needs a logged-in desktop.)
+# (CI=true: Tauri's disk-image script then skips laying out the Finder window by AppleScript,
+# which times out with no desktop session to drive, in CI or a background shell.)
 package-dmg: package
-	cd desktop && cargo tauri build --bundles dmg
+	@# (Both bundles: asked for the disk image alone, Tauri removes the app it made it from.)
+	cd desktop && CI=true cargo tauri build --bundles app,dmg
 	codesign --verify --deep --strict "$(APP_BUNDLE)"
 	@ls desktop/target/release/bundle/dmg/*.dmg
 
+# A release: everything built (web client, backend, Mac app with the backend inside) and put in
+# dist/ as the app zipped, its disk image, and their SHA-256 sums. The same command on a Mac and
+# in CI (.github/workflows/release-macos.yml), which signs and notarizes when it has Apple's
+# secrets (APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID); otherwise the app
+# is signed ad hoc.
+VERSION := $(shell sed -n 's/^  "version": "\(.*\)",/\1/p' desktop/tauri.conf.json)
+RELEASE_NAME := Causewaybay-Code-$(VERSION)-macos-arm64
+release: package-dmg
+	@rm -rf dist && mkdir -p dist
+	ditto -c -k --keepParent "$(APP_BUNDLE)" "dist/$(RELEASE_NAME).app.zip"
+	cp desktop/target/release/bundle/dmg/*.dmg "dist/$(RELEASE_NAME).dmg"
+	cd dist && shasum -a 256 *.zip *.dmg > SHA256SUMS
+	@echo "release $(VERSION) in $(CURDIR)/dist:"; ls -l dist
 # Opened with the app's port: a backend it starts serves its window there.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
