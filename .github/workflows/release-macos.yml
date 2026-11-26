@@ -37,7 +37,10 @@ env:
 jobs:
   package:
     name: Build, sign, notarize
-    runs-on: macos-15 # Apple Silicon: the app's only target
+    # Apple Silicon, with Xcode 27: an older Metal compiler (macos-15 has Xcode 16) builds MLX
+    # without its kernels for the Neural Accelerators of M5-generation GPUs, so the app would be
+    # slower there. (xcode-27 is GitHub's image with Xcode 27, a public preview.)
+    runs-on: xcode-27
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,6 +58,9 @@ jobs:
             rust/desktop -> target
           # MLX's Metal library, which its build writes outside target/ (rust/Makefile build).
           cache-directories: ~/.mlx
+          # A cache of its own per Xcode: one made with another Metal compiler would bring back
+          # its MLX build and library, and they would not be made again.
+          key: xcode-27.2
 
       # capnp, trunk and cmake as for CI; the Tauri CLI for the app.
       - name: Install build tools
@@ -62,8 +68,12 @@ jobs:
           brew install capnp trunk cmake
           cargo install tauri-cli --version '^2' --locked
 
-      - name: Xcode's Metal compiler
-        run: xcrun -sdk macosx metal --version || { xcodebuild -downloadComponent MetalToolchain && xcrun -sdk macosx metal --version; }
+      # Xcode 27.2, the version releases are made with (27B52).
+      - name: Xcode 27.2 and its Metal compiler
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.2.app
+          xcodebuild -version
+          xcrun -sdk macosx metal --version || { xcodebuild -downloadComponent MetalToolchain && xcrun -sdk macosx metal --version; }
 
       - name: Import codesigning certificate
         env:
@@ -107,6 +117,14 @@ jobs:
           # An ad-hoc signature cannot be notarized.
           if [ "${APPLE_SIGNING_IDENTITY:--}" = "-" ]; then unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; fi
           make release
+
+      # MLX's Metal library must have the Neural Accelerator kernels (named *_nax_*): built with
+      # an older Metal compiler it does not, and the model runs slower on M5-generation Macs.
+      - name: MLX's Metal library has the Neural Accelerator kernels
+        run: |
+          n=$(strings -n 8 rust/desktop/binaries/mlx.metallib | grep -c '_nax_' || true)
+          echo "kernels for the Neural Accelerators: $n"
+          [ "$n" -gt 0 ] || { echo "::error::mlx.metallib was built without the Neural Accelerator kernels (Metal compiler too old)"; exit 1; }
 
       # What a person downloading it gets, printed either way.
       - name: Assess with Gatekeeper
