@@ -4,10 +4,10 @@
 //! the one that ships inside it (`cwbcode`, beside this program; MLX's `mlx.metallib` is in
 //! the app's Resources), and stops it again on quit, as Causewaybay Hacker's app runs its
 //! server. It never uses a backend it did not start: `make start` is for development, and
-//! runs beside the app on ports of its own (7443, 7480). The app's backend listens on
-//! 127.0.0.1 only, never reachable from other machines (remote mode is for `make start`), on
-//! ports the system gives as free each time the app starts (one for the window, one for HTTPS
-//! with HTTP/3 on the next): nothing the app finds running can be on them.
+//! runs beside the app on ports of its own (7443, 7480). The app's backend is on 127.0.0.1:7481
+//! for the window (HTTPS on 7453, HTTP/3 on 7454), on 127.0.0.1 only: never reachable from
+//! other machines (remote mode is for `make start`); when something else holds one of those,
+//! the next free port is taken (a new port is a new origin for the page: it signs in again).
 //! Once the backend answers, the window goes to its page with the backend's token in the
 //! address (the page keeps it and takes it out), as the `open` link `make url` prints does.
 //!
@@ -33,7 +33,7 @@
 //! it is done.
 //!
 //!   CWBCODE_HOME       the backend's folder [~/.cwbcode]
-//!   CWBCODE_APP_PORT   a fixed port for the window [a free one, chosen each start]
+//!   CWBCODE_APP_PORT   the app's port for its window [7481]
 //!   CWBCODE_APP_ARGS   more arguments for a backend the app starts (e.g. `--no-model`)
 
 use std::io::{Read, Write};
@@ -47,6 +47,10 @@ use std::time::{Duration, Instant};
 use hmac::Mac;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow};
 
+/// The window's port (plain HTTP), one above `make start`'s 7480; and the HTTPS port of the
+/// app's backend (HTTP/3 on the one after), above `make start`'s 7443.
+const DEFAULT_PORT: u16 = 7481;
+const DEFAULT_HTTPS_PORT: u16 = 7453;
 /// How long a backend may take to answer: it starts listening before the model has loaded.
 const START_SECONDS: u64 = 120;
 /// How long the PATH a terminal would have may take to find out.
@@ -61,21 +65,18 @@ fn home() -> PathBuf {
     }
 }
 
-/// A port fixed for the window with CWBCODE_APP_PORT, if one is.
-fn fixed_port() -> Option<u16> {
-    std::env::var("CWBCODE_APP_PORT").ok().and_then(|p| p.parse().ok())
+fn port() -> u16 {
+    std::env::var("CWBCODE_APP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT)
 }
 
-/// A TCP port on 127.0.0.1 the system says is free now (`with_next_udp`: and the UDP port
-/// after it, for HTTP/3).
-fn free_port(with_next_udp: bool) -> Option<u16> {
-    for _ in 0..50 {
-        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?.local_addr().ok()?.port();
-        if !with_next_udp || (port < u16::MAX && std::net::UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()) {
-            return Some(port);
-        }
-    }
-    None
+/// Is this TCP port free on 127.0.0.1?
+fn tcp_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Are this HTTPS port and the HTTP/3 port after it free on 127.0.0.1?
+fn https_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()
 }
 
 /// What the app says on its terminal (if it has one), for whoever runs it from there.
@@ -393,21 +394,25 @@ fn without_fragment(url: &Url) -> String {
 
 fn refused(port: u16, why: &str) -> String {
     format!(
-        "Something else answers on 127.0.0.1:{port}, and could not show that it holds this backend's token: {why}.\n\nThe token was not given to it. If it is a Causewaybay Code backend started with make start from an older version, restart it from this one; otherwise stop the program on that port, or give the app another port (CWBCODE_APP_PORT), or none (a free one is chosen)."
+        "Something else answers on 127.0.0.1:{port}, and could not show that it holds this backend's token: {why}.\n\nThe token was not given to it. If it is a Causewaybay Code backend started with make start from an older version, restart it from this one; otherwise stop the program on that port, or give the app another port (CWBCODE_APP_PORT)."
     )
 }
 
 /// Find the backend (or start it), open its page, and keep watching it.
 fn connect(window: Window, handle: AppHandle) {
-    // Always a backend of the app's own, as Causewaybay Hacker's app runs its server, on
-    // ports free now: a `make start` backend or another program cannot be on them.
-    let Some(port) = fixed_port().or_else(|| free_port(false)) else {
-        return window.show("bad", "No free port on 127.0.0.1 for the backend.");
+    // Always a backend of the app's own, as Causewaybay Hacker's app runs its server: on its
+    // ports, or the next free ones when something else (a `make start` backend, another
+    // program) holds them.
+    let wanted = port();
+    let Some(port) = (wanted..wanted.saturating_add(50)).find(|p| tcp_free(*p)) else {
+        return window.show("bad", &format!("No free port from 127.0.0.1:{wanted} on for the backend."));
     };
-    let Some(https_port) = free_port(true).filter(|p| *p != port && *p + 1 != port) else {
-        return window.show("bad", "No free port on 127.0.0.1 for the backend's HTTPS.");
+    if port != wanted {
+        note(&format!("127.0.0.1:{wanted} is held by something else: the backend's window port is {port}"));
+    }
+    let Some(https_port) = (DEFAULT_HTTPS_PORT..DEFAULT_HTTPS_PORT + 100).step_by(2).find(|p| https_free(*p)) else {
+        return window.show("bad", &format!("No free port from {DEFAULT_HTTPS_PORT} on for the backend's HTTPS."));
     };
-    note(&format!("the backend: 127.0.0.1:{port} for the window, 127.0.0.1:{https_port} for HTTPS"));
     match start_backend(port, https_port) {
         Ok(child) => *handle.state::<Started>().0.lock().unwrap() = Some(child),
         Err(e) => return window.show("bad", &format!("Could not start the backend: {e}")),

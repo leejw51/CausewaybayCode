@@ -15,7 +15,7 @@ MODEL ?= inkling-2-mini:26b-a5b-nvfp4
 BIND  ?=
 ENV_FILE ?= $(abspath ../.env)
 # Plain HTTP on 127.0.0.1 only, beside HTTPS (for a web view that will not take the backend's
-# certificate). The Mac app does not use it: it runs a backend of its own, on free ports.
+# certificate). The Mac app does not use it: it runs a backend of its own on 7481.
 APP_PORT ?= 7480
 SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT)
 # The Mac app (Tauri, in desktop/): the backend goes in as its sidecar, named for this machine.
@@ -213,8 +213,8 @@ release: package-dmg
 	cd dist && shasum -a 256 *.zip *.dmg > SHA256SUMS
 	@echo "release $(VERSION) in $(CURDIR)/dist:"; ls -l dist
 	@codesign -dv "$(APP_BUNDLE)" 2>&1 | grep -E "^Authority=|^Signature=" | head -2 || true
-# The app runs a backend of its own (127.0.0.1 only, on ports free when it starts), beside any
-# `make start` one; it stops when the app quits.
+# The app runs a backend of its own (127.0.0.1 only, its own ports: 7481 for the window, 7453
+# for HTTPS), beside any `make start` one; it stops when the app quits.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
 	open "$(APP_BUNDLE)"
