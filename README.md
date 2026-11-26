@@ -351,14 +351,18 @@ motion".
 
 `make package` builds **Causewaybay Code.app** (Tauri, `rust/desktop`), at
 `rust/desktop/target/release/bundle/macos/`; `make app` opens it, or drag it to
-/Applications. It is a window on the web client with the backend inside it, run as
-Causewaybay Hacker's app runs its server: the app shows a starting page, always starts the
-backend it carries, and stops it again on quit. That backend listens on this machine only
-(127.0.0.1: 7481 for the window, 7453 for HTTPS, 7454 for HTTP/3; the next free ports when
-those are taken), never on other interfaces: remote mode is for `make start`, which is for
-development and runs beside the app on its own ports. (Both use `~/.cwbcode`; a `make
-start` backend with the model loaded beside the app's would be two copies of it in memory.)
-Then the window opens the backend's page with its token, as the `open` link does.
+/Applications. It is built as desktop apps with a local server usually are: the page is the
+app's own (the web client, built into the app, on the app's fixed origin `tauri://localhost`),
+and the backend is the program it carries, which the app always starts and stops again on
+quit. That backend listens on this machine only (127.0.0.1), never on other interfaces, on
+ports the system gives as free each time the app starts (one in plain HTTP for the page, one
+in HTTPS, the next for HTTP/3). Once it answers, the app opens its page with
+`#api=http://127.0.0.1:<port>&token=...`, and the page calls the backend there; since its
+origin does not change, what it keeps (preferences, the last project and conversation) stays
+from one start to the next. Remote mode is for `make start`, which is for development and
+runs beside the app on its own ports (7443, 7480). (Both use `~/.cwbcode`; a `make start`
+backend with the model loaded beside the app's would be two copies of it in memory.)
+`make test-app` runs the app for real, twice, and checks all this.
 
 The model is not inside the app, and need not be downloaded first: on a Mac that has never
 had it, the backend the app starts downloads it by itself (as every backend does; about 20 GB
@@ -367,11 +371,14 @@ progress where a new user lands, and the model loads when it is done. Quitting t
 way keeps what is done; opening it again goes on from there. A model already in Ollama's
 store or `~/.cwbcode/models` (`make download`) is used as it is.
 
-- The window reaches the backend over plain HTTP on `127.0.0.1:7481` (`cwbcode serve
+- The page reaches the backend over plain HTTP on `127.0.0.1:<that port>` (`cwbcode serve
   --http-port`), because a web view will not take the backend's certificate. That port
   answers this machine only, only for requests addressed to `127.0.0.1` or `localhost` at
   that port (so a site that points its name at 127.0.0.1 cannot reach it), and asks for the
-  token like the HTTPS one; the page gets no commands of the app's. If the port is taken,
+  token like the HTTPS one; the page gets no commands of the app's. That port alone lets the
+  app's own origin (`tauri://localhost`) call it across origins (its preflight is answered);
+  no website has that origin, the token is still asked for, and the HTTPS port, which remote
+  mode opens to other machines, takes no other origin than its own. If the port is taken,
   the backend says so in its log and serves on without it.
 - Whatever answers on that port must first show that it holds the backend's token: the app
   sends a fresh nonce to `/app-proof` and checks the answer (an HMAC of it keyed with the

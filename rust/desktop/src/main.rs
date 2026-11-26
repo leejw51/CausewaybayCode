@@ -1,20 +1,22 @@
 //! Causewaybay Code as a Mac app: a window on the web client, and the backend beside it.
 //!
-//! On start the window shows a page of its own (splash/) while the app starts its own backend,
-//! the one that ships inside it (`cwbcode`, beside this program; MLX's `mlx.metallib` is in
-//! the app's Resources), and stops it again on quit, as Causewaybay Hacker's app runs its
-//! server. It never uses a backend it did not start: `make start` is for development, and
-//! runs beside the app on ports of its own (7443, 7480). The app's backend is on 127.0.0.1:7481
-//! for the window (HTTPS on 7453, HTTP/3 on 7454), on 127.0.0.1 only: never reachable from
-//! other machines (remote mode is for `make start`); when something else holds one of those,
-//! the next free port is taken (a new port is a new origin for the page: it signs in again).
-//! Once the backend answers, the window goes to its page with the backend's token in the
-//! address (the page keeps it and takes it out), as the `open` link `make url` prints does.
+//! The usual shape of a desktop app with a local server: the page is the app's own (the web
+//! client, built into the app: ../web/dist), on the app's fixed origin (tauri://localhost),
+//! and the backend is a program beside it, on a port chosen when the app starts. What the
+//! page keeps in the browser (preferences, the last project) stays from one start to the
+//! next, and no port can be in the way.
 //!
-//! The window reaches the backend over plain HTTP on 127.0.0.1 (`cwbcode serve --http-port`):
-//! a web view will not take the backend's own certificate. That port answers this machine
-//! only, for requests addressed to 127.0.0.1 or localhost, and asks for the token like the
-//! HTTPS one. The page gets no commands of the app's.
+//! On start the window shows the app's starting page (desktop/index.html in the web client)
+//! while the app starts its own backend, the one that ships inside it (`cwbcode`, beside
+//! this program; MLX's `mlx.metallib` is in the app's Resources), and stops it again on quit.
+//! It never uses a backend it did not start: `make start` is for development, and runs beside
+//! the app on ports of its own. The app's backend listens on 127.0.0.1 only, never on other
+//! interfaces (remote mode is for `make start`), on ports free when the app starts: one in
+//! plain HTTP for the page (`cwbcode serve --http-port`: a web view will not take the
+//! backend's own certificate), one in HTTPS (HTTP/3 on the next). Once it answers, the window
+//! goes to the web client with `#api=http://127.0.0.1:<port>&token=<token>`: the page asks the
+//! backend there (the backend lets the app's origin, and no other, call that port across
+//! origins; the token is asked for as ever). The page gets no commands of the app's.
 //!
 //! Even the backend it started is given the token only once it has shown that it holds it:
 //! the app asks `GET /app-proof?nonce=N` and checks the answer, HMAC-SHA256 keyed with the
@@ -33,7 +35,7 @@
 //! it is done.
 //!
 //!   CWBCODE_HOME       the backend's folder [~/.cwbcode]
-//!   CWBCODE_APP_PORT   the app's port for its window [7481]
+//!   CWBCODE_APP_PORT   a fixed port for the page to ask the backend at [a free one]
 //!   CWBCODE_APP_ARGS   more arguments for a backend the app starts (e.g. `--no-model`)
 
 use std::io::{Read, Write};
@@ -47,10 +49,6 @@ use std::time::{Duration, Instant};
 use hmac::Mac;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow};
 
-/// The window's port (plain HTTP), one above `make start`'s 7480; and the HTTPS port of the
-/// app's backend (HTTP/3 on the one after), above `make start`'s 7443.
-const DEFAULT_PORT: u16 = 7481;
-const DEFAULT_HTTPS_PORT: u16 = 7453;
 /// How long a backend may take to answer: it starts listening before the model has loaded.
 const START_SECONDS: u64 = 120;
 /// How long the PATH a terminal would have may take to find out.
@@ -65,18 +63,21 @@ fn home() -> PathBuf {
     }
 }
 
-fn port() -> u16 {
-    std::env::var("CWBCODE_APP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT)
+/// A port fixed with CWBCODE_APP_PORT, if one is.
+fn fixed_port() -> Option<u16> {
+    std::env::var("CWBCODE_APP_PORT").ok().and_then(|p| p.parse().ok())
 }
 
-/// Is this TCP port free on 127.0.0.1?
-fn tcp_free(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
-}
-
-/// Are this HTTPS port and the HTTP/3 port after it free on 127.0.0.1?
-fn https_free(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() && std::net::UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()
+/// A TCP port on 127.0.0.1 the system says is free now (`with_next_udp`: and the UDP port
+/// after it, for HTTP/3).
+fn free_port(with_next_udp: bool) -> Option<u16> {
+    for _ in 0..50 {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?.local_addr().ok()?.port();
+        if !with_next_udp || (port < u16::MAX && std::net::UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()) {
+            return Some(port);
+        }
+    }
+    None
 }
 
 /// What the app says on its terminal (if it has one), for whoever runs it from there.
@@ -359,11 +360,12 @@ impl Window {
     }
 
     fn open(&self, port: u16) {
-        // The token is the backend's, readable by this user only; it has just shown it holds it.
-        let address = format!("http://127.0.0.1:{port}/#token={}", token());
-        match address.parse() {
-            Ok(url) => {
-                note(&format!("the backend on 127.0.0.1:{port} showed it holds the token: opening its page"));
+        // The web client, the app's own page; the backend's address and its token (readable by
+        // this user only; the backend has just shown it holds it) after the #.
+        match self.splash.join("/index.html") {
+            Ok(mut url) => {
+                url.set_fragment(Some(&format!("api={}&token={}", escape(&format!("http://127.0.0.1:{port}")), token())));
+                note(&format!("the backend on 127.0.0.1:{port} showed it holds the token: opening the page"));
                 self.go(url);
             }
             Err(e) => self.show("bad", &format!("Bad address: {e}")),
@@ -400,19 +402,15 @@ fn refused(port: u16, why: &str) -> String {
 
 /// Find the backend (or start it), open its page, and keep watching it.
 fn connect(window: Window, handle: AppHandle) {
-    // Always a backend of the app's own, as Causewaybay Hacker's app runs its server: on its
-    // ports, or the next free ones when something else (a `make start` backend, another
-    // program) holds them.
-    let wanted = port();
-    let Some(port) = (wanted..wanted.saturating_add(50)).find(|p| tcp_free(*p)) else {
-        return window.show("bad", &format!("No free port from 127.0.0.1:{wanted} on for the backend."));
+    // Always a backend of the app's own, on ports free now: a `make start` backend or another
+    // program cannot be on them.
+    let Some(port) = fixed_port().or_else(|| free_port(false)) else {
+        return window.show("bad", "No free port on 127.0.0.1 for the backend.");
     };
-    if port != wanted {
-        note(&format!("127.0.0.1:{wanted} is held by something else: the backend's window port is {port}"));
-    }
-    let Some(https_port) = (DEFAULT_HTTPS_PORT..DEFAULT_HTTPS_PORT + 100).step_by(2).find(|p| https_free(*p)) else {
-        return window.show("bad", &format!("No free port from {DEFAULT_HTTPS_PORT} on for the backend's HTTPS."));
+    let Some(https_port) = free_port(true).filter(|p| *p != port && *p + 1 != port) else {
+        return window.show("bad", "No free port on 127.0.0.1 for the backend's HTTPS.");
     };
+    note(&format!("the backend: 127.0.0.1:{port} for the page, 127.0.0.1:{https_port} for HTTPS"));
     match start_backend(port, https_port) {
         Ok(child) => *handle.state::<Started>().0.lock().unwrap() = Some(child),
         Err(e) => return window.show("bad", &format!("Could not start the backend: {e}")),

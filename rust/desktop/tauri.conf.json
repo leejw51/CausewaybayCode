@@ -4,7 +4,7 @@
   "version": "0.1.2",
   "identifier": "app.causewaybay.code",
   "build": {
-    "frontendDist": "splash"
+    "frontendDist": "../web/dist"
   },
   "app": {
     "windows": [
@@ -15,7 +15,7 @@
         "height": 860,
         "minWidth": 380,
         "minHeight": 520,
-        "url": "index.html"
+        "url": "desktop/index.html"
       }
     ],
     "security": {

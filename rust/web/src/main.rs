@@ -186,10 +186,12 @@ enum Link {
 fn take_link() -> Option<Link> {
     let window = web_sys::window()?;
     let hash = window.location().hash().unwrap_or_default();
-    let link = if let Some(code) = hash.strip_prefix("#code=") {
+    // (#api=... beside it is the app's backend's address: api::init_base took it.)
+    let pairs: Vec<&str> = hash.trim_start_matches('#').split('&').collect();
+    let link = if let Some(code) = pairs.iter().find_map(|p| p.strip_prefix("code=")) {
         Link::Code(code.to_string())
     } else {
-        Link::Token(hash.strip_prefix("#token=")?.to_string())
+        Link::Token(pairs.iter().find_map(|p| p.strip_prefix("token="))?.to_string())
     };
     if let Ok(history) = window.history() {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
@@ -781,6 +783,7 @@ fn now_ms() -> f64 {
 
 fn main() {
     console_error_panic_hook::set_once();
+    api::init_base();
     leptos::mount::mount_to_body(Root);
 }
 
@@ -1251,7 +1254,7 @@ fn TrustDevice() -> impl IntoView {
     view! {
         <div class="sub trust-steps">
             <p>{t("trust_why")}</p>
-            <a class="button ghost" id="trust-download" href="/ca.crt">{t("trust_download")}</a>
+            <a class="button ghost" id="trust-download" href=format!("{}/ca.crt", api::base())>{t("trust_download")}</a>
             // What it is, to compare before trusting it: this page could be another's, but the
             // line `cwbcode url` prints on the backend's own machine is not.
             <p>{t("trust_compare")}</p>

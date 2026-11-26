@@ -1666,3 +1666,58 @@ async fn a_missing_model_is_downloaded_by_default_a_refused_token_is_dropped_and
     assert!(seen[..first_without].iter().any(|(_, _, auth)| auth.as_deref() == Some("Bearer hf_refused")));
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mac_apps_own_page_may_call_the_desktop_port_and_nothing_else_may() {
+    // The Mac app's page is its own (tauri://localhost), and calls the backend's desktop port
+    // across origins; the token is asked for as ever, and no other origin, nor the HTTPS port,
+    // is opened to it.
+    let port = free_port().to_string();
+    let server = Server::start("app-origin", HELLO, &["--http-port", &port]);
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    for origin in ["tauri://localhost", "http://tauri.localhost"] {
+        // The preflight a web view sends before a POST with the Authorization header.
+        let preflight = http.request(reqwest::Method::OPTIONS, format!("{base}/api/call")).header("origin", origin).header("access-control-request-method", "POST").header("access-control-request-headers", "authorization, content-type").send().await.unwrap();
+        assert_eq!(preflight.status(), 204, "{origin}");
+        let h = preflight.headers();
+        assert_eq!(h["access-control-allow-origin"], origin);
+        assert!(h["access-control-allow-headers"].to_str().unwrap().contains("authorization"));
+        assert!(h["access-control-allow-methods"].to_str().unwrap().contains("POST"));
+        // With the token: answered, and the answer may be read by that page.
+        let call = |token: Option<&str>| {
+            let mut post = http.post(format!("{base}/api/call")).header("origin", origin).header("sec-fetch-site", "cross-site").body(Request::new(Method::Status).encode());
+            if let Some(token) = token {
+                post = post.bearer_auth(token);
+            }
+            post.send()
+        };
+        let answer = call(Some(&server.token)).await.unwrap();
+        assert_eq!(answer.status(), 200, "{origin}");
+        assert_eq!(answer.headers()["access-control-allow-origin"], origin);
+        assert!(Response::decode(&answer.bytes().await.unwrap()).unwrap().status.is_some());
+        // Without it, or with a wrong one: refused, as for any page.
+        assert_eq!(call(None).await.unwrap().status(), 401);
+        assert_eq!(call(Some("a-guess")).await.unwrap().status(), 401);
+        // The events stream too (the page follows the model's download there).
+        let events = http.post(format!("{base}{}", cwbcode_proto::EVENTS_PATH)).header("origin", origin).bearer_auth(&server.token).send().await.unwrap();
+        assert_eq!(events.status(), 200);
+        assert_eq!(events.headers()["access-control-allow-origin"], origin);
+        // The HTTPS port is not opened to it: that port is for the backend's own pages.
+        let https = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+        let over_https = https.post(format!("{}/api/call", server.url)).header("origin", origin).bearer_auth(&server.token).body(Request::new(Method::Status).encode()).send().await.unwrap();
+        assert_eq!(over_https.status(), 401, "{origin} over HTTPS");
+        assert!(over_https.headers().get("access-control-allow-origin").is_none());
+    }
+    // Any other origin: no preflight answer that lets it in, and its calls are refused.
+    for origin in ["http://evil.example", "tauri://evil", "http://localhost:3000", "null"] {
+        let preflight = http.request(reqwest::Method::OPTIONS, format!("{base}/api/call")).header("origin", origin).header("access-control-request-method", "POST").send().await.unwrap();
+        assert!(preflight.headers().get("access-control-allow-origin").is_none(), "{origin}");
+        let call = http.post(format!("{base}/api/call")).header("origin", origin).bearer_auth(&server.token).body(Request::new(Method::Status).encode()).send().await.unwrap();
+        assert_eq!(call.status(), 401, "{origin}");
+        assert!(call.headers().get("access-control-allow-origin").is_none(), "{origin}");
+    }
+    // A name a rebinding DNS server points at 127.0.0.1 is still turned away, app origin or not.
+    let rebound = http.post(format!("{base}/api/call")).header("host", "evil.example").header("origin", "tauri://localhost").bearer_auth(&server.token).body(Request::new(Method::Status).encode()).send().await.unwrap();
+    assert_eq!(rebound.status(), 421);
+}

@@ -15,7 +15,7 @@ MODEL ?= inkling-2-mini:26b-a5b-nvfp4
 BIND  ?=
 ENV_FILE ?= $(abspath ../.env)
 # Plain HTTP on 127.0.0.1 only, beside HTTPS (for a web view that will not take the backend's
-# certificate). The Mac app does not use it: it runs a backend of its own on 7481.
+# certificate). The Mac app does not use it: it runs a backend of its own, on free ports.
 APP_PORT ?= 7480
 SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT)
 # The Mac app (Tauri, in desktop/): the backend goes in as its sidecar, named for this machine.
@@ -27,7 +27,7 @@ SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help download pull model build web install start stop restart status logs url test test-web test-playwright test-model e2e clean package package-dmg release app
+.PHONY: help download pull model build web install start stop restart status logs url test test-web test-app test-playwright test-model e2e clean package package-dmg release app
 
 help:
 	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
@@ -45,6 +45,7 @@ help:
 	@echo "make package-dmg - the app, and a disk image of it"
 	@echo "make release     - everything built, in dist/: the app zipped, its disk image, SHA-256 sums"
 	@echo "make test-web    - the web client in headless Chrome"
+	@echo "make test-app    - the Mac app, run for real twice (its page, its backend, quitting)"
 	@echo "make test-playwright - Playwright: the agent writes a Rust crate through the web client (real model)"
 	@echo "make test-model  - tests that load the model (semantic search)"
 	@echo "make e2e         - real tasks through the backend with the real model"
@@ -144,6 +145,10 @@ test:
 test-web: build
 	python3 scripts/web_test.py
 
+# The Mac app, started as the Finder starts it, with a scratch backend folder and no model.
+test-app: package
+	python3 scripts/app_test.py
+
 # The agent is asked, through the web client in Chrome, to write and extend a Rust crate;
 # the crate must build and pass tests it has never seen. Real model: stop the backend first.
 test-playwright: build
@@ -213,8 +218,8 @@ release: package-dmg
 	cd dist && shasum -a 256 *.zip *.dmg > SHA256SUMS
 	@echo "release $(VERSION) in $(CURDIR)/dist:"; ls -l dist
 	@codesign -dv "$(APP_BUNDLE)" 2>&1 | grep -E "^Authority=|^Signature=" | head -2 || true
-# The app runs a backend of its own (127.0.0.1 only, its own ports: 7481 for the window, 7453
-# for HTTPS), beside any `make start` one; it stops when the app quits.
+# The app shows its own page (the web client, in the app) and runs a backend of its own on
+# 127.0.0.1, on ports free when it starts, beside any `make start` one; it stops on quit.
 app:
 	@test -d "$(APP_BUNDLE)" || { echo "no app yet: run make package"; exit 1; }
 	open "$(APP_BUNDLE)"

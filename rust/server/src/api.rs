@@ -71,13 +71,49 @@ pub fn app_proof(token: &str, port: u16, nonce: &str) -> String {
 /// The router for the desktop app's plain-HTTP port (127.0.0.1 only): the backend's, plus
 /// the app's proof, and only for requests addressed to 127.0.0.1 or localhost at that port.
 /// (A site whose name a rebinding DNS server points at 127.0.0.1 would otherwise be the
-/// same origin as itself here, and its pages could read and call the backend.)
+/// same origin as itself here, and its pages could read and call the backend.) The app's
+/// own page (its fixed origin, see APP_ORIGINS) may call it across origins.
 pub fn local_router(app: App, token: String, port: u16) -> Router {
     Router::new()
         .route(APP_PROOF_PATH, get(proof))
         .with_state((Arc::new(token), port))
         .merge(router(app))
+        .layer(axum::middleware::from_fn(app_origin))
         .layer(axum::middleware::from_fn_with_state(port, local_host))
+}
+
+/// The Mac app's page: the app's own origin (Tauri's), the same at every start, so that what
+/// the page keeps in the browser stays; it calls the backend on this port across origins.
+/// No website has this origin: a browser sends it only for the app's own window.
+pub const APP_ORIGINS: [&str; 2] = ["tauri://localhost", "http://tauri.localhost"];
+
+/// The app's page, on the desktop port only: its preflight is answered, and its requests go
+/// on as the page's own would (the origin checks in auth.rs are for websites); the token is
+/// asked for as ever. Any other origin is left to those checks.
+async fn app_origin(request: HttpRequest, next: Next) -> HttpResponse {
+    let origin = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).filter(|o| APP_ORIGINS.contains(o)).map(String::from);
+    let Some(origin) = origin else { return next.run(request).await };
+    let allow = |response: &mut HttpResponse| {
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(&origin).expect("an origin from APP_ORIGINS"));
+        h.insert(header::VARY, HeaderValue::from_static("origin"));
+        h.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static(PROTOCOL_HEADER));
+    };
+    if request.method() == axum::http::Method::OPTIONS {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        allow(&mut response);
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type"));
+        h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        return response;
+    }
+    let mut request = request;
+    request.headers_mut().remove(header::ORIGIN);
+    request.headers_mut().remove("sec-fetch-site");
+    let mut response = next.run(request).await;
+    allow(&mut response);
+    response
 }
 
 async fn proof(State((token, port)): State<(Arc<String>, u16)>, request: HttpRequest) -> HttpResponse {
