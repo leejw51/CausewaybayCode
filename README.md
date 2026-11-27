@@ -289,11 +289,15 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   browser's storage (for that address) and come back after a reload or signing in again. The × on a
   project takes it off the list and nothing else: its folder, files and records stay, and
   opening it again brings its conversations back.
-- **Run, Console, Clear.** Run runs the project's code without the model: the command typed
-  in the console, or one guessed from the folder (`cargo run`, or `cargo run --example x` / `--bin x` when an
-  example or extra program is what was changed last; `make run`, `go run .`,
-  `npm start`, or the source file changed last, compiled first where it must be), in the
-  project and in the sandbox, for at most two minutes. Console shows what the runs printed.
+- **Run, Console, Clear.** Run asks the model to run what was just worked on: it works out
+  from the conversation and the project's files what that is (writing code that was only
+  shown into a file first), runs it with its own tools under the mode chosen, and says what
+  it printed, in the conversation. With a command typed in the console, Run runs that
+  command as it is, without the model, in the project and in the sandbox, for at most two
+  minutes, and Console shows what it printed. (The terminal client's `/run` runs a command
+  given, or one guessed from the folder: `cargo run`, or `cargo run --example x` / `--bin x`
+  when that is what was changed last; `make run`, `go run .`, `npm start`, or the source
+  file changed last.)
   Clear empties the console and starts a new conversation (the old one stays in the list).
   In the terminal: `/run [command]`.
 - **A conversation** has a bar showing how full its context is (the backend summarizes by

@@ -368,8 +368,8 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
   .top { flex-wrap: wrap; }
   .toast { margin-left: 0; left: 12px; width: auto; right: 12px; }
 }
-/* A phone: the sidebar is a drawer over the view (the button at the top left opens it; a
-   choice in it closes it), so the conversation has the whole height. */
+/* A phone: the sidebar is a drawer over the view (the button at the top left opens it;
+   choosing a conversation in it closes it), so the conversation has the whole height. */
 @media (max-width: 640px) {
   .app, .app.noside, .app.vertical, .app.vertical.noside { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .app .side, .app.vertical .side { position: absolute; z-index: 25; top: calc(3.2rem + var(--gap) * 2); left: var(--gap); bottom: var(--gap);

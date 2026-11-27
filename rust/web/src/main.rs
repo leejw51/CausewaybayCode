@@ -118,6 +118,11 @@ struct App {
     console_cmd: RwSignal<String>,
     console_out: RwSignal<String>,
     running: RwSignal<bool>,
+    /// The model was asked to run it (Run, with no command typed) and is at it: the commands
+    /// it runs, and what they print, are shown in the console too. With it, the command whose
+    /// result is awaited ("" between commands).
+    run_asked: RwSignal<bool>,
+    run_command: RwSignal<String>,
     view: RwSignal<View>,
     status: RwSignal<Option<Status>>,
     projects: RwSignal<Vec<Project>>,
@@ -230,6 +235,8 @@ impl App {
             console_cmd: RwSignal::new(String::new()),
             console_out: RwSignal::new(String::new()),
             running: RwSignal::new(false),
+            run_asked: RwSignal::new(false),
+            run_command: RwSignal::new(String::new()),
             view: RwSignal::new(View::from_code(&text("view", "chat"))),
             status: RwSignal::new(None),
             projects: RwSignal::new(Vec::new()),
@@ -446,7 +453,8 @@ impl App {
         web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|w| w.as_f64()).is_some_and(|w| w <= 640.0)
     }
 
-    /// On a phone, close the drawer once something in it is chosen.
+    /// On a phone, close the drawer once a conversation in it is chosen (or a new one asked
+    /// for). Choosing a project does not: its conversations are then shown, to choose from.
     fn chosen(&self) {
         if Self::narrow() {
             self.show_side(false);
@@ -471,11 +479,31 @@ impl App {
             What::Thinking(text) => self.piece(Kind::Thinking, &text),
             What::Text(text) => self.piece(Kind::Text, &text),
             What::EndMessage => self.open.set(None),
-            What::ToolStart { summary, .. } => {
+            What::ToolStart { name, summary, args } => {
                 self.open.set(None);
                 self.push(Kind::Tool, &summary, None, past);
+                // A command the model runs because Run asked it to: its command line, whole.
+                if !past && self.run_asked.get_untracked() && name == "bash" {
+                    let command = serde_json::from_str::<serde_json::Value>(&args).ok().and_then(|a| a["command"].as_str().map(String::from)).unwrap_or(summary);
+                    self.run_command.set(command);
+                }
             }
             What::ToolEnd { ok, text, seconds, .. } => {
+                // ... and what it printed, in the console as a run from there would be.
+                let command = self.run_command.get_untracked();
+                if !past && !command.is_empty() {
+                    self.run_command.set(String::new());
+                    let printed = text.trim_end();
+                    let ended = if ok { "[done]" } else { "[failed]" };
+                    self.console_out.update(|out| {
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str(&format!("$ {command}\n{printed}{}{ended}", if printed.is_empty() { "" } else { "\n" }));
+                    });
+                    self.console.set(true);
+                    after_draw(|| motion::to_end("console-out"));
+                }
                 if let Some(tool) = self.items.get_untracked().iter().rev().find(|i| i.kind == Kind::Tool && i.result.get_untracked().is_none()) {
                     tool.result.set(Some((ok, text, seconds)));
                 }
@@ -659,10 +687,23 @@ impl App {
         self.context().2 >= share
     }
 
-    /// Run the project's code (the command in the console, or one the backend guesses from
-    /// the folder) and show what it printed in the console.
+    /// Run. With a command typed in the console, that command is run as it is (no model),
+    /// and what it printed is shown in the console. Without one, the model is asked to: it
+    /// works out from the conversation and the project's files what is to be run (the code
+    /// just worked on, which it writes to a file first when it was only shown), runs it with
+    /// its own tools, under the mode chosen, and says what it printed, in the conversation.
     async fn run_code(&self) {
         if self.project.get_untracked().is_empty() || self.running.get_untracked() {
+            return;
+        }
+        // (A command left in a console that is closed is not in sight: it is not what is run.)
+        if !self.console.get_untracked() || self.console_cmd.get_untracked().trim().is_empty() {
+            self.view.set(View::Chat);
+            self.run_asked.set(true);
+            self.run_command.set(String::new());
+            self.send(tr(self.lang.get_untracked(), "run_prompt").to_string(), Vec::new()).await;
+            self.run_asked.set(false);
+            self.run_command.set(String::new());
             return;
         }
         self.console.set(true);
@@ -1470,7 +1511,9 @@ fn Sidebar() -> impl IntoView {
                         let target = StoredValue::new(p.path.clone());
                         let pick = move || {
                             let path = target.get_value();
-                            app.chosen();
+                            // (The drawer of a phone stays open: a project is chosen to get at
+                            // its conversations, which are listed below it; choosing one of
+                            // those, or a new one, is what closes it.)
                             spawn_local(async move { app.select_project(path).await; app.view.set(View::Chat); })
                         };
                         view! {
@@ -2074,7 +2117,7 @@ fn Chat() -> impl IntoView {
                 <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
                 <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
             </div>
-            <button class="primary wi" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| { if let Some(el) = element("run") { motion::pop(&el); } spawn_local(async move { app.run_code().await }) }>{icon(ICON_PLAY)}<span>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</span></button>
+            <button class="primary wi" id="run" disabled=move || app.project.get().is_empty() || app.running.get() || app.busy.get() on:click=move |_| { if let Some(el) = element("run") { motion::pop(&el); } spawn_local(async move { app.run_code().await }) }>{icon(ICON_PLAY)}<span>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</span></button>
             <button id="console-toggle" class="wi" class:lit=move || app.console.get() on:click=move |_| if app.console.get_untracked() { app.close_console() } else { app.console.set(true) }>{icon(ICON_TERMINAL)}<span>{t("console")}</span></button>
             <button id="clear" class="wi" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{icon(ICON_TRASH)}<span>{t("clear")}</span></button>
             <button id="copy-all" class="wi" disabled=move || app.items.get().is_empty() on:click=move |_| {

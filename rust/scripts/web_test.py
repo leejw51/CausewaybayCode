@@ -19,6 +19,9 @@ SCRIPT = [
         {"name": "todo_write", "args": {"todos": [{"content": "write hello.txt", "status": "in_progress"}, {"content": "tell the user", "status": "pending"}]}},
         {"name": "write_file", "args": {"path": "hello.txt", "content": "hello from the web\n"}}]},
     {"text": "Done. I wrote `hello.txt`:\n```\nhello from the web\n```\nAnything else?"},
+    # (To Run with nothing typed: the request to work out what to run.)
+    {"thinking": "The file is there. Run it.", "calls": [{"name": "bash", "args": {"command": "sh hello.sh"}}]},
+    {"text": "I ran it: it printed `run from the button`."},
     {"text": "A second answer."},
 ]
 
@@ -360,7 +363,8 @@ def main():
         # Nothing is wider than the screen (the page would be zoomed out to fit it).
         wide = page.js("JSON.stringify([...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || e.className).slice(0, 5))")
         assert wide == "[]", f"wider than the phone: {wide}"
-        # The drawer opens over the view, and a choice in it closes it.
+        # The drawer opens over the view; a project chosen in it leaves it open (its
+        # conversations are shown, to choose from), and a conversation closes it.
         page.click("#side-toggle")
         page.wait("getComputedStyle(document.querySelector('.side')).position === 'absolute' && getComputedStyle(document.querySelector('.side')).display !== 'none'", "the drawer open")
         # Only the height changes (the keyboard or the browser's bars come and go): it stays open.
@@ -371,7 +375,10 @@ def main():
         page.send("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=3, mobile=True)
         page.wait("innerHeight === 844", "the phone window again")
         page.click(".row.project.on")
-        page.wait("getComputedStyle(document.querySelector('.side')).display === 'none'", "the drawer closed after a choice")
+        time.sleep(0.8)
+        assert page.js("getComputedStyle(document.querySelector('.side')).display !== 'none'"), "the drawer closed when a project was chosen"
+        page.click("#new-chat")
+        page.wait("getComputedStyle(document.querySelector('.side')).display === 'none'", "the drawer closed after a conversation was chosen")
         # (Choosing the project starts a new conversation; a message sent before that is done
         # would be cleared with it.)
         page.wait("document.querySelector('#transcript')?.innerText.includes('What shall we work on?')", "the project's new conversation")
@@ -469,15 +476,24 @@ def main():
         page.click("#copy-all")
         page.wait("(document.querySelector('#notice') || {}).innerText?.includes('copied') || (document.querySelector('#toast') || {}).innerText?.includes('copy')", "an answer to copying")
         assert "copied" in page.text("#notice"), page.text("#toast")
-        # Run, Console, Clear: the code is run and what it printed is in the console; Clear
-        # empties the console and starts a new conversation.
+        # Run, Console, Clear: a command typed in the console is run as it is and what it
+        # printed is in the console; without one, Run asks the model to work out what to run;
+        # Clear empties the console and starts a new conversation.
         with open(f"{home}/proj/hello.sh", "w") as f: f.write("echo run from the button\n")
         os.utime(f"{home}/proj/hello.sh")
         assert page.js("!document.querySelector('#console')"), "the console is open before it is asked for"
+        # Nothing typed: the model is asked, in the conversation; it runs the command itself
+        # (asking first, in this mode), and what that printed is in the console too.
         page.click("#run")
-        page.wait("(document.querySelector('#console-out') || {}).innerText?.includes('[done]')", "the run to finish in the console")
+        page.wait("[...document.querySelectorAll('#transcript .it')].some(e => e.innerText.includes('Run it. Work out from this conversation'))", "the request to the model to run it")
+        page.wait("!!document.querySelector('.approval .approve-yes') || document.querySelector('#transcript').innerText.includes('I ran it')", "the model's command, or its answer")
+        if page.js("!!document.querySelector('.approval .approve-yes')"):
+            page.click(".approval .approve-yes")
+        page.wait("document.querySelector('#transcript').innerText.includes('I ran it') && !document.querySelector('#run').disabled", "the model's answer to the request")
+        page.wait("(document.querySelector('#console-out') || {}).innerText?.includes('run from the button')", "what the model's command printed, in the console")
         ran = page.text("#console-out")
-        assert "$ sh 'hello.sh'" in ran and "run from the button" in ran, ran
+        assert "$ sh hello.sh" in ran and "[done]" in ran, ran
+        # A command typed in the console is run as it is, by the page, and added to it.
         page.type("#console-cmd", "echo typed; exit 4")
         page.click("#run")
         page.wait("document.querySelector('#console-out').innerText.includes('[exit status 4]')", "the typed command's end")

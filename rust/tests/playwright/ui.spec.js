@@ -111,6 +111,9 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
 
   await test.step('Run runs the code, the console shows it, Clear clears', async () => {
     fs.writeFileSync(path.join(folder, 'tide.rs'), 'fn main() { println!("high tide at {}", 6 * 7); }\n');
+    // (A command typed in the console is run as it is; with none, Run asks the model.)
+    await page.click('#console-toggle');
+    await page.fill('#console-cmd', 'rustc -O tide.rs -o "$TMPDIR/tide" && "$TMPDIR/tide"');
     await page.click('#run');
     await expect(page.locator('#console-out')).toContainText('high tide at 42', { timeout: 120_000 });
     await expect(page.locator('#console-out')).toContainText('[done]');
