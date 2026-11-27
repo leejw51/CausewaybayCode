@@ -221,11 +221,11 @@ def main():
         page.type("#open-path", "~/proj"); page.click("#open-go")
         page.wait("document.querySelector('.row.project.on')?.innerText.includes('proj')", "the opened project")
         assert os.path.exists(f"{home}/proj/.cwbcode/cwbcode.db"), "the project has no store"
-        # A path is typed under the home folder however it is written, and shown with ~.
-        assert page.text(".open .prefix") == "~/"
+        # A bare name is a folder in the backend's work folder; paths are shown with ~.
+        assert page.text(".open .prefix") == "work/"
         page.type("#open-path", "plain/name"); page.click("#open-go")
         page.wait("document.querySelector('.row.project.on')?.innerText.includes('name')", "a folder typed without ~/")
-        assert os.path.isdir(f"{home}/plain/name"), "a bare name was not taken as a folder under home"
+        assert os.path.isdir(f"{home}/.cwbcode/work/plain/name"), "a bare name was not taken as a folder in the work folder"
         page.type("#open-path", f"{os.path.realpath(home)}/proj"); page.click("#open-go")
         page.wait("document.querySelector('.row.project.on .what')?.innerText.startsWith('proj')", "the project typed as a whole path")
         shown = page.js("JSON.stringify([...document.querySelectorAll('.row.project small')].map(e => e.innerText))")
@@ -234,8 +234,8 @@ def main():
         # A project is taken off the list; its folder and its records stay, and it opens again.
         page.js("[...document.querySelectorAll('.row.project')].find(r => r.innerText.includes('name')).querySelector('.remove').click()")
         page.wait("![...document.querySelectorAll('.row.project')].some(r => r.innerText.includes('plain/name'))", "the project off the list")
-        page.wait("(document.querySelector('#notice') || {}).innerText?.includes('~/plain/name')", "the notice that it was removed")
-        assert os.path.exists(f"{home}/plain/name/.cwbcode/cwbcode.db"), "removing a project from the list deleted its records"
+        page.wait("(document.querySelector('#notice') || {}).innerText?.includes('~/.cwbcode/work/plain/name')", "the notice that it was removed")
+        assert os.path.exists(f"{home}/.cwbcode/work/plain/name/.cwbcode/cwbcode.db"), "removing a project from the list deleted its records"
         page.type("#open-path", "~/proj"); page.click("#open-go")
         page.wait("document.querySelector('.row.project.on .what')?.innerText.startsWith('proj')", "the project again")
         # The frame is as tall as what the browser shows, and nothing is wider than it.

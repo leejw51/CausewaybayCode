@@ -151,20 +151,43 @@ export function outline_install() {
   document.addEventListener('scroll', (e) => { if (e.target && e.target.id === 'transcript') soon(); }, true);
   addEventListener('resize', soon);
   new MutationObserver(soon).observe(document.body, { childList: true, subtree: true, characterData: true });
-  // Pressing or dragging on the outline brings that part of the conversation to the middle.
-  let dragging = false;
-  const seek = (e) => {
+  // Pressing on the outline brings that part of the conversation to the middle: the page
+  // travels there (exponential in and out) and the frame with it. Dragging is followed as
+  // the finger goes. The frame swells while it is held and springs back when let go.
+  let dragging = false, pressed = null;
+  const target = (e) => {
     const scroller = document.getElementById('transcript');
     const outline = document.getElementById('outline');
-    if (!scroller || !outline) return;
+    if (!scroller || !outline) return null;
     const box = outline.getBoundingClientRect();
     const share = Math.min(1, Math.max(0, (e.clientY - box.top) / Math.max(box.height, 1)));
-    scroller.scrollTop = share * scroller.scrollHeight - scroller.clientHeight / 2;
+    return [scroller, share * scroller.scrollHeight - scroller.clientHeight / 2];
   };
-  document.addEventListener('pointerdown', (e) => { if (e.target.closest && e.target.closest('#outline')) { dragging = true; seek(e); e.preventDefault(); } });
-  document.addEventListener('pointermove', (e) => { if (dragging) seek(e); });
-  document.addEventListener('pointerup', () => { dragging = false; });
-  document.addEventListener('pointercancel', () => { dragging = false; });
+  const grab = (held) => {
+    const frame = document.getElementById('outline-view');
+    if (!frame || !M() || calm()) return;
+    M().animate(frame, { scaleX: held ? 1.12 : 1, opacity: held ? 1 : 0.9 }, held ? { duration: 0.18, ease: EXPO_OUT } : BOUNCE);
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (!(e.target.closest && e.target.closest('#outline'))) return;
+    const to = target(e);
+    if (!to) return;
+    dragging = true; pressed = e.clientY;
+    glide(to[0], to[1], 0.62);
+    grab(true);
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    // (A press that has not moved is a press: the page keeps travelling.)
+    if (pressed !== null && Math.abs(e.clientY - pressed) < 4) return;
+    pressed = null;
+    const to = target(e);
+    if (to) { stop_glide(); to[0].scrollTop = to[1]; }
+  });
+  const let_go = () => { if (dragging) { dragging = false; pressed = null; grab(false); } };
+  document.addEventListener('pointerup', let_go);
+  document.addEventListener('pointercancel', let_go);
   soon();
 }
 // Scroll a box to its end (the console, when something was printed).
@@ -198,10 +221,69 @@ export function row_out(el, done) {
     .then(() => M().animate(el, { height: [h + 'px', '0px'], paddingTop: 0, paddingBottom: 0, marginTop: 0, marginBottom: 0, minHeight: 0 }, { duration: 0.32, ease: EXPO }))
     .then(done, done);
 }
-// Bring an element of the conversation into view.
+// Bring an element of the conversation into view: the page travels to it.
 export function go_to(id) {
   const el = document.getElementById(id);
-  if (el) el.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+  if (!el) return;
+  const scroller = document.getElementById('transcript');
+  if (scroller && scroller.contains(el)) {
+    glide(scroller, scroller.scrollTop + el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8, 0.62);
+  } else {
+    el.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+  }
+}
+// Scroll a box to `top`, travelling: exponential in and out. One journey at a time; the
+// wheel or a finger on the box ends it.
+let journey = null;
+function stop_glide() { if (journey) { journey.stop(); journey = null; } }
+function glide(box, top, seconds) {
+  stop_glide();
+  top = Math.max(0, Math.min(top, box.scrollHeight - box.clientHeight));
+  if (!M() || calm() || Math.abs(top - box.scrollTop) < 2) { box.scrollTop = top; return; }
+  if (!box.dataset.glides) {
+    box.dataset.glides = '1';
+    for (const kind of ['wheel', 'touchstart']) box.addEventListener(kind, stop_glide, { passive: true });
+  }
+  journey = M().animate(box.scrollTop, top, { duration: seconds, ease: EXPO, onUpdate: v => { box.scrollTop = v; } });
+}
+// A panel that opens under what the user pressed (the console): it grows from nothing and
+// fades in, exponential in and out; what is in it follows, a moment later.
+export function reveal(el) {
+  if (!M() || !el || calm()) return;
+  const h = el.getBoundingClientRect().height;
+  el.style.minHeight = '0px';
+  M().animate(el, { height: ['0px', h + 'px'], opacity: [0, 1], y: [12, 0] }, { duration: 0.52, ease: EXPO })
+    .then(() => { el.style.height = ''; el.style.minHeight = ''; }, () => {});
+  if (el.children.length) M().animate(el.children, { opacity: [0, 1], y: [8, 0] }, { duration: 0.45, delay: M().stagger(0.06, { startDelay: 0.16 }), ease: EXPO_OUT });
+}
+// It closes the same way, faster; then `done` takes it off the page.
+export function conceal(el, done) {
+  if (!M() || !el || calm()) { done(); return; }
+  const h = el.getBoundingClientRect().height;
+  el.style.minHeight = '0px';
+  M().animate(el, { height: [h + 'px', '0px'], opacity: [1, 0], y: [0, 10] }, { duration: 0.36, ease: EXPO }).then(done, done);
+}
+// What was pressed and has started something (Run): it gives, and comes back on a spring
+// with a little bounce, with a ring of light.
+export function pop(el) {
+  if (!M() || !el || calm()) return;
+  M().animate(el, { scale: [0.9, 1] }, BOUNCE);
+  M().animate(el, { boxShadow: ['0 0 0 0 rgba(251,191,36,0.45)', '0 0 0 14px rgba(251,191,36,0)'] }, { duration: 0.7, ease: EXPO_OUT });
+}
+// New text in a box (what a run printed): it fades in.
+export function fade_in(el) {
+  if (!M() || !el || calm()) return;
+  M().animate(el, { opacity: [0.2, 1], y: [6, 0] }, { duration: 0.5, ease: EXPO_OUT });
+}
+// The items of a list arriving, one after the other (a conversation's messages: the last
+// ones only, so that a long one costs no more). Nothing of the movement is left on them.
+export function rows_in(selector, last) {
+  if (!M() || calm()) return;
+  let els = [...document.querySelectorAll(selector)];
+  if (last > 0) els = els.slice(-last);
+  if (!els.length) return;
+  const clean = () => els.forEach(el => { el.style.transform = ''; el.style.opacity = ''; });
+  M().animate(els, { opacity: [0, 1], y: [12, 0] }, { duration: 0.5, delay: M().stagger(0.035), ease: EXPO_OUT }).then(clean, clean);
 }
 "#)]
 extern "C" {
@@ -238,4 +320,14 @@ extern "C" {
     pub fn to_end(id: &str);
     /// Scroll to the element with this id.
     pub fn go_to(id: &str);
+    /// A panel growing open and fading in.
+    pub fn reveal(el: &web_sys::Element);
+    /// It closes; then `done` is called.
+    pub fn conceal(el: &web_sys::Element, done: &js_sys::Function);
+    /// A pressed button that started something springs back, with a ring of light.
+    pub fn pop(el: &web_sys::Element);
+    /// New text fading in.
+    pub fn fade_in(el: &web_sys::Element);
+    /// The (last `last`, or all when 0) elements matching a selector arrive one after another.
+    pub fn rows_in(selector: &str, last: u32);
 }

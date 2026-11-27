@@ -1,6 +1,7 @@
 //! Which folders the server works in: any folder under the user's home folder (also through a
 //! link placed directly in the home folder, such as ~/vivid -> /Volumes/disk/vivid), except
-//! the home folder itself, credentials and the server's own folder.
+//! the home folder itself, credentials and the server's own folder. One folder in the server's
+//! own is for projects: `~/.cwbcode/work`, where a project opened by a bare name goes.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,9 @@ pub struct Roots {
     /// The server's own folder (~/.cwbcode).
     server_home: PathBuf,
 }
+
+/// The folder, in the server's own, of the projects opened by a bare name.
+pub const WORK: &str = "work";
 
 const OFF_LIMITS: [&str; 8] = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", "Library", ".Trash"];
 
@@ -32,12 +36,27 @@ impl Roots {
                 }
             }
         }
-        Ok(Self { home, allowed, server_home: server_home.canonicalize().unwrap_or_else(|_| server_home.to_path_buf()) })
+        let server_home = server_home.canonicalize().unwrap_or_else(|_| server_home.to_path_buf());
+        // The work folder is there from the start (a link put in its place is not followed:
+        // projects are then refused, being outside it).
+        let _ = std::fs::create_dir_all(server_home.join(WORK));
+        // A server folder that is not under the home folder (CWBCODE_HOME): its work folder
+        // is still a place for projects.
+        let work = server_home.join(WORK);
+        if work.is_dir() && !work.is_symlink() && !allowed.iter().any(|root| work.starts_with(root)) {
+            allowed.push(work);
+        }
+        Ok(Self { home, allowed, server_home })
     }
 
     /// The home folder, as clients are told it (they show paths under it as `~/...`).
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    /// Where a project opened by a bare name goes: `~/.cwbcode/work`.
+    pub fn work(&self) -> PathBuf {
+        self.server_home.join(WORK)
     }
 
     pub fn from_env(server_home: &Path) -> Result<Self> {
@@ -50,12 +69,14 @@ impl Roots {
             self.home.clone()
         } else if let Some(rest) = path.strip_prefix("~/") {
             self.home.join(rest)
-        } else {
+        } else if path.is_empty() {
+            bail!("give the project's folder: a name (a folder in ~/.cwbcode/work), ~/..., or an absolute path");
+        } else if path.starts_with('/') {
             PathBuf::from(path)
+        } else {
+            // A bare name: a folder in the server's work folder.
+            self.work().join(path)
         };
-        if !expanded.is_absolute() {
-            bail!("give the project's folder as an absolute path or as ~/...");
-        }
         Ok(expanded)
     }
 
@@ -103,10 +124,15 @@ impl Roots {
     /// May the server work in this (resolved) folder?
     fn check(&self, real: &Path) -> Result<()> {
         if !self.allowed.iter().any(|root| real.starts_with(root)) {
-            bail!("{} is not under your home folder: cwbcode works only in folders under ~", real.display());
+            bail!("{} is not under your home folder: cwbcode works only in folders under ~ (a bare name is a folder in ~/.cwbcode/work)", real.display());
         }
         if real == self.home {
             bail!("the home folder itself cannot be a project; choose a folder inside it");
+        }
+        // In the server's own folder only the projects of its work folder (not that folder itself).
+        let work = self.work();
+        if real.starts_with(&work) && real != work {
+            return Ok(());
         }
         if real.starts_with(&self.server_home) || OFF_LIMITS.iter().any(|d| real.starts_with(self.home.join(d))) {
             bail!("{} is off limits (credentials, system data or cwbcode's own folder)", real.display());
@@ -142,7 +168,7 @@ mod tests {
         // Through the home folder's link, and by the linked disk's own path.
         assert_eq!(ok("~/vivid/proj"), base.join("disk/vivid/proj"));
         assert_eq!(ok(&base.join("disk/vivid/proj").to_string_lossy()), base.join("disk/vivid/proj"));
-        for refused in ["~", "/", "/etc", "~/.ssh", "~/.cwbcode", "~/Library/x", "~/missing", "~/file.txt", "code/app", "", "~/code/escape/secret", "~/code/../../.."] {
+        for refused in ["~", "/", "/etc", "~/.ssh", "~/.cwbcode", "~/Library/x", "~/missing", "~/file.txt", "code/app", "", " ", "~/code/escape/secret", "~/code/../../.."] {
             assert!(roots.resolve(refused).is_err(), "{refused} was accepted");
         }
         assert!(roots.resolve(&base.join("elsewhere/secret").to_string_lossy()).is_err());
@@ -153,8 +179,20 @@ mod tests {
         assert_eq!(roots.resolve_or_create("~/code/new/deep/project").unwrap(), (made, false));
         assert_eq!(roots.resolve_or_create("~/vivid/fresh").unwrap(), (base.join("disk/vivid/fresh"), true));
         // Nothing is made where the server may not work, however the path is spelled.
-        for refused in ["/tmp/cwbcode-roots-nope/x", "~/.ssh/new", "~/.cwbcode/proj", "~/Library/new", "~/code/escape/made", "~/code/missing/../../../outside", "relative/new", "~/file.txt/under-a-file"] {
+        for refused in ["/tmp/cwbcode-roots-nope/x", "~/.ssh/new", "~/.cwbcode/proj", "~/Library/new", "~/code/escape/made", "~/code/missing/../../../outside", "../new", "x/../../new", "~/file.txt/under-a-file"] {
             assert!(roots.resolve_or_create(refused).is_err(), "{refused} was created");
+        }
+        // The server's work folder is the one place in its own folder for projects.
+        assert!(roots.work().is_dir() && roots.work() == home.join(".cwbcode/work"));
+        assert_eq!(roots.resolve_or_create("~/.cwbcode/work/app").unwrap(), (home.join(".cwbcode/work/app"), true));
+        assert_eq!(ok("~/.cwbcode/work/app"), home.join(".cwbcode/work/app"));
+        // A bare name is a folder there.
+        assert_eq!(roots.resolve_or_create("relative/new").unwrap(), (home.join(".cwbcode/work/relative/new"), true));
+        assert_eq!(ok("app"), home.join(".cwbcode/work/app"));
+        let _ = std::os::unix::fs::symlink(home.join(".cwbcode"), home.join(".cwbcode/work/back"));
+        let _ = std::os::unix::fs::symlink(base.join("elsewhere"), home.join(".cwbcode/work/out"));
+        for refused in ["~/.cwbcode/work", "~/.cwbcode/work/back", "~/.cwbcode/work/out/secret", "~/.cwbcode/work/../proj", "~/.cwbcode/sessions"] {
+            assert!(roots.resolve_or_create(refused).is_err(), "{refused} was accepted");
         }
         assert!(!base.join("elsewhere/made").exists() && !home.join(".ssh/new").exists() && !base.join("outside").exists() && !std::path::Path::new("/tmp/cwbcode-roots-nope").exists());
     }

@@ -288,9 +288,13 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     }
     assert!(!server.home.join("missing").exists());
     // ... and where the backend may not work, none is opened or made.
-    for outside in ["/etc", "/", "/tmp", "/tmp/cwbcode-it-made-outside", "~", "~/.cwbcode", "~/.cwbcode/new", "~/.ssh/new", "~/proj/../../escaped", "relative/path"] {
+    for outside in ["/etc", "/", "/tmp", "/tmp/cwbcode-it-made-outside", "~", "~/.cwbcode", "~/.cwbcode/new", "~/.ssh/new", "~/proj/../../escaped", "../relative/path", "~/.cwbcode/work"] {
         assert!(client.call(&Request::new(Method::OpenProject).text(outside)).await.is_err(), "{outside} was accepted as a project");
     }
+    // A bare name is a folder in the backend's work folder, made when it is opened.
+    let bare = client.call(&Request::new(Method::OpenProject).text("relative/path")).await.unwrap();
+    assert_eq!(bare.projects[0].path, server.home.join(".cwbcode/work/relative/path").to_string_lossy());
+    assert!(server.home.join(".cwbcode/work/relative/path/.cwbcode/cwbcode.db").exists());
     assert!(!Path::new("/tmp/cwbcode-it-made-outside").exists() && !server.home.join(".ssh").exists() && !server.home.parent().unwrap().join("escaped").exists());
     // Opening a folder under home that does not exist makes it, with the folders above it.
     let made = client.call(&Request::new(Method::OpenProject).text("~/brand/new/project")).await.unwrap();
@@ -314,7 +318,7 @@ async fn projects_are_folders_under_home_with_their_own_store() {
     let events = read_all(&mut client.chat(&chat(&server, 0, "hello there", "")).await.unwrap()).await;
     let session = session_of(&events);
     let listed = client.call(&Request::new(Method::Projects)).await.unwrap().projects;
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 3);
     assert_eq!(listed.iter().find(|p| p.name == "proj").unwrap().sessions, 1);
     // The user's own "run it": a command given, or one guessed from the folder, in the project.
     std::fs::write(server.home.join("proj/hello.sh"), "echo run from $(basename \"$PWD\")\n").unwrap();

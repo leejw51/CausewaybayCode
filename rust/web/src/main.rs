@@ -385,9 +385,10 @@ impl App {
 
     async fn sign_out(&self) {
         let _ = api::call(&self.token.get_untracked(), &Request::new(Method::Logout)).await;
-        // Signing out forgets the session kept on this device.
+        // Signing out forgets the session kept on this device; the project and conversation
+        // the user was in stay in this browser's storage, to come back to after signing in.
         forget(TOKEN_KEY);
-        self.resume.set((String::new(), 0));
+        self.resume.set((self.project.get_untracked(), self.session.get_untracked()));
         self.token.set(String::new());
         self.projects.set(Vec::new());
         self.project.set(String::new());
@@ -676,7 +677,22 @@ impl App {
             }
             out.push_str(&said);
         });
-        after_draw(|| motion::to_end("console-out"));
+        after_draw(|| {
+            motion::to_end("console-out");
+            if let Some(out) = element("console-out") {
+                motion::fade_in(&out);
+            }
+        });
+    }
+
+    /// Close the console: it folds away, and is then taken off the page.
+    fn close_console(&self) {
+        let console = self.console;
+        let done = Closure::once_into_js(move || console.set(false));
+        match element("console") {
+            Some(el) => motion::conceal(&el, done.unchecked_ref()),
+            None => console.set(false),
+        }
     }
 
     /// Delete a conversation (the user has said yes on its row): it cannot be brought back.
@@ -812,13 +828,14 @@ fn now_ms() -> f64 {
 }
 
 /// How this page's calls reach the backend, as the backend saw the last one arrive: the
-/// protocol, and what carries it (HTTP/3 is QUIC, over UDP; the others are over TCP).
-fn transport(protocol: &str) -> &'static str {
+/// protocol, and what carries it (HTTP/3 is QUIC, over UDP; the others are over TCP). The
+/// carrier is left out where there is little room.
+fn transport(protocol: &str) -> (&'static str, &'static str) {
     match protocol {
-        "h3" => "HTTP/3 · UDP",
-        "h2" => "HTTP/2 · TCP",
-        "" => "",
-        _ => "HTTP/1.1 · TCP",
+        "h3" => ("HTTP/3", " · UDP"),
+        "h2" => ("HTTP/2", " · TCP"),
+        "" => ("", ""),
+        _ => ("HTTP/1.1", " · TCP"),
     }
 }
 
@@ -832,6 +849,11 @@ fn main() {
 /// Does this key press open what has the focus, as a click would (Enter, or Space)?
 fn activates(ev: &web_sys::KeyboardEvent) -> bool {
     ev.key() == "Enter" || ev.key() == " "
+}
+
+/// The element with this id, when it is on the page.
+fn element(id: &str) -> Option<web_sys::Element> {
+    web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(id))
 }
 
 fn after_draw(f: impl FnOnce() + 'static) {
@@ -946,6 +968,25 @@ fn Root() -> impl IntoView {
     Effect::new(move |_| app.save_prefs());
     Effect::new(move |_| after_draw(motion::install));
     Effect::new(move |_| after_draw(motion::outline_install));
+    // The console opens growing; a conversation's messages arrive one after the other.
+    Effect::new(move |was: Option<bool>| {
+        let shown = app.console.get();
+        if shown && was != Some(true) {
+            after_draw(|| {
+                if let Some(el) = element("console") {
+                    motion::reveal(&el);
+                }
+            });
+        }
+        shown
+    });
+    Effect::new(move |was: Option<i64>| {
+        let session = app.session.get();
+        if was.is_some_and(|was| was != session) && session != 0 {
+            after_draw(|| motion::rows_in("#transcript .it", 10));
+        }
+        session
+    });
     view! {
         <div class="glow a"></div>
         <div class="glow b"></div>
@@ -1188,7 +1229,7 @@ fn AppBar() -> impl IntoView {
                             let dot = if forging && !waiting { "dot forging" } else { dot };
                             let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, if App::narrow() { "forge_pill_short" } else { "forge_pill" }, &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
                             view! {
-                                <span class:asking=waiting><span class=dot></span>{state}" · "<span id="transport">{transport(&s.protocol)}</span></span>
+                                <span class:asking=waiting><span class=dot></span>{state}" · "<span id="transport">{transport(&s.protocol).0}<span class="carrier">{transport(&s.protocol).1}</span></span></span>
                                 <div id="login-state">{match s.auth.as_str() {
                                     "open" => tr(lang, "local_short").to_string(),
                                     "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
@@ -1326,8 +1367,8 @@ fn Sidebar() -> impl IntoView {
         after_draw(|| motion::slide_selection("#nav"));
     });
     let open = move || {
-        // Projects live under the home folder: what is typed is a path under it, however it
-        // was written (`x`, `~/x`, or the whole path).
+        // A bare name is a folder in the backend's work folder (~/.cwbcode/work), which the
+        // backend puts there; `~/x` and a whole path are folders under the home folder.
         let typed = path.get_untracked().trim().to_string();
         if !typed.is_empty() {
             path.set(String::new());
@@ -1335,7 +1376,7 @@ fn Sidebar() -> impl IntoView {
             let under = match typed.strip_prefix(home.as_str()).filter(|rest| !home.is_empty() && (rest.is_empty() || rest.starts_with('/'))) {
                 Some(rest) => format!("~{rest}"),
                 None if typed == "~" || typed.starts_with("~/") || typed.starts_with('/') => typed,
-                None => format!("~/{typed}"),
+                None => typed,
             };
             spawn_local(async move { app.open_project(under).await });
         }
@@ -1351,7 +1392,7 @@ fn Sidebar() -> impl IntoView {
             <div class="group">
                 <h4>{t("projects")}</h4>
                 <div class="open">
-                    <span class="prefix">"~/"</span>
+                    <span class="prefix" id="open-prefix" title=move || app.status.get().map(|s| format!("{}/work/", app.tilde(&s.home))).unwrap_or_default()>"work/"</span>
                     <input id="open-path" placeholder=t("open_ph") prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
                         on:keydown=move |ev| if ev.key() == "Enter" { open() }/>
                     <button id="open-go" on:click=move |_| open()>{t("open")}</button>
@@ -1696,7 +1737,7 @@ fn Dashboard() -> impl IntoView {
                     <div class="card glass"><h5>{t("d_context")}</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=fixed("")/></div>
                         <div class="sub">{move || tr_with(app.lang.get(), "ctx_sub", &s().context_limit.to_string())}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", context_share())></i></div></div>
-                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || transport(&s().protocol)}</div>
+                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || { let (name, carrier) = transport(&s().protocol); format!("{name}{carrier}") }}</div>
                         <div class="sub">{move || if s().h3 { tr(app.lang.get(), "transport_both") } else { tr(app.lang.get(), "transport_h2") }}</div></div>
                     <div class="card glass"><h5>{t("d_safety")}</h5><div class="big small">{move || s().sandbox}</div>
                         <div class="sub">{move || tr(app.lang.get(), match s().auth.as_str() { "open" => "safety_open", "wallet" => "safety_wallet", _ => "safety_token" })}</div></div>
@@ -1966,8 +2007,8 @@ fn Chat() -> impl IntoView {
                 <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
                 <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
             </div>
-            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| spawn_local(async move { app.run_code().await })>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</button>
-            <button id="console-toggle" class:lit=move || app.console.get() on:click=move |_| app.console.update(|shown| *shown = !*shown)>{t("console")}</button>
+            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| { if let Some(el) = element("run") { motion::pop(&el); } spawn_local(async move { app.run_code().await }) }>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</button>
+            <button id="console-toggle" class:lit=move || app.console.get() on:click=move |_| if app.console.get_untracked() { app.close_console() } else { app.console.set(true) }>{t("console")}</button>
             <button id="clear" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{t("clear")}</button>
             <button id="copy-all" disabled=move || app.items.get().is_empty() on:click=move |_| {
                 // (Copied at once, in the tap itself: a browser lets nothing else at the clipboard.)
@@ -2025,7 +2066,7 @@ fn Chat() -> impl IntoView {
                     <input id="console-cmd" placeholder=t("console_ph") prop:value=move || app.console_cmd.get() on:input=move |ev| app.console_cmd.set(event_target_value(&ev))
                         on:keydown=move |ev| if ev.key() == "Enter" { spawn_local(async move { app.run_code().await }) }/>
                     <button class="ghost" id="console-clear" on:click=move |_| app.console_out.set(String::new())>{t("clear")}</button>
-                    <button class="ghost round" id="console-close" aria-label=t("console") on:click=move |_| app.console.set(false)>"×"</button>
+                    <button class="ghost round" id="console-close" aria-label=t("console") on:click=move |_| app.close_console()>"×"</button>
                 </div>
                 <pre id="console-out">{move || { let out = app.console_out.get(); if out.is_empty() { t("console_empty")().to_string() } else { out } }}</pre>
             </div>

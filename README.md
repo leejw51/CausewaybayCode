@@ -283,8 +283,10 @@ no picture behind it. A bar across the top holds the views, the backend's state 
 settings; a sidebar holds the projects and the conversations and folds away (the button at
 the left of the bar), so the work has the whole window; panels reach the edges.
 
-- **Projects** live under the home folder: the field says `~/` and takes what is typed as a
-  path under it. Paths are shown with `~`, never with the account's name. The × on a
+- **Projects** live under the home folder. The field says `work/`: a bare name is a folder
+  in `~/.cwbcode/work`; `~/x` or a whole path is that folder. Paths are shown with `~`, never
+  with the account's name. The project and conversation you were in are kept in the
+  browser's storage (for that address) and come back after a reload or signing in again. The × on a
   project takes it off the list and nothing else: its folder, files and records stay, and
   opening it again brings its conversations back.
 - **Run, Console, Clear.** Run runs the project's code without the model: the command typed
@@ -462,7 +464,9 @@ All of it is SQLite, in two places:
 
 A project is any folder under your home folder (also through a link placed in it, such as
 `~/vivid -> /Volumes/disk/vivid`). The home folder itself, credentials (`~/.ssh`, `~/Library`,
-...) and `~/.cwbcode` are refused.
+...) and `~/.cwbcode` are refused, except the folders in `~/.cwbcode/work`: that is where a
+project opened by a bare name goes, and commands run there cannot read the backend's token,
+keys or database beside it.
 
 ## How it works
 

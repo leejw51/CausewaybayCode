@@ -37,9 +37,9 @@ test('projects, typefaces, the context bar, copying, plan mode, commands and hoo
   });
 
   await test.step('a project is opened under ~/, shown with ~, removed from the list, and opened again', async () => {
-    await expect(page.locator('.open .prefix')).toHaveText('~/');
-    // Typed without ~/: it is taken as a path under the home folder, and made.
-    await page.fill('#open-path', under.slice(2));
+    await expect(page.locator('.open .prefix')).toHaveText('work/');
+    // Typed with ~/: a folder under the home folder, made. (A bare name goes to ~/.cwbcode/work.)
+    await page.fill('#open-path', under);
     await page.click('#open-go');
     await expect(page.locator('.row.project.on small')).toHaveText(under);
     expect(fs.existsSync(path.join(folder, '.cwbcode/cwbcode.db'))).toBe(true);

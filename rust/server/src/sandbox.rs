@@ -225,6 +225,12 @@ impl Policy {
         self.home.join("codes")
     }
 
+    /// The folder of the projects opened by a bare name (`~/.cwbcode/work`): the one place
+    /// under the server's own folder where projects are.
+    fn work(&self) -> PathBuf {
+        self.home.join(crate::projects::WORK)
+    }
+
     /// The project's own `.cwbcode` folder: cwbcode's records, which tools neither read nor write.
     pub fn records(&self) -> PathBuf {
         self.workspace.join(crate::store::DIR)
@@ -239,7 +245,10 @@ impl Policy {
     fn secret(&self, path: &Path) -> bool {
         let home = real(&home_dir());
         // cwbcode's records anywhere: this project's, a nested project's, the server's own.
-        let records = path.components().any(|c| c.as_os_str() == crate::store::DIR) && !path.starts_with(self.home.join("tools"));
+        // (The projects in the server's work folder are under its `.cwbcode` without being its
+        // records: there, what counts is what comes after the work folder.)
+        let within = path.strip_prefix(self.work()).unwrap_or(path);
+        let records = within.components().any(|c| c.as_os_str() == crate::store::DIR) && !path.starts_with(self.home.join("tools"));
         SECRET_DIRS.iter().any(|d| path.starts_with(home.join(d))) || SECRET_FILES.iter().any(|f| path == home.join(f)) || self.own_secrets().iter().any(|f| path == f) || path.starts_with(self.codes()) || records
     }
 
@@ -362,6 +371,15 @@ impl Policy {
         // ... except the tools the agent made, which are compiled and run from there.
         // (Named as the denial names it: a rule for the exact operation outranks one for `file-read*`.)
         sb.push_str(&format!("(allow file-read-data file-read* file-write* (subpath {}))\n", quote(&self.home.join("tools"))));
+        // ... and the projects in the server's work folder, whose paths go through its
+        // `.cwbcode`: read like any folder, written when it is this workspace; their own
+        // records stay closed (a `.cwbcode` after the work folder).
+        let work = self.work();
+        sb.push_str(&format!("(allow file-read-data file-read* (subpath {}))\n", quote(&work)));
+        if self.workspace.starts_with(&work) && self.workspace != work {
+            sb.push_str(&format!("(allow file-write* (subpath {}))\n", quote(&self.workspace)));
+        }
+        sb.push_str(&format!("(deny file-read-data file-write* (regex #\"/\\.cwbcode/{}/.*/\\.cwbcode(/|$)\"))\n", crate::projects::WORK));
         sb
     }
 
@@ -572,6 +590,43 @@ mod tests {
             assert_ne!(sh("ls sub/.cwbcode").status, Some(0));
         }
         assert!(profile.contains(&format!("(literal \"{}\")", p.home.join("token").display())));
+    }
+
+    #[test]
+    fn a_project_in_the_servers_work_folder_is_worked_in_and_the_servers_secrets_stay_closed() {
+        let base = std::env::temp_dir().join(format!("cwbcode-work-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join(".cwbcode");
+        for dir in ["work/p/src", "work/p/.cwbcode", "work/p/sub/.cwbcode", "work/other", "tools"] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        for (file, text) in [("token", "secret"), ("cwbcode.db", "secret"), ("work/p/src/a.txt", "mine"), ("work/p/.cwbcode/cwbcode.db", "records"), ("work/p/sub/.cwbcode/inner.txt", "records"), ("work/other/b.txt", "theirs")] {
+            std::fs::write(home.join(file), text).unwrap();
+        }
+        let mut p = Policy::new(Mode::Auto, &home.join("work/p"), &home).unwrap();
+        // The tools: the project's files, not its records, not the server's secrets.
+        assert!(p.check_read("src/a.txt").is_ok());
+        assert!(p.check_write("src/new.txt", "write").is_ok());
+        assert!(p.check_read(".cwbcode/cwbcode.db").is_err());
+        assert!(p.check_write("sub/.cwbcode/x", "write").is_err());
+        for secret in ["token", "cwbcode.db", "key.pem", "codes/0123abcd"] {
+            assert!(p.check_read(&p.home.join(secret).to_string_lossy()).is_err(), "{secret}");
+        }
+        if p.sandbox {
+            let sh = |script: &str| run(p.command(Path::new("/bin/sh"), &["-c", script]), None, Duration::from_secs(20), &|| false).unwrap();
+            // Commands: the same.
+            assert_eq!(sh("cat src/a.txt").stdout.trim(), "mine");
+            assert_eq!(sh("echo ok > src/made.txt && cat src/made.txt").stdout.trim(), "ok");
+            assert_eq!(sh("mkdir -p deep/er && echo ok > deep/er/f && cat deep/er/f").stdout.trim(), "ok");
+            for refused in ["cat .cwbcode/cwbcode.db", "echo x > .cwbcode/new", "cat sub/.cwbcode/inner.txt", "echo x > sub/.cwbcode/new", "cat ../../token", "cat ../../cwbcode.db", "echo x > ../../token", "echo x > ../../new", "echo x > ../other/b.txt", "echo x > ../new.txt"] {
+                assert_ne!(sh(refused).status, Some(0), "{refused}");
+            }
+            assert_eq!(std::fs::read_to_string(home.join("token")).unwrap(), "secret");
+            assert_eq!(std::fs::read_to_string(home.join("work/other/b.txt")).unwrap(), "theirs");
+            // Another project there is read as any folder under the home folder is.
+            assert_eq!(sh("cat ../other/b.txt").stdout.trim(), "theirs");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

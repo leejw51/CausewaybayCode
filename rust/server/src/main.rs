@@ -239,6 +239,10 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     for (what, address) in addresses(bind) {
         println!("{what:<9} {address}");
     }
+    // Plain HTTP beside it (--http-port): on this machine's loopback address only, whatever the mode.
+    if let Some(port) = serve.http_port {
+        println!("{:<9} http://127.0.0.1:{port}  (plain HTTP, this machine only: no certificate to trust)", "http");
+    }
     // The token matters where it is the way in; with a wallet it works from this machine only.
     match control::mode(&wallet, bind, serve.require_token) {
         auth::Mode::Token => println!("{:<9} {token}", "token"),

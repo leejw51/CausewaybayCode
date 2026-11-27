@@ -192,6 +192,9 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .seg button.on { color: #281810; }
 .pill { display: flex; align-items: center; gap: .9rem; min-height: 2.1rem; padding: 0 .8rem; border: 1px solid var(--line); border-radius: 99px; background: var(--well); font-size: .92em; color: var(--dim); white-space: nowrap; min-width: 0; overflow: hidden; }
 .pill #login-state { color: var(--accent); }
+/* (The protocol is text of the pill, cut short with it where there is little room.) */
+.pill #transport { display: contents; }
+@media (max-width: 640px) { .pill .carrier { display: none; } }
 .pill { min-width: 0; } .pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--dim); margin-right: .45rem; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
@@ -333,7 +336,7 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 /* The bar gives up what it can do without as it gets tighter, measured in letters (so that a
    larger size of type counts): first the name, then the wallet, then the views' words. */
 @container app (max-width: 62em) { .brand > div:not(.logo) { display: none; } }
-@container app (max-width: 50em) { .pill #login-state { display: none; } .meter > span:first-child { display: none; } }
+@container app (max-width: 50em) { .pill #login-state { display: none; } .pill .carrier { display: none; } .meter > span:first-child { display: none; } }
 @container app (max-width: 40em) { .seg button span { display: none; } .seg button { padding: 0 .8rem; } }
 
 /* Stacked: the sidebar becomes a strip under the bar, its lists rows of chips. */
