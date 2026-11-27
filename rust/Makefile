@@ -17,11 +17,15 @@ ENV_FILE ?= $(abspath ../.env)
 # Plain HTTP on 127.0.0.1 only, beside HTTPS (for a web view that will not take the backend's
 # certificate). The Mac app does not use it: it runs a backend of its own, on free ports.
 APP_PORT ?= 7480
+# Plain HTTP on this machine's Tailscale address too, in remote mode: for devices on the same
+# tailnet, with no certificate to trust (Tailscale encrypts between them). Never on the LAN.
+# TS_HTTP_PORT= (empty) turns it off.
+TS_HTTP_PORT ?= 7481
 # H3=1 tells browsers about HTTP/3 (make start H3=1): only for devices that trust this machine's
 # certificate authority (/ca.crt installed and switched on). A browser that only chose "visit
 # anyway" refuses the certificate over QUIC and may show the backend as unreachable.
 H3 ?=
-SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT) $(if $(H3),--advertise-h3)
+SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT) $(if $(TS_HTTP_PORT),--tailscale-http-port $(TS_HTTP_PORT)) $(if $(H3),--advertise-h3)
 # The Mac app (Tauri, in desktop/): the backend goes in as its sidecar, named for this machine.
 TRIPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 APP_BUNDLE := desktop/target/release/bundle/macos/Causewaybay Code.app
@@ -31,7 +35,7 @@ SUPERVISORD   := .venv/bin/supervisord -c scripts/supervisord.conf
 SUPERVISORCTL := .venv/bin/supervisorctl -c scripts/supervisord.conf
 RUNNING       := [ -S $(HOME)/.cwbcode/supervisor.sock ] && $(SUPERVISORCTL) pid >/dev/null 2>&1
 
-.PHONY: help download pull model build web install start stop restart status logs url test test-web test-app test-playwright test-model e2e clean package package-dmg release app
+.PHONY: help download pull model build web install start stop restart status logs url test test-unit test-integration test-web test-app test-playwright test-model e2e clean package package-dmg release app
 
 help:
 	@echo "make download    - download the model (20 GB): asks whether from Ollama or Hugging Face"
@@ -44,6 +48,7 @@ help:
 	@echo "make stop        - stop the backend"
 	@echo "make status      - is it running;  make logs - follow its log;  make url - address and a one-time link"
 	@echo "make test        - unit and integration tests (a scripted model, no 20 GB)"
+	@echo "make test-unit   - the unit tests alone;  make test-integration - real backends with a scripted model"
 	@echo "make package     - the Mac app (Tauri) and its disk image, copied to dist/"
 	@echo "make app         - open the app: it uses a running backend, or starts its own and stops it on quit"
 	@echo "make package-dmg - the same as make package"
@@ -112,6 +117,7 @@ start: .venv/bin/supervisord
 	@sleep 1; bin/cwbcode url $(SERVE_ARGS)
 	@if bin/cwbcode url $(SERVE_ARGS) | grep "^bind  *0\.0\.0\.0" >/dev/null; then \
 		echo "Reachable from other machines: whoever holds the wallet's recovery phrase can run commands here as you."; \
+		echo "From a phone or tablet on your tailnet, open the first http address above: plain HTTP inside Tailscale, nothing to install or trust."; \
 	else \
 		echo "This machine only: open the 'open' link above (it works once, within 5 minutes; make url prints a new one). To use it from other machines turn remote mode on: the web dashboard, or bin/cwbcodeclient remote on <wallet address>."; \
 	fi
@@ -136,12 +142,19 @@ logs:
 url:
 	@bin/cwbcode url $(SERVE_ARGS)
 
-# The integration tests start target/release/cwbcode, so it is built first.
-test:
-	cargo build --release
+# Everything that needs no model: the unit tests, then the integration tests.
+test: test-unit test-integration
+
+# Unit tests: the backend, the messages, the terminal client and the web client, each alone.
+test-unit:
 	cargo test --release -p cwbcode -p cwbcode-proto
 	cargo test --release -p cwbcodeclient --lib --bins
 	cd web && cargo test
+
+# Integration tests: real backends (target/release/cwbcode, so it is built first) driven by
+# a scripted model, through the terminal client's own code.
+test-integration:
+	cargo build --release
 	@# Each of these starts a backend of its own; one at a time, so that timing (the 1.5 s
 	@# given to HTTP/3 before falling back) does not depend on how busy the machine is.
 	cargo test --release -p cwbcodeclient --test backend -- --test-threads=1

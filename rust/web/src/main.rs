@@ -275,9 +275,11 @@ impl App {
 
     /// Say something that is not an error, for a few seconds.
     fn tell(&self, text: String) {
-        self.notice.set(text);
+        self.notice.set(text.clone());
         let notice = self.notice;
-        set_timeout(move || notice.set(String::new()), std::time::Duration::from_secs(5));
+        // (Only this notice is taken away: a later one has its own five seconds, which the
+        // end of an earlier one must not cut short.)
+        set_timeout(move || if notice.get_untracked() == text { notice.set(String::new()) }, std::time::Duration::from_secs(5));
     }
 
     /// May the app be shown: is there a token (local mode too asks for the backend's), or a

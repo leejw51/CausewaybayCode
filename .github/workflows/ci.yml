@@ -2,7 +2,8 @@
 #
 #   make build      the web client (trunk, WebAssembly), then cwbcode and cwbcodeclient; MLX is
 #                   compiled from source (cmake, and Xcode's Metal compiler for its shaders)
-#   make test       unit tests, and real backends driven by a scripted model (--script)
+#   make test-unit         unit tests: backend, messages, terminal client, web client
+#   make test-integration  real backends driven by a scripted model (--script)
 #   web_test.py     the web client in headless Chrome against such a backend
 #
 # The model (20 GB) is neither needed nor downloaded, so `make test-model`, `make e2e` and
@@ -60,8 +61,11 @@ jobs:
       - name: Build (web client, cwbcode, cwbcodeclient)
         run: make build
 
-      - name: Test
-        run: make test
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Integration tests (real backends, scripted model)
+        run: make test-integration
 
       - name: Web client in headless Chrome
         run: |

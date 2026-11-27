@@ -83,6 +83,30 @@ pub fn local_router(app: App, token: String, port: u16) -> Router {
         .layer(axum::middleware::from_fn_with_state(port, local_host))
 }
 
+/// The router for plain HTTP inside Tailscale (--tailscale-http-port): the backend's own,
+/// with the same sign-in as over HTTPS, on this machine's Tailscale address only. Tailscale
+/// encrypts what travels between its devices, so there is no certificate for a device to
+/// trust. Only for requests addressed to one of `hosts` (the Tailscale address and name, at
+/// that port: a site whose name points here is not this origin), and only in remote mode:
+/// in local mode nothing is reachable from another machine, this port included. HTTP/3 is
+/// not advertised here.
+pub fn tailnet_router(app: App, hosts: Vec<String>) -> Router {
+    let control = app.control.clone();
+    let app = App { h3_port: None, ..app };
+    router(app).layer(axum::middleware::from_fn_with_state((Arc::new(hosts), control), tailnet_host))
+}
+
+async fn tailnet_host(State((hosts, control)): State<(Arc<Vec<String>>, Arc<crate::control::Control>)>, request: HttpRequest, next: Next) -> HttpResponse {
+    if control.bind.lock().unwrap().ip().is_loopback() {
+        return (StatusCode::NOT_FOUND, "this backend is in local mode: it answers on this machine only").into_response();
+    }
+    let named = request.uri().authority().map(|a| a.as_str().to_string()).or_else(|| request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).map(String::from));
+    if !named.is_some_and(|host| hosts.iter().any(|h| h.eq_ignore_ascii_case(&host))) {
+        return (StatusCode::MISDIRECTED_REQUEST, "this port answers for this machine's Tailscale address only").into_response();
+    }
+    next.run(request).await
+}
+
 /// The Mac app's page: the app's own origin (Tauri's), the same at every start, so that what
 /// the page keeps in the browser stays; it calls the backend on this port across origins.
 /// No website has this origin: a browser sends it only for the app's own window.

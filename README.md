@@ -313,11 +313,24 @@ the left of the bar), so the work has the whole window; panels reach the edges.
 **On the home screen.** The page can be installed (Safari: Share, then Add to Home Screen;
 Chrome: Install): it has a manifest, icons and a service worker, and then opens in a window
 of its own. The service worker asks the backend first, every time, so nothing is served
-stale; it keeps a copy only for when the backend cannot be reached, so that the app still
-opens and says it is offline. A browser registers a service worker only where it trusts the
+stale; it keeps a copy of the page's files only for when the backend cannot be reached.
+Opening the page itself is left to the browser, which then says what is wrong when it cannot
+reach the backend, and asks about a certificate it does not trust yet (a page opened from
+the copy hid that question: it opened, and every call behind it failed). A browser registers a service worker only where it trusts the
 certificate, so trust the backend's certificate authority once on each device first. (An iPad
 that showed a letter instead of the icon on its home screen probably did so for the same
 reason; that is not yet confirmed.)
+
+**Without a certificate: plain HTTP, the address to use first.** `make start` prints the
+plain-HTTP addresses before the HTTPS ones. On this machine that is `http://127.0.0.1:7480`
+(the one-time link of local mode goes there). In remote mode it also serves plain HTTP on
+this machine's Tailscale address (`http://<tailscale address>:7481`; `TS_HTTP_PORT=` turns it
+off, `cwbcode --tailscale-http-port` is the option). HTTPS and HTTP/3 stay as they are, for
+the terminal client, the LAN, and installing the page as an app. Tailscale
+encrypts what travels between its devices, so a phone or tablet on the same tailnet opens it
+with nothing to install or trust, and signs in as over HTTPS. It is not offered on the LAN,
+where plain HTTP could be read, and it answers only for the Tailscale address and name. Over
+plain HTTP a browser registers no service worker, so the page is not installed as an app there.
 
 **Trusting the backend on a device.** The backend makes its own certificate authority on
 first start (`~/.cwbcode/ca.pem`, its key `ca-key.pem` readable only by you) and signs its

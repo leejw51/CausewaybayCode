@@ -110,6 +110,13 @@ struct Serve {
     #[arg(long, env = "CWBCODE_HTTP_PORT")]
     http_port: Option<u16>,
 
+    /// Also serve plain HTTP on this machine's Tailscale address at this port, in remote mode:
+    /// for devices on the same tailnet, with no certificate to trust (Tailscale encrypts what
+    /// travels between them). Not on the LAN, where plain HTTP could be read. The sign-in is
+    /// the same as over HTTPS.
+    #[arg(long, env = "CWBCODE_TAILSCALE_HTTP_PORT", value_name = "PORT")]
+    tailscale_http_port: Option<u16>,
+
     /// Stop (as on a terminate signal) when standard input reaches its end: the desktop app
     /// holds the other end of a pipe, so that the backend it started goes when it does, also
     /// when it is killed or crashes.
@@ -201,6 +208,15 @@ fn addresses(bind: SocketAddr) -> Vec<(&'static str, String)> {
     out
 }
 
+/// Where plain HTTP inside Tailscale listens (this machine's Tailscale address, at `port`), and
+/// the hosts a request there may name: that address and the machine's Tailscale name. None
+/// when Tailscale is not running.
+fn tailnet(port: u16) -> Option<(SocketAddr, Vec<String>)> {
+    let names = net::tailscale();
+    let ip = names.iter().find_map(|name| name.parse::<std::net::Ipv4Addr>().ok())?;
+    Some((SocketAddr::from((ip, port)), names.iter().map(|name| format!("{name}:{port}")).collect()))
+}
+
 /// The wallet (if set, and where) and the address to listen on.
 fn exposure(options: &Serve, home: &std::path::Path) -> Result<(Option<env::Wallet>, SocketAddr)> {
     let wallet = env::wallet(std::env::var(env::WALLET).ok(), options.env_file.as_deref(), home)?;
@@ -236,12 +252,20 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
     for line in exposure_lines(serve, home, &wallet, bind) {
         println!("{line}");
     }
-    for (what, address) in addresses(bind) {
-        println!("{what:<9} {address}");
+    // Plain HTTP first: nothing to trust or install. Inside Tailscale (--tailscale-http-port)
+    // when other machines are let in at all, and on this machine's loopback address
+    // (--http-port) whatever the mode.
+    if let Some((_, hosts)) = serve.tailscale_http_port.filter(|_| !bind.ip().is_loopback()).and_then(tailnet) {
+        for host in hosts.iter().rev() {
+            println!("{:<9} http://{host}  (plain HTTP inside Tailscale: no certificate to trust; the easiest from a phone or tablet)", "http");
+        }
     }
-    // Plain HTTP beside it (--http-port): on this machine's loopback address only, whatever the mode.
     if let Some(port) = serve.http_port {
         println!("{:<9} http://127.0.0.1:{port}  (plain HTTP, this machine only: no certificate to trust)", "http");
+    }
+    // Then HTTPS, with the backend's own certificate: every address, the LAN too.
+    for (what, address) in addresses(bind) {
+        println!("{what:<9} {address}");
     }
     // The token matters where it is the way in; with a wallet it works from this machine only.
     match control::mode(&wallet, bind, serve.require_token) {
@@ -251,7 +275,9 @@ fn print_access(home: &std::path::Path, serve: &Serve) -> Result<()> {
         // then takes out of the address. The token itself is not put in the link: the
         // browser's history would keep it. (Printed here only, never into the log.)
         auth::Mode::Open => {
-            if let Some((_, web)) = addresses(bind).first() {
+            // (Over plain HTTP on this machine when that port is served: no certificate warning.)
+            let web = serve.http_port.map(|port| format!("http://127.0.0.1:{port}")).or_else(|| addresses(bind).first().map(|(_, web)| web.clone()));
+            if let Some(web) = web {
                 let code = auth::issue_code(home)?;
                 println!("{:<9} {web}/#code={code}  (works once, within {} minutes)", "open", auth::CODE_SECONDS / 60);
             }
@@ -329,6 +355,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
     let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().filter(|_| options.advertise_h3).map(|_| cwbcode_proto::quic_port(bind.port())), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
     let router = api::router(app.clone());
     let local_app = app.clone();
+    let tailnet_app = app.clone();
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));
 
     eprintln!("cwbcode {} · {}", env!("CARGO_PKG_VERSION"), shared.sandbox_label());
@@ -354,6 +381,25 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
                 });
             }
             Err(e) => eprintln!("cwbcode: warning: cannot listen on {address} (--http-port): {e}; serving on without it (the desktop app will not use this backend)"),
+        }
+    }
+    // Plain HTTP inside Tailscale: on its address only, so nothing on the LAN reaches it.
+    // Without Tailscale, or with the port held, the backend serves on without it.
+    if let Some(port) = options.tailscale_http_port {
+        match tailnet(port) {
+            Some((address, hosts)) => match tokio::net::TcpListener::bind(address).await {
+                Ok(listener) => {
+                    eprintln!("cwbcode: listening on http://{address} (plain HTTP, Tailscale only, in remote mode)");
+                    let router = api::tailnet_router(tailnet_app, hosts);
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await {
+                            eprintln!("cwbcode: http://{address}: {e}");
+                        }
+                    });
+                }
+                Err(e) => eprintln!("cwbcode: warning: cannot listen on {address} (--tailscale-http-port): {e}; serving on without it"),
+            },
+            None => eprintln!("cwbcode: Tailscale is not running: no plain HTTP on it (--tailscale-http-port)"),
         }
     }
     let stdin_closed = options.exit_with_stdin.then(watch_stdin);
