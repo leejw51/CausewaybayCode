@@ -29,7 +29,8 @@ pub struct App {
     pub shared: Arc<Shared>,
     pub auth: Arc<crate::auth::Auth>,
     pub control: Arc<crate::control::Control>,
-    /// The port, for the Alt-Svc header that tells browsers about HTTP/3 (None: no HTTP/3).
+    /// The UDP port to name in the Alt-Svc header that tells browsers about HTTP/3. None (the
+    /// default: --advertise-h3 was not given, or there is no HTTP/3): it is not advertised.
     pub h3_port: Option<u16>,
     /// This machine's certificate authority, as PEM: given to whoever asks, to install.
     pub ca_pem: Arc<String>,
@@ -148,12 +149,14 @@ fn protocol(version: Version) -> &'static str {
     }
 }
 
-/// Say on every response how the request arrived. HTTP/3 is not advertised (and an earlier
-/// advertisement is withdrawn): a browser does not carry its "visit anyway" exception for the
-/// self-signed certificate over to QUIC, so one that was told about HTTP/3 would try it, fail,
-/// and show the site as unreachable. The terminal client needs no advertisement: it tries
-/// HTTP/3 by itself, with the certificate pinned.
-async fn stamp(State(_app): State<App>, request: HttpRequest, next: Next) -> HttpResponse {
+/// Say on every response how the request arrived. HTTP/3 is not advertised by default (and an
+/// earlier advertisement is withdrawn): a browser does not carry its "visit anyway" exception
+/// for the self-signed certificate over to QUIC, so one that was told about HTTP/3 would try
+/// it, fail, and show the site as unreachable. With --advertise-h3 it is, for browsers that
+/// trust the certificate authority; for an hour only, so that taking the option away again
+/// (the next HTTP/2 answer says "clear") soon reaches every browser. The terminal client needs
+/// no advertisement: it tries HTTP/3 by itself, with the certificate pinned.
+async fn stamp(State(app): State<App>, request: HttpRequest, next: Next) -> HttpResponse {
     let version = request.version();
     let (method, path, from) = (request.method().clone(), request.uri().path().to_string(), peer(&request));
     let agent = browser(request.headers().get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or(""));
@@ -166,7 +169,8 @@ async fn stamp(State(_app): State<App>, request: HttpRequest, next: Next) -> Htt
     }
     response.headers_mut().insert(PROTOCOL_HEADER, HeaderValue::from_static(protocol(version)));
     if version != Version::HTTP_3 {
-        response.headers_mut().insert(header::ALT_SVC, HeaderValue::from_static("clear"));
+        let advertised = app.h3_port.and_then(|port| HeaderValue::from_str(&format!("h3=\":{port}\"; ma=3600")).ok());
+        response.headers_mut().insert(header::ALT_SVC, advertised.unwrap_or(HeaderValue::from_static("clear")));
     }
     response
 }

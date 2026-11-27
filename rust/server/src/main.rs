@@ -96,6 +96,14 @@ struct Serve {
     #[arg(long)]
     no_h3: bool,
 
+    /// Tell browsers about HTTP/3 (an Alt-Svc header), so that they use it from their second
+    /// request on. Only for devices that trust this machine's certificate authority (/ca.crt
+    /// installed and switched on): a browser that merely chose "visit anyway" refuses the
+    /// certificate over QUIC, and may show the backend as unreachable. Off by default; the
+    /// terminal client uses HTTP/3 either way.
+    #[arg(long, env = "CWBCODE_ADVERTISE_H3", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true", default_value = "false", value_name = "BOOL")]
+    advertise_h3: bool,
+
     /// Also serve plain HTTP on 127.0.0.1 at this port, for the desktop app's window (a web
     /// view that will not take the backend's certificate). This machine only, whatever the
     /// mode; the token or a session is asked for as over HTTPS.
@@ -314,7 +322,7 @@ async fn serve(home: PathBuf, options: Serve) -> Result<()> {
         source: std::sync::Mutex::new(wallet.as_ref().map_or(String::new(), |w| w.source.clone())),
         rebind,
     });
-    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().map(|_| bind.port()), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
+    let app = api::App { shared: shared.clone(), auth, control, h3_port: endpoint.as_ref().filter(|_| options.advertise_h3).map(|_| cwbcode_proto::quic_port(bind.port())), ca_pem: Arc::new(identity.ca_pem.clone()), ca_fingerprint: Arc::new(identity.ca_fingerprint.clone()) };
     let router = api::router(app.clone());
     let local_app = app.clone();
     let allowed: net::Allowed = Arc::new(move |headers, uri, peer| app.allowed(headers, uri, Some(peer)));

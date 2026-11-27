@@ -503,7 +503,7 @@ def main():
         page.js("(() => { const s = document.querySelector('#font'); s.value = 'pixel'; s.dispatchEvent(new Event('change', {bubbles: true})); })()")
         print("5. the dashboard shows the backend")
         page.click("#nav-dashboard")
-        page.wait("document.querySelector('#protocol') && ['H2','H3'].includes(document.querySelector('#protocol').innerText)", "the protocol card")
+        page.wait("document.querySelector('#protocol') && ['HTTP/2 · TCP','HTTP/3 · UDP'].includes(document.querySelector('#protocol').innerText)", "the protocol card")
         protocol = page.text("#protocol")
         assert page.text("#model-state") == "scripted", page.text("#model-state")
         assert "proj" in page.text("table"), "the project is not listed"

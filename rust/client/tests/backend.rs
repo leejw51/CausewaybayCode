@@ -265,6 +265,14 @@ async fn the_token_and_the_certificate_are_required() {
     assert!(page.status().is_success());
     // HTTP/3 is not advertised to browsers (they would try it and refuse the certificate).
     assert_eq!(page.headers().get("alt-svc").unwrap().to_str().unwrap(), "clear");
+    // Asked to (--advertise-h3), it is: on the UDP port after the HTTPS one, for an hour.
+    let advertising = Server::start("auth-h3", HELLO, &["--advertise-h3"]);
+    let page = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap().get(&advertising.url).send().await.unwrap();
+    assert_eq!(page.headers().get("alt-svc").unwrap().to_str().unwrap(), format!("h3=\":{}\"; ma=3600", cwbcode_proto::quic_port(advertising.port)));
+    // Not without HTTP/3 itself.
+    let without = Server::start("auth-no-h3", HELLO, &["--advertise-h3", "--no-h3"]);
+    let page = reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap().get(&without.url).send().await.unwrap();
+    assert_eq!(page.headers().get("alt-svc").unwrap().to_str().unwrap(), "clear");
 }
 
 #[tokio::test(flavor = "multi_thread")]

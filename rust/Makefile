@@ -17,7 +17,11 @@ ENV_FILE ?= $(abspath ../.env)
 # Plain HTTP on 127.0.0.1 only, beside HTTPS (for a web view that will not take the backend's
 # certificate). The Mac app does not use it: it runs a backend of its own, on free ports.
 APP_PORT ?= 7480
-SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT)
+# H3=1 tells browsers about HTTP/3 (make start H3=1): only for devices that trust this machine's
+# certificate authority (/ca.crt installed and switched on). A browser that only chose "visit
+# anyway" refuses the certificate over QUIC and may show the backend as unreachable.
+H3 ?=
+SERVE_ARGS := --env-file $(ENV_FILE) $(if $(BIND),--bind $(BIND)) --http-port $(APP_PORT) $(if $(H3),--advertise-h3)
 # The Mac app (Tauri, in desktop/): the backend goes in as its sidecar, named for this machine.
 TRIPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 APP_BUNDLE := desktop/target/release/bundle/macos/Causewaybay Code.app

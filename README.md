@@ -500,8 +500,10 @@ backend with a message rather than being replaced, since devices trust it; its f
 written whole (to a temporary file, then moved into place).
 (Safari takes the first page from a certificate that breaks Apple's rules, a longer life,
 no serving purpose, an address not named, and then refuses everything after it.) HTTP/3 is deliberately not on the HTTPS port
-and not advertised: a browser that expects it there tries it, refuses a certificate it does
-not trust over QUIC, and shows the site as unreachable (Safari did). The terminal client tries HTTP/3 for 1.5 s and
+and not advertised by default: a browser that expects it there tries it, refuses a certificate it does
+not trust over QUIC, and shows the site as unreachable (Safari did). `make start H3=1`
+(`cwbcode --advertise-h3`) advertises it, for devices that have installed the authority
+(`/ca.crt`) and switched its trust on. The terminal client tries HTTP/3 for 1.5 s and
 falls back to HTTP/2; it trusts exactly the backend's certificate (pinned), whatever name
 the backend is reached by. A browser decides for itself, and uses QUIC only with a
 certificate it trusts, so **the web client mostly runs over HTTP/2** (the dashboard shows which).

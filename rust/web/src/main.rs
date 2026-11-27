@@ -811,6 +811,17 @@ fn now_ms() -> f64 {
     web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
 }
 
+/// How this page's calls reach the backend, as the backend saw the last one arrive: the
+/// protocol, and what carries it (HTTP/3 is QUIC, over UDP; the others are over TCP).
+fn transport(protocol: &str) -> &'static str {
+    match protocol {
+        "h3" => "HTTP/3 · UDP",
+        "h2" => "HTTP/2 · TCP",
+        "" => "",
+        _ => "HTTP/1.1 · TCP",
+    }
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     api::init_base();
@@ -1177,7 +1188,7 @@ fn AppBar() -> impl IntoView {
                             let dot = if forging && !waiting { "dot forging" } else { dot };
                             let state = if waiting { tr(lang, "waiting_you").to_string() } else if s.busy { tr(lang, "working").to_string() } else if forging { tr_with(lang, if App::narrow() { "forge_pill_short" } else { "forge_pill" }, &format!("{:.0}%", share_of(&s))) } else { s.model_state.clone() };
                             view! {
-                                <span class:asking=waiting><span class=dot></span>{state}" · "{s.protocol.clone()}</span>
+                                <span class:asking=waiting><span class=dot></span>{state}" · "<span id="transport">{transport(&s.protocol)}</span></span>
                                 <div id="login-state">{match s.auth.as_str() {
                                     "open" => tr(lang, "local_short").to_string(),
                                     "wallet" => format!("wallet {}…{}", s.wallet.get(..6).unwrap_or(""), s.wallet.get(s.wallet.len().saturating_sub(4)..).unwrap_or("")),
@@ -1685,7 +1696,7 @@ fn Dashboard() -> impl IntoView {
                     <div class="card glass"><h5>{t("d_context")}</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=fixed("")/></div>
                         <div class="sub">{move || tr_with(app.lang.get(), "ctx_sub", &s().context_limit.to_string())}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", context_share())></i></div></div>
-                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || s().protocol.to_uppercase()}</div>
+                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || transport(&s().protocol)}</div>
                         <div class="sub">{move || if s().h3 { tr(app.lang.get(), "transport_both") } else { tr(app.lang.get(), "transport_h2") }}</div></div>
                     <div class="card glass"><h5>{t("d_safety")}</h5><div class="big small">{move || s().sandbox}</div>
                         <div class="sub">{move || tr(app.lang.get(), match s().auth.as_str() { "open" => "safety_open", "wallet" => "safety_wallet", _ => "safety_token" })}</div></div>
