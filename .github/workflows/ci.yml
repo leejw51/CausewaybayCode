@@ -5,9 +5,11 @@
 #   make test-unit         unit tests: backend, messages, terminal client, web client
 #   make test-integration  real backends driven by a scripted model (--script)
 #   web_test.py     the web client in headless Chrome against such a backend
+#   make test-remove       Playwright, in Chromium and WebKit (Safari's engine), against such a
+#                          backend (as FruitNationMessenger2's Verify runs its end-to-end tests)
 #
 # The model (20 GB) is neither needed nor downloaded, so `make test-model`, `make e2e` and
-# `make test-playwright` are not run here. Apple Silicon runner: the backend is macOS-only.
+# `make test-playwright` (the real model) are not run here. Apple Silicon runner: the backend is macOS-only.
 # Actions are pinned to commits, as in FruitNationMessenger's workflows.
 name: CI
 
@@ -71,6 +73,16 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages websockets
           python3 rust/scripts/web_test.py "$RUNNER_TEMP/shots"
+
+      - name: End to end with Playwright (Chromium and WebKit, scripted model)
+        run: make test-remove
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: playwright-results
+          path: rust/tests/playwright/test-results
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
