@@ -174,6 +174,12 @@ input[type="checkbox"] { accent-color: #e9c94b; width: 1.1rem; height: 1.1rem; }
 select { min-height: 2.3rem; }
 pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face)); }
 .ico { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; }
+/* A picture beside the words of a button or a heading. */
+.wi { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+.wi .ico { width: 1rem; height: 1rem; }
+h4 > .ico, h4 > span > .ico, h5 > .ico { width: 1rem; height: 1rem; vertical-align: -.18em; margin-right: .4rem; color: var(--gold); }
+@container app (max-width: 50em) { .wi > .ico { display: none; } }
+@media (max-width: 640px) { .wi > .ico { display: none; } }
 .dim { color: var(--dim); } .sub { color: var(--dim); font-size: .92em; } .fine { font-size: .85em; margin: 0; } .pre { white-space: pre-wrap; } .grow { flex: 1; }
 
 /* The frame: a bar across the top, then the sidebar and the view. It is as tall as what the
@@ -254,6 +260,9 @@ pre, code, .mono { font-family: var(--mono); font-size: calc(.94rem * var(--face
 .ctx-warning { display: flex; align-items: center; gap: .6rem; border-color: var(--bad) !important; }
 /* The console: the command that is run, and what running the code printed. */
 .console { display: flex; flex-direction: column; max-height: 38%; min-height: 7rem; overflow: hidden; }
+/* (Folded and unseen until motion::reveal grows it open; shown at once where nothing moves.) */
+.console.arriving { height: 0; min-height: 0; opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .console.arriving { height: auto; min-height: 7rem; opacity: 1; } }
 .console-head { display: flex; align-items: center; gap: .4rem; padding: .3rem .4rem .3rem .8rem; border-bottom: 1px solid var(--line); }
 .console-head .lbl { color: var(--accent); } .console-head input { flex: 1; min-width: 0; min-height: 2.1rem; font-family: var(--mono); }
 .console pre { flex: 1; margin: 0; padding: .5rem .8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--well); font-size: calc(.94rem * var(--face) * var(--zoom)); }
@@ -504,4 +513,28 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--btn2); }
 }
 /* Reduced motion: one still render of the scene, the bar and the numbers; nothing moves. */
 @media (prefers-reduced-motion: reduce) { .forge-bar i::after { display: none; } .forge.leaving { transform: none; } }
+/* Movement that needs no script, on every page: what is pointed at, pressed or typed in answers
+   by easing (exponential out), never by jumping. Moved with `translate` and `scale`, which
+   leave alone the `transform` that Motion animates on the same elements. */
+:root { --expo-out: cubic-bezier(.16, 1, .3, 1); }
+button { transition: border-color .25s var(--expo-out), background-color .25s var(--expo-out), color .25s var(--expo-out), box-shadow .25s var(--expo-out), opacity .25s var(--expo-out); }
+.row { transition: background-color .25s var(--expo-out), border-left-color .3s var(--expo-out); }
+input, textarea, select, .composer .box { transition: border-color .25s var(--expo-out), box-shadow .3s var(--expo-out); }
+input:not([type="checkbox"]):focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.composer .box:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.composer .box textarea:focus, .composer .box input:focus { box-shadow: none; }
+@media (hover: hover) {
+  .cards .card { transition: translate .45s var(--expo-out), border-color .3s var(--expo-out), box-shadow .45s var(--expo-out); }
+  .cards .card:hover { translate: 0 -3px; border-color: color-mix(in srgb, var(--accent) 60%, var(--line2)); box-shadow: 0 10px 26px rgba(0, 0, 0, .26); }
+  .outline .o { transition: scale .3s var(--expo-out), opacity .3s var(--expo-out); transform-origin: center; }
+  .outline .o:hover { scale: 1.18 1; opacity: 1; }
+}
+/* An empty page arrives, and its picture floats while it waits. */
+.empty { animation: arrive .6s var(--expo-out) both; }
+.empty img { animation: float 5.5s ease-in-out infinite; }
+@keyframes arrive { from { opacity: 0; translate: 0 14px; } to { opacity: 1; translate: 0 0; } }
+@keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -7px; } }
+/* The light of a backend that is ready breathes. */
+.dot.ok { animation: breathe 2.8s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 transparent; opacity: 1; } 50% { box-shadow: 0 0 6px 1px color-mix(in srgb, var(--ok) 55%, transparent); opacity: .8; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

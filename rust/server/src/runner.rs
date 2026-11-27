@@ -13,12 +13,38 @@ use crate::sandbox::{Policy, run};
 const RUN_SECONDS: u64 = 120;
 const RUN_CHARS: usize = 40_000;
 
+/// What `cargo run` should run in a Cargo project: the program worked on last. A package's
+/// examples (`examples/x.rs`, `examples/x/main.rs`) and extra programs (`src/bin/x.rs`,
+/// `src/bin/x/main.rs`) are run by name; plain `cargo run` runs `src/main.rs` whatever was
+/// written since, which is not what "run it" means after an example was just written.
+/// The one changed last decides; `src/main.rs` (or nothing to compare) is plain `cargo run`.
+fn cargo_run(project: &Path) -> String {
+    let changed = |path: &Path| path.metadata().and_then(|m| m.modified()).ok();
+    let mut newest = changed(&project.join("src/main.rs")).map(|when| (when, String::from("cargo run")));
+    for (folder, flag) in [("examples", "--example"), ("src/bin", "--bin")] {
+        for entry in std::fs::read_dir(project.join(folder)).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let (target, source) = if path.is_dir() { (name.clone(), path.join("main.rs")) } else if let Some(stem) = name.strip_suffix(".rs") { (stem.to_string(), path.clone()) } else { continue };
+            // (A name cargo would not take as it is, is left to plain `cargo run`.)
+            if target.is_empty() || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let Some(when) = changed(&source) else { continue };
+            if newest.as_ref().is_none_or(|(latest, _)| when > *latest) {
+                newest = Some((when, format!("cargo run {flag} {target}")));
+            }
+        }
+    }
+    newest.map_or_else(|| String::from("cargo run"), |(_, command)| command)
+}
+
 /// The command that runs what is in `project`: a build file decides first; otherwise the
 /// source file touched last, by its kind. None when nothing there can be run.
 pub fn guess(project: &Path) -> Option<String> {
     let has = |name: &str| project.join(name).is_file();
     if has("Cargo.toml") {
-        return Some("cargo run".into());
+        return Some(cargo_run(project));
     }
     if has("Makefile") && std::fs::read_to_string(project.join("Makefile")).is_ok_and(|text| text.lines().any(|line| line.starts_with("run:"))) {
         return Some("make run".into());
@@ -129,6 +155,28 @@ mod tests {
         std::fs::write(ws.join("Makefile"), "build:\n\ttrue\nrun:\n\t@echo made\n").unwrap();
         assert_eq!(guess(&ws).unwrap(), "make run");
         std::fs::write(ws.join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(guess(&ws).unwrap(), "cargo run");
+        // In a Cargo project the program worked on last is the one run: an example or an
+        // extra program by its name, `src/main.rs` by plain `cargo run`.
+        for dir in ["src/bin", "examples/tour"] {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+        }
+        let write = |path: &str| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(ws.join(path), "fn main() {}").unwrap();
+        };
+        write("src/main.rs");
+        assert_eq!(guess(&ws).unwrap(), "cargo run");
+        write("examples/byte_buffer.rs");
+        assert_eq!(guess(&ws).unwrap(), "cargo run --example byte_buffer");
+        write("src/bin/tool-2.rs");
+        assert_eq!(guess(&ws).unwrap(), "cargo run --bin tool-2");
+        write("examples/tour/main.rs");
+        assert_eq!(guess(&ws).unwrap(), "cargo run --example tour");
+        write("examples/notes.md");
+        write("examples/odd name.rs");
+        assert_eq!(guess(&ws).unwrap(), "cargo run --example tour");
+        write("src/main.rs");
         assert_eq!(guess(&ws).unwrap(), "cargo run");
 
         // A command that is given is the one run; how it ended is said.

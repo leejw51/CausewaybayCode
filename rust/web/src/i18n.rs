@@ -65,6 +65,7 @@ const TEXTS: &[(&str, [&str; 8])] = &[
     ("new", ["+ new", "+ 새로", "+ nová", "+ 新規", "+ 新", "+ 新建", "+ nueva", "+ yeni"]),
     ("open", ["Open", "열기", "Otevřít", "開く", "開啟", "打开", "Abrir", "Aç"]),
     ("open_ph", ["folder to open or create", "열거나 만들 폴더", "složka k otevření nebo vytvoření", "開く・作成するフォルダ", "要開或者新建嘅資料夾", "要打开或新建的文件夹", "carpeta para abrir o crear", "açılacak veya oluşturulacak klasör"]),
+    ("open_ph_short", ["name or path", "이름 또는 경로", "název, cesta", "名前かパス", "名或者路徑", "名称或路径", "nombre, ruta", "ad veya yol"]),
     ("created", ["Created {}", "{} 폴더를 만들었습니다", "Vytvořeno: {}", "{} を作成しました", "已經建立 {}", "已创建 {}", "Se creó {}", "{} oluşturuldu"]),
     ("offline", ["backend not reachable", "백엔드에 연결할 수 없음", "backend není dostupný", "バックエンドに接続できません", "連唔到後端", "无法连接后端", "no se alcanza el backend", "arka uca ulaşılamıyor"]),
     ("waiting_you", ["waiting for you", "답을 기다리는 중", "čeká na vás", "あなたの返答待ち", "等緊你", "等待你的回复", "esperando tu respuesta", "sizi bekliyor"]),

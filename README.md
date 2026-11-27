@@ -290,7 +290,8 @@ the left of the bar), so the work has the whole window; panels reach the edges.
   project takes it off the list and nothing else: its folder, files and records stay, and
   opening it again brings its conversations back.
 - **Run, Console, Clear.** Run runs the project's code without the model: the command typed
-  in the console, or one guessed from the folder (`cargo run`, `make run`, `go run .`,
+  in the console, or one guessed from the folder (`cargo run`, or `cargo run --example x` / `--bin x` when an
+  example or extra program is what was changed last; `make run`, `go run .`,
   `npm start`, or the source file changed last, compiled first where it must be), in the
   project and in the sandbox, for at most two minutes. Console shows what the runs printed.
   Clear empties the console and starts a new conversation (the old one stays in the list).

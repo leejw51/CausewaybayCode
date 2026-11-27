@@ -35,6 +35,147 @@ export function slide_in(el) {
   if (!M() || !el || calm()) return;
   M().animate(el, { opacity: [0, 1], x: [-22, 0] }, { duration: 0.6, ease: EXPO });
 }
+// A sheet that drops from the button that opened it (the settings, under the gear): it
+// grows from its top right corner and fades in, exponential in and out, and what is in it
+// follows, one line after the other. It leaves the same way, faster; `done` then takes it
+// off the page. Nothing of the movement is left on it.
+// What a closing movement left on an element is taken off only once the page has really
+// hidden it: taken off a moment sooner, it would be seen whole again for a frame (a flicker).
+const when_gone = (el, then) => {
+  let looks = 0;
+  const look = () => { if (getComputedStyle(el).display === 'none' || ++looks > 30) then(); else requestAnimationFrame(look); };
+  look();
+};
+const sheet_clear = (el) => { for (const k of ['transform', 'opacity', 'transformOrigin']) el.style[k] = ''; delete el.dataset.leaving; };
+export function sheet_in(el, show) {
+  if (!M() || !el || calm()) { show(); return; }
+  delete el.dataset.leaving;
+  // Out of sight before the page shows it, so that it is never seen whole first (a flicker).
+  el.style.opacity = '0';
+  el.style.transform = 'translateY(-16px) scale(0.9)';
+  el.style.transformOrigin = 'top right';
+  show();
+  let tries = 0;
+  const begin = () => {
+    // (Closed again before it began: the closing has the say, and this must not start over it.)
+    if (el.dataset.leaving) return;
+    if (getComputedStyle(el).display === 'none') { if (++tries < 30) requestAnimationFrame(begin); else sheet_clear(el); return; }
+    // One movement of the whole sheet: it fades in on a tween (exponential out) while it
+    // grows and settles on a damped spring. (Its rows do not move by themselves: rows that
+    // wait their turn are seen whole first, and then vanish to fade in: a flicker.)
+    const done = () => { if (!el.dataset.leaving) sheet_clear(el); };
+    M().animate(el, { opacity: [0, 1] }, { duration: 0.32, ease: EXPO_OUT });
+    M().animate(el, { scale: [0.9, 1], y: [-16, 0] }, { type: 'spring', stiffness: 380, damping: 24, mass: 0.9 }).then(done, done);
+  };
+  begin();
+}
+export function sheet_out(el, done) {
+  if (!M() || !el || calm()) { done(); return; }
+  if (el.dataset.leaving) return;
+  el.dataset.leaving = '1';
+  el.style.transformOrigin = 'top right';
+  // (Once, whatever happens to the movement: one that another cuts short may never say it ended.)
+  let ended = false;
+  const end = () => { if (ended) return; ended = true; el.style.opacity = '0'; done(); when_gone(el, () => sheet_clear(el)); };
+  M().animate(el, { opacity: [1, 0], scale: [1, 0.92], y: [0, -10] }, { duration: 0.3, ease: EXPO }).then(end, end);
+  setTimeout(end, 420);
+}
+// The sidebar, opened and closed. Beside the view (a wide window) it slides out to the left
+// while the view takes its room, and back; over the view (a phone's drawer) it slides in
+// from the edge; as a header (the stacked layout) it folds up. Exponential in and out. What
+// is in it follows, one row after the other, when it opens. `hide` and `show` are what
+// really takes it off the page and puts it back (the page's own state).
+// One move at a time: `side_end` brings the one under way to its end at once (the next
+// press, or a window that changes size while it runs: the sizes it works with are then old).
+let side_end = null, side_turn = 0;
+const side_run = (controls, end) => {
+  let over = false;
+  const finish = () => { if (over) return; over = true; side_end = null; try { controls.stop(); } catch (_) {} end(); };
+  side_end = finish;
+  controls.then(finish, finish);
+};
+addEventListener('resize', () => { if (side_end) side_end(); });
+const side_parts = () => {
+  const app = document.querySelector('.app'), side = document.querySelector('.app .side');
+  if (!app || !side) return null;
+  const drawer = getComputedStyle(side).position === 'absolute';
+  // Beside the view only when the frame has two columns: in the stacked layout, and in a
+  // window of middling width, the sidebar is a header across the top.
+  const columns = getComputedStyle(app).gridTemplateColumns.trim().split(/\s+/).length;
+  return { app, side, drawer, header: !drawer && (columns < 2 || app.classList.contains('vertical')) };
+};
+const side_clear = (p) => { for (const k of ['gridTemplateColumns', 'columnGap']) p.app.style[k] = ''; for (const k of ['transform', 'opacity', 'width', 'height', 'overflow']) p.side.style[k] = ''; };
+const track = (app) => parseFloat(getComputedStyle(app).gridTemplateColumns) || 0;
+const gap = (app) => parseFloat(getComputedStyle(app).columnGap) || 0;
+export function side_out(hide) {
+  const p = side_parts();
+  if (!M() || !p || calm()) { hide(); return; }
+  if (side_end) side_end();
+  side_turn++;
+  p.side.style.opacity = '';
+  const turn = side_turn;
+  const done = () => { p.side.style.opacity = '0'; hide(); when_gone(p.side, () => { if (turn === side_turn) side_clear(p); }); };
+  let side_moving;
+  const how = { duration: 0.46, ease: EXPO };
+  if (p.drawer) {
+    side_moving = M().animate(p.side, { x: [0, -(p.side.offsetWidth + 24)], opacity: [1, 0.4] }, how);
+  } else if (p.header) {
+    const h = p.side.offsetHeight;
+    p.side.style.overflow = 'hidden';
+    side_moving = M().animate(p.side, { height: [h + 'px', '0px'], opacity: [1, 0], y: [0, -10] }, how);
+  } else {
+    // (The sidebar keeps its width and moves out as its column closes: nothing in it is squeezed.)
+    const w = track(p.app), g = gap(p.app);
+    p.side.style.width = w + 'px';
+    side_moving = M().animate(0, 1, { ...how, onUpdate: t => {
+      p.app.style.gridTemplateColumns = `${w * (1 - t)}px minmax(0, 1fr)`;
+      p.app.style.columnGap = `${g * (1 - t)}px`;
+      p.side.style.transform = `translateX(${-(w + g) * t}px)`;
+      p.side.style.opacity = String(1 - 0.75 * t);
+    } });
+  }
+  side_run(side_moving, done);
+}
+export function side_in(show) {
+  const before = side_parts();
+  if (!M() || !before || calm()) { show(); return; }
+  if (side_end) side_end();
+  // Out of sight until it is on the page and measured, so that it is never seen whole first.
+  before.side.style.opacity = '0';
+  const turn = ++side_turn;
+  show();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const p = side_parts();
+    // (Closed again, or opened again, before it began: that press has the say.)
+    if (!p || turn !== side_turn) return;
+    const done = () => side_clear(p);
+    let side_moving;
+    const how = { duration: 0.56, ease: EXPO };
+    if (p.drawer) {
+      side_moving = M().animate(p.side, { x: [-(p.side.offsetWidth + 24), 0], opacity: [0.4, 1] }, how);
+    } else if (p.header) {
+      const h = p.side.offsetHeight;
+      p.side.style.overflow = 'hidden';
+      side_moving = M().animate(p.side, { height: ['0px', h + 'px'], opacity: [0, 1], y: [-10, 0] }, how);
+    } else {
+      const w = track(p.app), g = gap(p.app);
+      p.side.style.width = w + 'px';
+      side_moving = M().animate(1, 0, { ...how, onUpdate: t => {
+        p.app.style.gridTemplateColumns = `${w * (1 - t)}px minmax(0, 1fr)`;
+        p.app.style.columnGap = `${g * (1 - t)}px`;
+        p.side.style.transform = `translateX(${-(w + g) * t}px)`;
+        p.side.style.opacity = String(1 - 0.75 * t);
+      } });
+    }
+    side_run(side_moving, done);
+    const rows = p.side.querySelectorAll('h4, .open, .row');
+    if (rows.length) {
+      const clean = () => rows.forEach(el => { el.style.transform = ''; el.style.opacity = ''; });
+      rows.forEach(el => { el.style.opacity = '0'; });
+      M().animate(rows, { opacity: [0, 1], x: [-14, 0] }, { duration: 0.5, delay: M().stagger(0.035, { startDelay: 0.12 }), ease: EXPO_OUT }).then(clean, clean);
+    }
+  }));
+}
 // A sheet or card that appears where the user is looking.
 export function sheet(el) {
   if (!M() || !el || calm()) return;
@@ -52,15 +193,27 @@ export function count_to(el, to, decimals, suffix) {
   if (!M() || from === to || calm()) { show(to); return; }
   M().animate(from, to, { duration: 0.9, ease: EXPO, onUpdate: show });
 }
-// The selection of a segmented control slides, on a spring, to the chosen item.
-export function slide_selection(container_selector) {
-  const box = document.querySelector(container_selector);
-  if (!box) return;
+// The selection of a segmented control slides, on a spring, to the chosen item. When the
+// control itself changes size (the window, the typeface, the language, a phone turned), the
+// mark is put where the item now is, at once: it would otherwise keep the old size.
+const watched = new WeakSet();
+function place(box, slide) {
   const mark = box.querySelector('.selection'), on = box.querySelector('.on');
   if (!mark || !on) return;
   const to = { x: on.offsetLeft, y: on.offsetTop, width: on.offsetWidth, height: on.offsetHeight, opacity: 1 };
-  if (!M() || calm() || !mark.dataset.placed) { Object.assign(mark.style, { transform: `translate(${to.x}px, ${to.y}px)`, width: to.width + 'px', height: to.height + 'px', opacity: 1 }); mark.dataset.placed = '1'; return; }
-  M().animate(mark, to, SPRING);
+  if (!M()) { Object.assign(mark.style, { transform: `translate(${to.x}px, ${to.y}px)`, width: to.width + 'px', height: to.height + 'px', opacity: 1 }); return; }
+  M().animate(mark, to, slide && !calm() && mark.dataset.placed ? SPRING : { duration: 0 });
+  mark.dataset.placed = '1';
+}
+export function slide_selection(container_selector) {
+  const box = document.querySelector(container_selector);
+  if (!box) return;
+  place(box, true);
+  if (!watched.has(box) && globalThis.ResizeObserver) {
+    watched.add(box);
+    let first = true;
+    new ResizeObserver(() => { if (first) { first = false; return; } place(box, false); }).observe(box);
+  }
 }
 // A change of theme or layout: the page dips and returns, exponentially, as it changes.
 export function retheme(apply) {
@@ -84,6 +237,28 @@ export function install() {
     held = el;
     M().animate(el, { scale: 0.955 }, { duration: 0.14, ease: EXPO_OUT });
   }, { passive: true });
+  // The picture on a button answers too: when the pointer comes over it, and when it is
+  // pressed. Each kind in its own way: the gear turns, Run and Send set off, Undo winds back.
+  const stir = (el) => {
+    const ico = el.querySelector && el.querySelector(':scope > .ico');
+    if (!ico || calm()) return;
+    const how = {
+      settings: [{ rotate: [0, 120] }, { duration: 0.7, ease: EXPO }],
+      run: [{ x: [0, 5, 0], scale: [1, 1.15, 1] }, { duration: 0.5, ease: EXPO_OUT }],
+      send: [{ x: [0, 6, 0], y: [0, -6, 0], rotate: [0, -8, 0] }, { duration: 0.55, ease: EXPO_OUT }],
+      undo: [{ rotate: [0, -50, 0] }, { duration: 0.6, ease: EXPO_OUT }],
+      clear: [{ rotate: [0, -12, 10, 0], y: [0, -2, 0] }, { duration: 0.5, ease: EXPO_OUT }],
+      'copy-all': [{ x: [0, 3, 0], y: [0, -3, 0] }, { duration: 0.45, ease: EXPO_OUT }],
+      signout: [{ x: [0, 5, 0] }, { duration: 0.5, ease: EXPO_OUT }],
+    }[el.id] || [{ scale: [1, 1.22, 1], rotate: [0, -8, 6, 0] }, { duration: 0.5, ease: EXPO_OUT }];
+    M().animate(ico, how[0], how[1]);
+  };
+  document.addEventListener('pointerover', e => {
+    if (e.pointerType === 'touch') return;
+    const el = e.target.closest && e.target.closest('button, .chip, h4, h5');
+    if (el && !(e.relatedTarget && el.contains(e.relatedTarget))) stir(el);
+  }, { passive: true });
+  document.addEventListener('pointerdown', e => { const el = pressable(e); if (el && e.pointerType === 'touch') stir(el); }, { passive: true });
   const release = () => { if (held) { M().animate(held, { scale: 1 }, SPRING); held = null; } };
   document.addEventListener('pointerup', release, { passive: true });
   document.addEventListener('pointercancel', release, { passive: true });
@@ -246,21 +421,43 @@ function glide(box, top, seconds) {
   }
   journey = M().animate(box.scrollTop, top, { duration: seconds, ease: EXPO, onUpdate: v => { box.scrollTop = v; } });
 }
+// Pictures drawn in, stroke by stroke, one after the other (the dashboard's, when its cards
+// arrive). Each path is declared one unit long (pathLength="1"), so the dash is the whole
+// of it whatever its real length; nothing of the drawing is left on it afterwards.
+export function draw_icons(selector) {
+  if (!M() || calm()) return;
+  const paths = [...document.querySelectorAll(selector)];
+  if (!paths.length) return;
+  paths.forEach(p => { p.style.strokeDasharray = '1'; p.style.strokeDashoffset = '1'; });
+  const clean = () => paths.forEach(p => { p.style.strokeDasharray = ''; p.style.strokeDashoffset = ''; });
+  M().animate(paths, { strokeDashoffset: [1, 0] }, { duration: 0.9, delay: M().stagger(0.07, { startDelay: 0.15 }), ease: EXPO }).then(clean, clean);
+}
 // A panel that opens under what the user pressed (the console): it grows from nothing and
 // fades in, exponential in and out; what is in it follows, a moment later.
 export function reveal(el) {
-  if (!M() || !el || calm()) return;
+  if (!el) return;
+  // It comes to the page folded and unseen (the class `arriving`, in the stylesheet), so that
+  // it is never seen whole before it starts to grow (a flicker): measured here, then grown.
+  el.classList.remove('arriving');
+  if (!M() || calm()) return;
   const h = el.getBoundingClientRect().height;
   el.style.minHeight = '0px';
-  M().animate(el, { height: ['0px', h + 'px'], opacity: [0, 1], y: [12, 0] }, { duration: 0.52, ease: EXPO })
-    .then(() => { el.style.height = ''; el.style.minHeight = ''; }, () => {});
-  if (el.children.length) M().animate(el.children, { opacity: [0, 1], y: [8, 0] }, { duration: 0.45, delay: M().stagger(0.06, { startDelay: 0.16 }), ease: EXPO_OUT });
+  el.style.height = '0px';
+  el.style.opacity = '0';
+  const done = () => { for (const k of ['height', 'minHeight', 'opacity', 'transform']) el.style[k] = ''; };
+  M().animate(el, { height: ['0px', h + 'px'] }, { duration: 0.5, ease: EXPO }).then(done, done);
+  M().animate(el, { opacity: [0, 1] }, { duration: 0.34, ease: EXPO_OUT });
+  M().animate(el, { y: [14, 0] }, { type: 'spring', stiffness: 360, damping: 26, mass: 0.9 });
 }
 // It closes the same way, faster; then `done` takes it off the page.
 export function conceal(el, done) {
   if (!M() || !el || calm()) { done(); return; }
   const h = el.getBoundingClientRect().height;
+  // (Held at its height before its least height is let go: it would otherwise drop to the
+  // height of what is in it for one frame, and come back.)
+  el.style.height = h + 'px';
   el.style.minHeight = '0px';
+  el.style.overflow = 'hidden';
   M().animate(el, { height: [h + 'px', '0px'], opacity: [1, 0], y: [0, 10] }, { duration: 0.36, ease: EXPO }).then(done, done);
 }
 // What was pressed and has started something (Run): it gives, and comes back on a spring
@@ -270,10 +467,12 @@ export function pop(el) {
   M().animate(el, { scale: [0.9, 1] }, BOUNCE);
   M().animate(el, { boxShadow: ['0 0 0 0 rgba(251,191,36,0.45)', '0 0 0 14px rgba(251,191,36,0)'] }, { duration: 0.7, ease: EXPO_OUT });
 }
-// New text in a box (what a run printed): it fades in.
+// New text in a box (what a run printed): it settles into place. (Not faded: it is on the
+// page already when this runs, and dimming it first would be seen as a flicker.)
 export function fade_in(el) {
   if (!M() || !el || calm()) return;
-  M().animate(el, { opacity: [0.2, 1], y: [6, 0] }, { duration: 0.5, ease: EXPO_OUT });
+  const done = () => { el.style.transform = ''; };
+  M().animate(el, { y: [5, 0] }, { duration: 0.45, ease: EXPO_OUT }).then(done, done);
 }
 // The items of a list arriving, one after the other (a conversation's messages: the last
 // ones only, so that a long one costs no more). Nothing of the movement is left on them.
@@ -294,6 +493,14 @@ extern "C" {
     /// A view arriving from `from` pixels to the side.
     pub fn view_in(el: &web_sys::Element, from: f64);
     pub fn slide_in(el: &web_sys::Element);
+    /// A sheet dropping open from the button above it.
+    pub fn sheet_in(el: &web_sys::Element, show: &js_sys::Function);
+    /// It leaves; then `done` is called.
+    pub fn sheet_out(el: &web_sys::Element, done: &js_sys::Function);
+    /// The sidebar closes (it slides away and the view takes its room); `hide` then takes it off the page.
+    pub fn side_out(hide: &js_sys::Function);
+    /// The sidebar opens: `show` puts it on the page, and it slides in.
+    pub fn side_in(show: &js_sys::Function);
     pub fn sheet(el: &web_sys::Element);
     /// A pulse on something that waits for the user.
     pub fn attention(el: &web_sys::Element);
@@ -320,6 +527,8 @@ extern "C" {
     pub fn to_end(id: &str);
     /// Scroll to the element with this id.
     pub fn go_to(id: &str);
+    /// Draw the icon paths matching a selector, stroke by stroke.
+    pub fn draw_icons(selector: &str);
     /// A panel growing open and fading in.
     pub fn reveal(el: &web_sys::Element);
     /// It closes; then `done` is called.

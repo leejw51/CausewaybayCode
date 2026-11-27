@@ -449,7 +449,7 @@ impl App {
     /// On a phone, close the drawer once something in it is chosen.
     fn chosen(&self) {
         if Self::narrow() {
-            self.side.set(false);
+            self.show_side(false);
         }
     }
 
@@ -685,6 +685,44 @@ impl App {
                 motion::fade_in(&out);
             }
         });
+    }
+
+    /// Open the settings sheet: it drops from the gear.
+    fn open_settings(&self) {
+        let settings = self.settings;
+        let show = Closure::once_into_js(move || settings.set(true));
+        match element("settings-sheet") {
+            Some(el) => motion::sheet_in(&el, show.unchecked_ref()),
+            None => settings.set(true),
+        }
+    }
+
+    /// Close the settings sheet: it leaves, and is then taken off the page.
+    fn close_settings(&self) {
+        let settings = self.settings;
+        let done = Closure::once_into_js(move || settings.set(false));
+        match element("settings-sheet") {
+            Some(el) => motion::sheet_out(&el, done.unchecked_ref()),
+            None => settings.set(false),
+        }
+    }
+
+    /// Open or close the sidebar, moving: it slides away and the view takes its room, or back.
+    fn toggle_side(&self) {
+        self.show_side(!self.side.get_untracked());
+    }
+
+    fn show_side(&self, shown: bool) {
+        if self.side.get_untracked() == shown {
+            return;
+        }
+        let side = self.side;
+        let set = Closure::once_into_js(move || side.set(shown));
+        if shown {
+            motion::side_in(set.unchecked_ref());
+        } else {
+            motion::side_out(set.unchecked_ref());
+        }
     }
 
     /// Close the console: it folds away, and is then taken off the page.
@@ -930,7 +968,7 @@ fn Root() -> impl IntoView {
     });
     let _ = window_event_listener(leptos::ev::keydown, move |ev| {
         if ev.key() == "Escape" && app.settings.get_untracked() {
-            app.settings.set(false);
+            app.close_settings();
         }
     });
     let _ = window_event_listener(leptos::ev::click, move |ev| {
@@ -939,7 +977,7 @@ fn Root() -> impl IntoView {
         }
         let inside = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).is_some_and(|el| el.closest("#settings-sheet, #settings").ok().flatten().is_some());
         if !inside {
-            app.settings.set(false);
+            app.close_settings();
         }
     });
     // The theme and language are the page's; every change of a preference, or of where the
@@ -970,25 +1008,6 @@ fn Root() -> impl IntoView {
     Effect::new(move |_| app.save_prefs());
     Effect::new(move |_| after_draw(motion::install));
     Effect::new(move |_| after_draw(motion::outline_install));
-    // The console opens growing; a conversation's messages arrive one after the other.
-    Effect::new(move |was: Option<bool>| {
-        let shown = app.console.get();
-        if shown && was != Some(true) {
-            after_draw(|| {
-                if let Some(el) = element("console") {
-                    motion::reveal(&el);
-                }
-            });
-        }
-        shown
-    });
-    Effect::new(move |was: Option<i64>| {
-        let session = app.session.get();
-        if was.is_some_and(|was| was != session) && session != 0 {
-            after_draw(|| motion::rows_in("#transcript .it", 10));
-        }
-        session
-    });
     view! {
         <div class="glow a"></div>
         <div class="glow b"></div>
@@ -998,7 +1017,7 @@ fn Root() -> impl IntoView {
                 <Sidebar/>
                 <div class="main"><ViewHost/></div>
                 <div class="sheet glass" id="settings-sheet" class:open=move || app.settings.get()>
-                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" title=app.t("close") aria-label=app.t("close") on:click=move |_| app.settings.set(false)>"×"</button></div>
+                    <div class="sheet-head"><b>{app.t("settings")}</b><button class="ghost round" id="settings-close" title=app.t("close") aria-label=app.t("close") on:click=move |_| app.close_settings()>"×"</button></div>
                     <Prefs/>
                     // (On a phone the bar has no room for it: signing out is here.)
                     <Show when=move || app.auth.get() != "open">
@@ -1013,6 +1032,33 @@ fn Root() -> impl IntoView {
         <Show when=move || !app.notice.get().is_empty()>
             <Toast id="notice" class="toast good" text=app.notice/>
         </Show>
+    }
+}
+
+/// The console: what running the code printed, and the command that is run. It comes to the
+/// page folded and unseen (the class `arriving`) and grows open the moment it is there, as the
+/// sidebar does: nothing waits for a timer, during which it would be seen whole first.
+#[component]
+fn ConsolePanel() -> impl IntoView {
+    let app = expect_context::<App>();
+    let t = move |key: &'static str| app.t(key);
+    let node = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        if let Some(el) = node.get() {
+            motion::reveal(&el);
+        }
+    });
+    view! {
+            <div class="console glass arriving" id="console" node_ref=node>
+                <div class="console-head">
+                    <span class="lbl">{t("console")}</span>
+                    <input id="console-cmd" placeholder=t("console_ph") prop:value=move || app.console_cmd.get() on:input=move |ev| app.console_cmd.set(event_target_value(&ev))
+                        on:keydown=move |ev| if ev.key() == "Enter" { spawn_local(async move { app.run_code().await }) }/>
+                    <button class="ghost" id="console-clear" on:click=move |_| app.console_out.set(String::new())>{t("clear")}</button>
+                    <button class="ghost round" id="console-close" aria-label=t("console") on:click=move |_| app.close_console()>"×"</button>
+                </div>
+                <pre id="console-out">{move || { let out = app.console_out.get(); if out.is_empty() { t("console_empty")().to_string() } else { out } }}</pre>
+            </div>
     }
 }
 
@@ -1056,9 +1102,27 @@ fn ViewHost() -> impl IntoView {
 }
 
 fn icon(path: &'static str) -> impl IntoView {
-    view! { <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d=path></path></svg> }
+    // (pathLength 1: the stroke is drawn in, from nothing to whole, by motion::draw_icons.)
+    view! { <svg class="ico" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d=path pathLength="1"></path></svg> }
 }
 
+// (For buttons and headings that also say what they are in words.)
+const ICON_PLAY: &str = "M7 5l12 7-12 7z";
+const ICON_TERMINAL: &str = "M4 5h16v14H4zM7 9l3 3-3 3M12 15h5";
+const ICON_TRASH: &str = "M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13";
+const ICON_COPY: &str = "M9 9h11v11H9zM5 15H4V4h11v1";
+const ICON_UNDO: &str = "M8 6 3 11l5 5M3 11h11a5 5 0 0 1 0 10h-3";
+const ICON_SEND: &str = "M4 12l16-8-6 16-3-7z";
+const ICON_FOLDER: &str = "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
+const ICON_LEAVE: &str = "M10 5H5v14h5M14 8l4 4-4 4M18 12H9";
+const ICON_LINES: &str = "M4 6h16M4 11h16M4 16h9";
+const ICON_CHIP: &str = "M8 8h8v8H8zM10 4v4M14 4v4M10 16v4M14 16v4M4 10h4M4 14h4M16 10h4M16 14h4";
+const ICON_BOLT: &str = "M13 3 5 13h6l-1 8 8-10h-6z";
+const ICON_MEMORY: &str = "M4 8h16v8H4zM8 8v8M12 8v8M16 8v8M6 16v3M18 16v3";
+const ICON_LAYERS: &str = "M12 4 3 9l9 5 9-5zM3 14l9 5 9-5";
+const ICON_ROUTE: &str = "M4 8h13M14 5l3 3-3 3M20 16H7M10 13l-3 3 3 3";
+const ICON_SHIELD: &str = "M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.500-8-9V6z";
+const ICON_CLOCK: &str = "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4l3 2";
 const ICON_SUN: &str = "M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m0-11.4L4.9 4.9m14.2 14.2-1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z";
 const ICON_MOON: &str = "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z";
 const ICON_COLUMNS: &str = "M4 5h16v14H4zM10 5v14";
@@ -1209,7 +1273,7 @@ fn AppBar() -> impl IntoView {
     });
     view! {
         <header class="appbar glass">
-            <button class="ghost round" id="side-toggle" title=t("sidebar") aria-label=t("sidebar") on:click=move |_| app.side.update(|shown| *shown = !*shown)>{icon(ICON_SIDE)}</button>
+            <button class="ghost round" id="side-toggle" title=t("sidebar") aria-label=t("sidebar") on:click=move |_| app.toggle_side()>{icon(ICON_SIDE)}</button>
             {brand(app)}
             <div class="nav seg" id="nav">
                 <div class="selection"></div>
@@ -1241,9 +1305,9 @@ fn AppBar() -> impl IntoView {
                         }
                     }}
                 </div>
-            <button class="ghost round" id="settings" title=t("settings") aria-label=t("settings") on:click=move |_| app.settings.update(|open| *open = !*open)>{icon(ICON_GEAR)}</button>
+            <button class="ghost round" id="settings" title=t("settings") aria-label=t("settings") on:click=move |_| if app.settings.get_untracked() { app.close_settings() } else { app.open_settings() }>{icon(ICON_GEAR)}</button>
             <Show when=move || app.auth.get() != "open">
-                <button class="ghost" id="signout" on:click=move |_| spawn_local(async move { app.sign_out().await })>{t("sign_out")}</button>
+                <button class="ghost wi" id="signout" on:click=move |_| spawn_local(async move { app.sign_out().await })>{icon(ICON_LEAVE)}<span>{t("sign_out")}</span></button>
             </Show>
         </header>
     }
@@ -1392,10 +1456,10 @@ fn Sidebar() -> impl IntoView {
     view! {
         <div class="side glass" node_ref=side>
             <div class="group">
-                <h4>{t("projects")}</h4>
+                <h4><span>{icon(ICON_FOLDER)}{t("projects")}</span></h4>
                 <div class="open">
                     <span class="prefix" id="open-prefix" title=move || app.status.get().map(|s| format!("{}/work/", app.tilde(&s.home))).unwrap_or_default()>"work/"</span>
-                    <input id="open-path" placeholder=t("open_ph") prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
+                    <input id="open-path" placeholder=t("open_ph_short") title=t("open_ph") aria-label=t("open_ph") prop:value=move || path.get() on:input=move |ev| path.set(event_target_value(&ev))
                         on:keydown=move |ev| if ev.key() == "Enter" { open() }/>
                     <button id="open-go" on:click=move |_| open()>{t("open")}</button>
                 </div>
@@ -1423,7 +1487,7 @@ fn Sidebar() -> impl IntoView {
                 </div>
             </div>
             <div class="group grow">
-                <h4>{t("conversations")}<button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); app.chosen(); }>{t("new")}</button></h4>
+                <h4><span>{icon(ICON_CHAT)}{t("conversations")}</span><button class="ghost" id="new-chat" on:click=move |_| { app.new_conversation(); app.view.set(View::Chat); app.chosen(); }>{t("new")}</button></h4>
                 <div class="list sessions">
                     <For each=move || app.sessions.get() key=|s| (s.id, s.name.clone(), s.messages) children=move |s: Session| {
                         let id = s.id;
@@ -1703,6 +1767,7 @@ fn Dashboard() -> impl IntoView {
     Effect::new(move |_| {
         spawn_local(async move { app.refresh_projects().await });
         motion::enter_all(".cards .card");
+        motion::draw_icons(".cards .card h5 .ico path");
     });
     let s = move || app.status.get().unwrap_or_default();
     let context_share = move || {
@@ -1717,7 +1782,7 @@ fn Dashboard() -> impl IntoView {
                 <div class="cards">
                     // The model: its state, its name, what it is, and where its files are and how
                     // large (the last two once it is loaded).
-                    <div class="card glass model-card" id="model-card"><h5>{t("d_model")}</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { tr(app.lang.get(), "d_offline").to_string() } else if s().busy { tr(app.lang.get(), "working").to_string() } else { s().model_state }}</div>
+                    <div class="card glass model-card" id="model-card"><h5>{icon(ICON_CHIP)}{t("d_model")}</h5><div class="big" id="model-state">{move || if app.status.get().is_none() { tr(app.lang.get(), "d_offline").to_string() } else if s().busy { tr(app.lang.get(), "working").to_string() } else { s().model_state }}</div>
                         <div class="sub" id="model-name">{move || s().model}</div>
                         <Show when=move || !s().model_info.is_empty()>
                             <div class="sub" id="model-info">{move || s().model_info}</div>
@@ -1730,26 +1795,26 @@ fn Dashboard() -> impl IntoView {
                             <ModelDownload card=true/>
                         </Show></div>
                     // How fast it writes, and reads a prompt, in the last turn.
-                    <div class="card glass" id="speed-card"><h5>{t("d_speed")}</h5>
+                    <div class="card glass" id="speed-card"><h5>{icon(ICON_BOLT)}{t("d_speed")}</h5>
                         <div class="big" id="gen-tps"><Counter value=Signal::derive(move || s().gen_tps) decimals=1 suffix=fixed(" tok/s")/></div>
                         <div class="sub" id="prompt-tps">{move || if s().gen_tps == 0.0 { tr(app.lang.get(), "speed_none").to_string() } else if s().prompt_tps == 0.0 { tr(app.lang.get(), "speed_last").to_string() } else { tr_with(app.lang.get(), "speed_read", &format!("{:.0}", s().prompt_tps)) }}</div></div>
-                    <div class="card glass"><h5>{t("d_memory")}</h5><div class="big"><Counter value=Signal::derive(move || gb(s().memory_active)) decimals=1 suffix=fixed(" GB")/></div>
+                    <div class="card glass"><h5>{icon(ICON_MEMORY)}{t("d_memory")}</h5><div class="big"><Counter value=Signal::derive(move || gb(s().memory_active)) decimals=1 suffix=fixed(" GB")/></div>
                         <div class="sub">{move || tr_with(app.lang.get(), "peak", &format!("{:.1}", gb(s().memory_peak)))}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", (gb(s().memory_active) / 36.0 * 100.0).min(100.0))></i></div></div>
-                    <div class="card glass"><h5>{t("d_context")}</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=fixed("")/></div>
+                    <div class="card glass"><h5>{icon(ICON_LAYERS)}{t("d_context")}</h5><div class="big"><Counter value=Signal::derive(move || s().context_tokens as f64) decimals=0 suffix=fixed("")/></div>
                         <div class="sub">{move || tr_with(app.lang.get(), "ctx_sub", &s().context_limit.to_string())}</div>
                         <div class="bar2"><i style:width=move || format!("{:.0}%", context_share())></i></div></div>
-                    <div class="card glass"><h5>{t("d_transport")}</h5><div class="big" id="protocol">{move || { let (name, carrier) = transport(&s().protocol); format!("{name}{carrier}") }}</div>
+                    <div class="card glass"><h5>{icon(ICON_ROUTE)}{t("d_transport")}</h5><div class="big" id="protocol">{move || { let (name, carrier) = transport(&s().protocol); format!("{name}{carrier}") }}</div>
                         <div class="sub">{move || if s().h3 { tr(app.lang.get(), "transport_both") } else { tr(app.lang.get(), "transport_h2") }}</div></div>
-                    <div class="card glass"><h5>{t("d_safety")}</h5><div class="big small">{move || s().sandbox}</div>
+                    <div class="card glass"><h5>{icon(ICON_SHIELD)}{t("d_safety")}</h5><div class="big small">{move || s().sandbox}</div>
                         <div class="sub">{move || tr(app.lang.get(), match s().auth.as_str() { "open" => "safety_open", "wallet" => "safety_wallet", _ => "safety_token" })}</div></div>
-                    <div class="card glass"><h5>{t("d_uptime")}</h5><div class="big"><Counter value=Signal::derive(move || s().uptime_seconds as f64 / 60.0) decimals=0 suffix=Signal::derive(move || tr(app.lang.get(), "min").to_string())/></div>
+                    <div class="card glass"><h5>{icon(ICON_CLOCK)}{t("d_uptime")}</h5><div class="big"><Counter value=Signal::derive(move || s().uptime_seconds as f64 / 60.0) decimals=0 suffix=Signal::derive(move || tr(app.lang.get(), "min").to_string())/></div>
                         <div class="sub">{move || format!("cwbcode {} · {}", s().version, tr_with(app.lang.get(), "waiting", &s().queued.to_string()))}</div></div>
                 </div>
                 <RemoteAccess/>
-                <div class="card glass" id="trust"><h5>{t("trust_title")}</h5><TrustDevice/></div>
+                <div class="card glass" id="trust"><h5>{icon(ICON_SHIELD)}{t("trust_title")}</h5><TrustDevice/></div>
                 <div class="card glass">
-                    <h5>{t("projects")}</h5>
+                    <h5>{icon(ICON_FOLDER)}{t("projects")}</h5>
                     <Show when=move || !app.projects.get().is_empty() fallback=move || view! { <div class="empty">{t("no_projects")}</div> }>
                         <table>
                             <thead><tr><th>{t("th_project")}</th><th>{t("th_folder")}</th><th>{t("conversations")}</th><th>{t("th_opened")}</th></tr></thead>
@@ -1817,7 +1882,7 @@ fn RemoteAccess() -> impl IntoView {
     let several_words = move || typed.get().split_whitespace().count() > 1;
     view! {
         <div class="card glass form" id="remote">
-            <h5>{t("remote_title")}</h5>
+            <h5>{icon(ICON_GLOBE)}{t("remote_title")}</h5>
             {move || match app.auth.get().as_str() {
                 "open" => view! {
                     <div><b>{t("local_mode")}</b>{t("local_desc")}<span class="sub">{move || tr_with(app.lang.get(), "listening", &s().bind)}</span></div>
@@ -2009,16 +2074,16 @@ fn Chat() -> impl IntoView {
                 <div class="bar2"><i style:width=move || format!("{:.0}%", app.context().2 * 100.0)></i></div>
                 <span id="ctx-text">{move || { let (used, limit, _) = app.context(); if used == 0 { format!("– / {}", short_count(limit)) } else { format!("{} / {}", short_count(used), short_count(limit)) } }}</span>
             </div>
-            <button class="primary" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| { if let Some(el) = element("run") { motion::pop(&el); } spawn_local(async move { app.run_code().await }) }>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</button>
-            <button id="console-toggle" class:lit=move || app.console.get() on:click=move |_| if app.console.get_untracked() { app.close_console() } else { app.console.set(true) }>{t("console")}</button>
-            <button id="clear" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{t("clear")}</button>
-            <button id="copy-all" disabled=move || app.items.get().is_empty() on:click=move |_| {
+            <button class="primary wi" id="run" disabled=move || app.project.get().is_empty() || app.running.get() on:click=move |_| { if let Some(el) = element("run") { motion::pop(&el); } spawn_local(async move { app.run_code().await }) }>{icon(ICON_PLAY)}<span>{move || if app.running.get() { t("run_running")() } else { t("run")() }}</span></button>
+            <button id="console-toggle" class="wi" class:lit=move || app.console.get() on:click=move |_| if app.console.get_untracked() { app.close_console() } else { app.console.set(true) }>{icon(ICON_TERMINAL)}<span>{t("console")}</span></button>
+            <button id="clear" class="wi" disabled=move || app.busy.get() on:click=move |_| { app.console_out.set(String::new()); app.new_conversation(); }>{icon(ICON_TRASH)}<span>{t("clear")}</span></button>
+            <button id="copy-all" class="wi" disabled=move || app.items.get().is_empty() on:click=move |_| {
                 // (Copied at once, in the tap itself: a browser lets nothing else at the clipboard.)
                 let text = whole_text(&app.items.get_untracked());
                 if motion::copy_text(&text) { app.tell(tr(app.lang.get_untracked(), "copied").to_string()) } else { app.fail(tr(app.lang.get_untracked(), "copy_failed").to_string()) }
-            }>{t("copy_all")}</button>
-            <button id="undo" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>{t("undo")}</button>
-            <button id="compact" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>{t("summarize")}</button>
+            }>{icon(ICON_COPY)}<span>{t("copy_all")}</span></button>
+            <button id="undo" class="wi" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Undo)>{icon(ICON_UNDO)}<span>{t("undo")}</span></button>
+            <button id="compact" class="wi" disabled=move || app.session.get() == 0 || app.busy.get() on:click=move |_| act(Method::Compact)>{icon(ICON_LINES)}<span>{t("summarize")}</span></button>
         </div>
         <Show when=move || app.ctx_at(0.9)>
             <div class="approval ctx-warning" id="ctx-warning">
@@ -2061,18 +2126,7 @@ fn Chat() -> impl IntoView {
         </div>
         </div>
         // The console: what running the code printed, and the command that is run.
-        <Show when=move || app.console.get()>
-            <div class="console glass" id="console">
-                <div class="console-head">
-                    <span class="lbl">{t("console")}</span>
-                    <input id="console-cmd" placeholder=t("console_ph") prop:value=move || app.console_cmd.get() on:input=move |ev| app.console_cmd.set(event_target_value(&ev))
-                        on:keydown=move |ev| if ev.key() == "Enter" { spawn_local(async move { app.run_code().await }) }/>
-                    <button class="ghost" id="console-clear" on:click=move |_| app.console_out.set(String::new())>{t("clear")}</button>
-                    <button class="ghost round" id="console-close" aria-label=t("console") on:click=move |_| app.close_console()>"×"</button>
-                </div>
-                <pre id="console-out">{move || { let out = app.console_out.get(); if out.is_empty() { t("console_empty")().to_string() } else { out } }}</pre>
-            </div>
-        </Show>
+        <Show when=move || app.console.get()><ConsolePanel/></Show>
         <div class="composer">
             <div class="box glass">
                 <textarea id="draft" rows="2" placeholder=t("draft_ph")
@@ -2093,7 +2147,7 @@ fn Chat() -> impl IntoView {
                     <select id="think" on:change=move |ev| app.think.set(event_target_value(&ev)) prop:value=move || app.think.get()>
                         <option value="">{t("think_default")}</option><option value="none">"none"</option><option value="low">"low"</option><option value="medium">"medium"</option><option value="high">"high"</option>
                     </select>
-                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary" id="send" disabled=move || app.project.get().is_empty() || app.ctx_at(1.0) on:click=move |_| send()>{t("send")}</button> }>
+                    <Show when=move || app.busy.get() fallback=move || view! { <button class="primary wi" id="send" disabled=move || app.project.get().is_empty() || app.ctx_at(1.0) on:click=move |_| { if let Some(el) = element("send") { motion::pop(&el); } send() }>{icon(ICON_SEND)}<span>{t("send")}</span></button> }>
                         <button class="danger" id="stop" on:click=move |_| spawn_local(async move { app.call(Request::new(Method::Interrupt)).await; })>{t("stop")}</button>
                     </Show>
                 </div>
@@ -2243,7 +2297,7 @@ fn Knowledge() -> impl IntoView {
                     </div>
                 </Show>
                 <div class="card glass form">
-                    <h5>{t("kb_save_title")}</h5>
+                    <h5>{icon(ICON_BOOK)}{t("kb_save_title")}</h5>
                     <input id="kb-title" placeholder=t("kb_title_ph") prop:value=move || title.get() on:input=move |ev| title.set(event_target_value(&ev))/>
                     <textarea id="kb-note" rows="3" placeholder=t("kb_note_ph") prop:value=move || note.get() on:input=move |ev| note.set(event_target_value(&ev))></textarea>
                     <div class="rowf">
