@@ -1,6 +1,6 @@
 [package]
 name = "cwbcodeclient"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "Causewaybay Code terminal client: talks to the cwbcode backend over HTTP/3, or HTTP/2 where QUIC is not available"
 license = "Apache-2.0"

@@ -1,6 +1,6 @@
 [package]
 name = "cwbcode-proto"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "The Cap'n Proto messages exchanged by the cwbcode backend, its terminal client and its web client"
 license = "Apache-2.0"
