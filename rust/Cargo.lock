@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "cwbcode"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "cwbcode-proto"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bip32",
  "bip39",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "cwbcodeclient"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bytes",
